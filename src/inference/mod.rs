@@ -95,6 +95,7 @@ impl InferenceOptionsBuilder {
 
 /// Main TTS inference pipeline
 pub struct Pipeline {
+    #[allow(dead_code)]
     config: Config,
     text_frontend: TextFrontend,
     gpt_model: Option<GPTModel>,

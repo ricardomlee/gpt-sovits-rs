@@ -38,15 +38,18 @@ pub struct DurationPredictor {
 
 /// Flow decoder for mel synthesis
 pub struct FlowDecoder {
+    #[allow(dead_code)]
     layers: Vec<FlowLayer>,
     output_projection: Linear,
 }
 
 struct FlowLayer {
+    #[allow(dead_code)]
     coupling: CouplingLayer,
 }
 
 struct CouplingLayer {
+    #[allow(dead_code)]
     net: Vec<Linear>,
 }
 
@@ -247,7 +250,7 @@ impl DurationPredictor {
     pub fn predict(&self, features: &Tensor) -> Result<Tensor> {
         // Simple projection to get duration predictions
         // features: [1, seq_len, hidden] -> durations: [seq_len]
-        let seq_len = features.dims()[1];
+        let _seq_len = features.dims()[1];
 
         // Flatten and project
         let flat = features.flatten_from(0)?;

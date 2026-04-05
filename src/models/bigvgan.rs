@@ -28,6 +28,7 @@ struct ResidualBlock {
     conv2: Conv1d,
     norm1: LayerNorm,
     norm2: LayerNorm,
+    #[allow(dead_code)]
     dilation: usize,
 }
 
