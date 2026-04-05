@@ -160,7 +160,19 @@ impl StateDict {
         let weight_g = self.get(&format!("{}.weight_g", prefix))?.clone();
         let weight_v = self.get(&format!("{}.weight_v", prefix))?.clone();
         let bias = self.get(&format!("{}.bias", prefix)).ok().cloned();
-        Ok(Conv1dWeightNorm::new(weight_g, weight_v, bias, 1, 0, 1))
+
+        // Infer kernel size from weight_v shape [out_channels, in_channels, kernel_size]
+        let weight_v_shape = weight_v.dims();
+        let kernel_size = if weight_v_shape.len() >= 3 {
+            weight_v_shape[2]
+        } else {
+            1
+        };
+
+        // Calculate padding to maintain sequence length: padding = (kernel_size - 1) / 2
+        let padding = (kernel_size - 1) / 2;
+
+        Ok(Conv1dWeightNorm::new(weight_g, weight_v, bias, 1, padding, 1))
     }
 }
 
