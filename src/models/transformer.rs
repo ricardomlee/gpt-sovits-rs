@@ -1,0 +1,301 @@
+//! Transformer Module for GPT Model
+//!
+//! Implementation of transformer encoder-decoder architecture
+
+use candle_core::{Tensor, Device, D};
+use crate::Result;
+use crate::utils::{StateDict, Embedding, Linear, LayerNorm};
+
+/// Multi-head attention mechanism
+#[derive(Debug, Clone)]
+pub struct MultiHeadAttention {
+    wq: Linear,
+    wk: Linear,
+    wv: Linear,
+    wo: Linear,
+    n_heads: usize,
+    head_dim: usize,
+    scale: f64,
+}
+
+impl MultiHeadAttention {
+    pub fn new(q: Linear, k: Linear, v: Linear, o: Linear, n_heads: usize) -> Self {
+        let out_features = q.out_features();
+        let head_dim = out_features / n_heads;
+        let scale = 1.0 / (head_dim as f64).sqrt();
+        Self { wq: q, wk: k, wv: v, wo: o, n_heads, head_dim, scale }
+    }
+
+    /// Split tensor into multiple heads
+    fn split_heads(&self, x: &Tensor, batch_size: usize, seq_len: usize) -> Result<Tensor> {
+        // x: [batch, seq_len, hidden_size] -> [batch, n_heads, seq_len, head_dim]
+        x.reshape((batch_size, seq_len, self.n_heads, self.head_dim))?
+            .transpose(1, 2)
+            .map_err(|e| e.into())
+    }
+
+    pub fn forward(&self, x: &Tensor, mask: Option<&Tensor>) -> Result<Tensor> {
+        let dims = x.dims();
+        let (batch_size, seq_len, _) = (dims[0], dims[1], dims[2]);
+
+        // Compute Q, K, V projections
+        let q = self.wq.forward(x)?;
+        let k = self.wk.forward(x)?;
+        let v = self.wv.forward(x)?;
+
+        // Split into heads
+        let q = self.split_heads(&q, batch_size, seq_len)?;
+        let k = self.split_heads(&k, batch_size, seq_len)?;
+        let v = self.split_heads(&v, batch_size, seq_len)?;
+
+        // Scaled dot-product attention: attn = softmax(Q @ K^T / sqrt(d_k))
+        let k_t = k.transpose(D::Minus2, D::Minus1)?;
+        let attn_weights = q.matmul(&k_t)?;
+        let scale_tensor = Tensor::full(self.scale, attn_weights.dims(), &attn_weights.device())?;
+        let attn_weights = attn_weights.broadcast_mul(&scale_tensor)?;
+
+        // Apply causal mask if provided
+        let attn_weights = if let Some(m) = mask {
+            // Expand mask to match attention weights shape
+            let mask_expanded = m.broadcast_left((batch_size, self.n_heads))?;
+            // Mask with a large negative value for positions we want to ignore
+            let neg_inf = Tensor::full(-1e9f32, attn_weights.dims(), &attn_weights.device())?;
+            let mask_weighted = mask_expanded.broadcast_mul(&neg_inf)?;
+            attn_weights.add(&mask_weighted)?
+        } else {
+            attn_weights
+        };
+
+        // Softmax over last dimension
+        let attn_probs = candle_nn::ops::softmax(&attn_weights, D::Minus1)?;
+
+        // Apply attention to values: [batch, n_heads, seq_len, head_dim]
+        let attn_output = attn_probs.matmul(&v)?;
+
+        // Concatenate heads: [batch, seq_len, hidden_size]
+        let attn_output = attn_output
+            .transpose(1, 2)?
+            .reshape((batch_size, seq_len, self.n_heads * self.head_dim))?;
+
+        // Output projection
+        self.wo.forward(&attn_output)
+    }
+}
+
+/// Feed-forward network with SwiGLU activation
+#[derive(Debug, Clone)]
+pub struct FeedForward {
+    w1: Linear,  // gate projection
+    w2: Linear,  // output projection
+    w3: Linear,  // up projection
+}
+
+impl FeedForward {
+    pub fn new(w1: Linear, w2: Linear, w3: Linear) -> Self {
+        Self { w1, w2, w3 }
+    }
+
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        // SwiGLU: (swish(w1(x)) * w3(x)) @ w2
+        let gate = self.w1.forward(x)?;
+        let up = self.w3.forward(x)?;
+
+        // Swish activation: x * sigmoid(x) = x / (1 + exp(-x))
+        let gate_exp = gate.neg()?.exp()?;
+        let ones = Tensor::ones_like(&gate_exp)?;
+        let sigmoid = ones.broadcast_add(&gate_exp)?.recip()?;
+        let gate_swish = gate.broadcast_mul(&sigmoid)?;
+
+        // Element-wise multiplication
+        let ff_output = gate_swish.broadcast_mul(&up)?;
+
+        Ok(self.w2.forward(&ff_output)?)
+    }
+}
+
+/// Transformer block
+#[derive(Debug, Clone)]
+pub struct TransformerBlock {
+    attention: MultiHeadAttention,
+    feed_forward: FeedForward,
+    attn_norm: LayerNorm,
+    ffn_norm: LayerNorm,
+}
+
+impl TransformerBlock {
+    pub fn new(attn: MultiHeadAttention, ff: FeedForward, attn_norm: LayerNorm, ffn_norm: LayerNorm) -> Self {
+        Self { attention: attn, feed_forward: ff, attn_norm, ffn_norm }
+    }
+
+    pub fn forward(&self, x: &Tensor, mask: Option<&Tensor>) -> Result<Tensor> {
+        // Pre-norm architecture
+        let normed = self.attn_norm.forward(x)?;
+        let attn_output = self.attention.forward(&normed, mask)?;
+        // Residual connection
+        let x = x.add(&attn_output)?;
+
+        let normed = self.ffn_norm.forward(&x)?;
+        let ff_output = self.feed_forward.forward(&normed)?;
+        // Residual connection
+        Ok(x.add(&ff_output)?)
+    }
+}
+
+/// Transformer model configuration
+#[derive(Debug, Clone)]
+pub struct TransformerConfig {
+    pub vocab_size: usize,
+    pub hidden_size: usize,
+    pub intermediate_size: usize,
+    pub num_hidden_layers: usize,
+    pub num_attention_heads: usize,
+    pub max_seq_len: usize,
+}
+
+impl Default for TransformerConfig {
+    fn default() -> Self {
+        Self {
+            vocab_size: 512,
+            hidden_size: 512,
+            intermediate_size: 2048,
+            num_hidden_layers: 8,
+            num_attention_heads: 8,
+            max_seq_len: 1024,
+        }
+    }
+}
+
+/// Transformer model for GPT-based semantic prediction
+#[derive(Debug, Clone)]
+pub struct Transformer {
+    pub config: TransformerConfig,
+    token_embedding: Embedding,
+    position_embedding: Tensor,
+    layers: Vec<TransformerBlock>,
+    norm: LayerNorm,
+    output_projection: Linear,
+    device: Device,
+}
+
+impl Transformer {
+    pub fn new(config: TransformerConfig, weights: &StateDict, device: &Device) -> Result<Self> {
+        // Create embeddings
+        let token_embedding = weights.get_embedding("tok_emb.weight")?;
+
+        // Create position embeddings
+        let pos_emb = weights.get("pos_emb.weight")?
+            .narrow(0, 0, config.max_seq_len)?
+            .to_device(device)?
+            .clone();
+
+        // Create transformer layers
+        let mut layers = Vec::with_capacity(config.num_hidden_layers);
+        for i in 0..config.num_hidden_layers {
+            let prefix = format!("layers.{}", i);
+
+            // Attention projections
+            let wq = weights.get_linear(&format!("{}.attention.wq", prefix))?;
+            let wk = weights.get_linear(&format!("{}.attention.wk", prefix))?;
+            let wv = weights.get_linear(&format!("{}.attention.wv", prefix))?;
+            let wo = weights.get_linear(&format!("{}.attention.wo", prefix))?;
+            let attn = MultiHeadAttention::new(wq, wk, wv, wo, config.num_attention_heads);
+
+            // Feed-forward network (SwiGLU uses 3 linear layers)
+            let w1 = weights.get_linear(&format!("{}.ffn.w1", prefix))?;
+            let w2 = weights.get_linear(&format!("{}.ffn.w2", prefix))?;
+            let w3 = weights.get_linear(&format!("{}.ffn.w3", prefix))?;
+            let ff = FeedForward::new(w1, w2, w3);
+
+            // Layer norms
+            let attn_norm = weights.get_layer_norm(&format!("{}.attn_norm", prefix))?;
+            let ffn_norm = weights.get_layer_norm(&format!("{}.ffn_norm", prefix))?;
+
+            let block = TransformerBlock::new(attn, ff, attn_norm, ffn_norm);
+            layers.push(block);
+        }
+
+        // Create final norm
+        let norm = weights.get_layer_norm("norm")?;
+
+        // Create output projection
+        let output_projection = weights.get_linear("output")?;
+
+        Ok(Self {
+            config,
+            token_embedding,
+            position_embedding: pos_emb,
+            layers,
+            norm,
+            output_projection,
+            device: device.clone(),
+        })
+    }
+
+    /// Create causal attention mask
+    pub fn create_causal_mask(seq_len: usize, device: &Device) -> Result<Tensor> {
+        let mask: Vec<f32> = (0..seq_len)
+            .flat_map(|i| (0..seq_len).map(move |j| if i >= j { 1.0f32 } else { 0.0f32 }).collect::<Vec<_>>())
+            .collect();
+        Tensor::from_vec(mask, (seq_len, seq_len), device).map_err(|e| e.into())
+    }
+
+    /// Forward pass
+    pub fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
+        let (_, seq_len) = input_ids.dims2()?;
+
+        // Get embeddings
+        let token_emb = self.token_embedding.forward(input_ids)?;
+
+        // Get position embeddings
+        let pos_emb = self.position_embedding.narrow(0, 0, seq_len)?;
+
+        // Combine embeddings
+        let mut x = token_emb.broadcast_add(&pos_emb)?;
+
+        // Create causal mask
+        let causal_mask = Self::create_causal_mask(seq_len, &self.device)?;
+
+        // Apply transformer layers
+        for layer in &self.layers {
+            x = layer.forward(&x, Some(&causal_mask))?;
+        }
+
+        // Final normalization
+        x = self.norm.forward(&x)?;
+
+        // Output projection
+        self.output_projection.forward(&x)
+    }
+
+    /// Generate tokens autoregressively (placeholder)
+    pub fn generate(
+        &self,
+        _prompt: &Tensor,
+        max_tokens: usize,
+        _temperature: f32,
+        _top_k: usize,
+        _top_p: f32,
+    ) -> Result<Vec<u32>> {
+        // Placeholder - returns sequential token IDs
+        let mut tokens = Vec::with_capacity(max_tokens);
+        for i in 0..max_tokens {
+            tokens.push((i % self.config.vocab_size) as u32);
+        }
+        Ok(tokens)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_causal_mask() {
+        let mask = Transformer::create_causal_mask(4, &Device::Cpu).unwrap();
+        let mask_vec: Vec<f32> = mask.to_vec2().unwrap().iter().flatten().copied().collect();
+
+        // First row should be [1, 0, 0, 0]
+        assert_eq!(mask_vec[0], 1.0);
+        assert_eq!(mask_vec[1], 0.0);
+    }
+}
