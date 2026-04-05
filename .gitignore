@@ -1,0 +1,43 @@
+# Rust
+/target/
+**/target/
+
+# Model files (large binaries)
+/models/
+*.ckpt
+*.pth
+*.pt
+*.bin
+*.safetensors
+
+# Build
+/**/*.so
+/**/*.dll
+/**/*.dylib
+/**/*.lib
+/**/*.exe
+
+# Debug
+*.pdb
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+*.log
+logs/
+
+# Test outputs
+test_outputs/
+*.wav
+*.mp3
+*.ogg
+
+# Python cache (for scripts)
+__pycache__/
+*.py[cod]
