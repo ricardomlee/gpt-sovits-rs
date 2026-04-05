@@ -1,18 +1,25 @@
-//! BERT Feature Extractor with ONNX Runtime
+//! BERT Feature Extractor with ONNX Runtime (optional)
 
+#[cfg(feature = "onnx")]
 use ort::{session::Session, value::Value, inputs};
-use candle_core::{Device, Tensor};
+
+use candle_core::{Device, Tensor, DType};
 use crate::Result;
 
 /// BERT model for text feature extraction
 pub struct BertModel {
+    #[cfg(feature = "onnx")]
     session: Session,
+    #[cfg(not(feature = "onnx"))]
+    _marker: std::marker::PhantomData<()>,
     device: String,
+    #[allow(dead_code)]
     max_length: usize,
 }
 
 impl BertModel {
     /// Load BERT model from ONNX file
+    #[cfg(feature = "onnx")]
     pub fn load(path: &str) -> Result<Self> {
         let session = Session::builder()?
             .commit_from_file(path)
@@ -25,7 +32,17 @@ impl BertModel {
         })
     }
 
+    #[cfg(not(feature = "onnx"))]
+    pub fn load(_path: &str) -> Result<Self> {
+        Ok(Self {
+            _marker: std::marker::PhantomData,
+            device: "cpu".to_string(),
+            max_length: 512,
+        })
+    }
+
     /// Extract BERT features from text
+    #[cfg(feature = "onnx")]
     pub fn extract(&mut self, text: &str) -> Result<Tensor> {
         // Simple tokenization - convert chars to IDs
         let chars: Vec<char> = text.chars().take(self.max_length).collect();
@@ -63,6 +80,13 @@ impl BertModel {
             .map_err(|e| e.into())
     }
 
+    #[cfg(not(feature = "onnx"))]
+    pub fn extract(&mut self, _text: &str) -> Result<Tensor> {
+        // Return dummy features: [batch=1, hidden=768, seq_len=10]
+        Tensor::zeros((1, 768, 10), DType::F32, &Device::Cpu)
+            .map_err(|e| e.into())
+    }
+
     /// Get model device
     pub fn device(&self) -> &str {
         &self.device
@@ -70,8 +94,14 @@ impl BertModel {
 }
 
 impl crate::models::Model for BertModel {
+    #[cfg(feature = "onnx")]
     fn load(path: &str) -> Result<Self> {
         Self::load(path)
+    }
+
+    #[cfg(not(feature = "onnx"))]
+    fn load(_path: &str) -> Result<Self> {
+        Self::load("placeholder")
     }
 
     fn device(&self) -> &str {
