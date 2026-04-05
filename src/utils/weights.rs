@@ -6,7 +6,7 @@ use candle_core::{DType, Device, Tensor};
 use safetensors::{SafeTensors, tensor::Dtype};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::Path;
 
 use crate::{Error, Result};
@@ -154,6 +154,14 @@ impl StateDict {
         let bias = self.get(&format!("{}.bias", prefix))?.clone();
         Ok(LayerNorm::new(weight, bias))
     }
+
+    /// Get weight-parameterized conv1d for BigVGAN/SoVITS
+    pub fn get_conv1d_weight_norm(&self, prefix: &str) -> Result<Conv1dWeightNorm> {
+        let weight_g = self.get(&format!("{}.weight_g", prefix))?.clone();
+        let weight_v = self.get(&format!("{}.weight_v", prefix))?.clone();
+        let bias = self.get(&format!("{}.bias", prefix)).ok().cloned();
+        Ok(Conv1dWeightNorm::new(weight_g, weight_v, bias, 1, 0, 1))
+    }
 }
 
 /// Embedding layer
@@ -176,20 +184,13 @@ impl Embedding {
     /// Output: [batch, seq_len, hidden_dim] or [seq_len, hidden_dim] for 1D input
     pub fn embedding(&self, input: &Tensor) -> Result<Tensor> {
         let input_dims = input.dims();
-        let vocab_size = self.weight.dims()[0];
-        eprintln!("DEBUG embedding: START - input_dims={:?}, vocab_size={}", input_dims, vocab_size);
-        let _ = std::io::stderr().flush();
 
         if input_dims.len() == 1 {
             // 1D input: [seq_len] -> [seq_len, hidden_dim]
             let seq_len = input_dims[0];
             let indices: Vec<i64> = input.to_vec1()?;
-            eprintln!("DEBUG embedding: 1D input, seq_len={}, indices={:?}, vocab_size={}", seq_len, indices, vocab_size);
             let mut result = Vec::with_capacity(seq_len);
             for &idx in &indices {
-                if idx as usize >= vocab_size {
-                    eprintln!("DEBUG: idx {} out of range for vocab {}", idx, vocab_size);
-                }
                 let emb = self.weight.get(idx as usize)?;
                 result.push(emb);
             }
@@ -198,16 +199,11 @@ impl Embedding {
             // 2D input: [batch, seq_len] -> [batch, seq_len, hidden_dim]
             let batch = input_dims[0];
             let seq_len = input_dims[1];
-            eprintln!("DEBUG embedding: 2D input, batch={}, seq_len={}, vocab_size={}", batch, seq_len, vocab_size);
             let mut result = Vec::with_capacity(batch);
             for b in 0..batch {
                 let batch_indices: Vec<i64> = input.narrow(0, b, 1)?.squeeze(0)?.to_vec1()?;
-                eprintln!("DEBUG: batch {} indices={:?}", b, batch_indices);
                 let mut batch_embs = Vec::with_capacity(seq_len);
                 for &idx in &batch_indices {
-                    if idx as usize >= vocab_size {
-                        eprintln!("DEBUG: idx {} out of range for vocab {}", idx, vocab_size);
-                    }
                     let emb = self.weight.get(idx as usize)?;
                     batch_embs.push(emb);
                 }
@@ -375,6 +371,69 @@ impl Conv1d {
     pub fn forward(&self, input: &Tensor) -> Result<Tensor> {
         let output = input.conv1d(
             &self.weight,
+            self.padding,
+            self.stride,
+            self.dilation,
+            1, // groups
+        )?;
+
+        match &self.bias {
+            Some(bias) => {
+                let bias_len = bias.dims()[0];
+                let bias_reshaped = bias.reshape(&[1, bias_len, 1])?;
+                Ok(output.broadcast_add(&bias_reshaped)?)
+            }
+            None => Ok(output),
+        }
+    }
+}
+
+/// Weight-parameterized Conv1d for BigVGAN/SoVITS
+/// Uses weight_g (norm) and weight_v (direction) decomposition
+#[derive(Debug, Clone)]
+pub struct Conv1dWeightNorm {
+    pub weight_g: Tensor,
+    pub weight_v: Tensor,
+    pub bias: Option<Tensor>,
+    pub stride: usize,
+    pub padding: usize,
+    pub dilation: usize,
+}
+
+impl Conv1dWeightNorm {
+    pub fn new(
+        weight_g: Tensor,
+        weight_v: Tensor,
+        bias: Option<Tensor>,
+        stride: usize,
+        padding: usize,
+        dilation: usize,
+    ) -> Self {
+        Self {
+            weight_g,
+            weight_v,
+            bias,
+            stride,
+            padding,
+            dilation,
+        }
+    }
+
+    /// Compute actual weight from g/v decomposition
+    pub fn get_weight(&self) -> Result<Tensor> {
+        // weight = (weight_v / ||weight_v||) * weight_g
+        // Manual norm: sqrt(sum(weight_v^2))
+        let v_squared = self.weight_v.sqr()?;
+        let v_sum = v_squared.sum_all()?;
+        let v_norm = v_sum.sqrt()?;
+        let v_normalized = self.weight_v.broadcast_div(&v_norm)?;
+        Ok(v_normalized.broadcast_mul(&self.weight_g)?)
+    }
+
+    pub fn forward(&self, input: &Tensor) -> Result<Tensor> {
+        let weight = self.get_weight()?;
+        let output = input.conv1d(
+            &weight,
             self.padding,
             self.stride,
             self.dilation,

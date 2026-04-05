@@ -212,7 +212,7 @@ impl Pipeline {
         )?;
 
         // Step 5: Run SoVITS to generate mel spectrogram
-        let mel_spec = sovits.synthesize(&semantic_tokens)?;
+        let mel_spec = sovits.synthesize(&semantic_tokens, None)?;
 
         // Step 6: Run BigVGAN to generate waveform
         let waveform = if let Some(bigvgan) = &self.bigvgan_model {
