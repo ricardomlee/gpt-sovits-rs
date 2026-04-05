@@ -29,11 +29,8 @@ candle-transformers = "0.8"
 # candle-onnx = "0.8"  # requires protoc
 half = { version = "2.4", features = ["num-traits", "zerocopy"] }
 
-# ONNX Runtime (for BERT/Hubert) - downloads binaries automatically
-ort = { version = "2.0.0-rc.12", features = ["download-binaries"], optional = true }
-
-# ONNX Runtime (for BERT/Hubert)
-# ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }  # Commented out for initial build
+# ONNX Runtime (for BERT/Hubert/SoVITS/BigVGAN) - downloads binaries automatically
+ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 
 # Audio Processing
 hound = "3.5"                    # WAV I/O
@@ -74,11 +71,11 @@ criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3.14"
 
 [features]
-default = []
+default = ["onnx"]
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
 http-api = ["tokio", "axum", "tower-http"]
 mkl = ["candle-core/mkl"]
-onnx = ["ort"]
+onnx = []
 
 [profile.release]
 lto = "thin"
