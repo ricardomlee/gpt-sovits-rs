@@ -15,6 +15,10 @@ struct Args {
     #[arg(short, long)]
     text: Option<String>,
 
+    /// Inspect model file
+    #[arg(long)]
+    inspect: Option<PathBuf>,
+
     /// Path to GPT model file
     #[arg(long)]
     gpt_model: Option<PathBuf>,
@@ -78,6 +82,12 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
+
+    // Inspect mode
+    if let Some(ref model_path) = args.inspect {
+        inspect_model(model_path);
+        return;
+    }
 
     // Initialize logging
     let log_level = if args.verbose { "debug" } else { "info" };
@@ -218,6 +228,26 @@ fn main() {
             error!("Inference failed: {}", e);
             std::process::exit(1);
         }
+    }
+}
+
+/// Inspect model file
+fn inspect_model(path: &PathBuf) {
+    use std::fs::File;
+    use std::io::Read;
+    use safetensors::SafeTensors;
+
+    let mut file = File::open(path).unwrap();
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer).unwrap();
+
+    let st = SafeTensors::deserialize(&buffer).unwrap();
+    let name = path.file_name().unwrap().to_str().unwrap();
+
+    println!("{name} keys ({} total):", st.names().len());
+    for name in st.names() {
+        let tensor = st.tensor(name).unwrap();
+        println!("  {name:60} {:?}", tensor.shape());
     }
 }
 
