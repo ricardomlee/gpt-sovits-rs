@@ -4,7 +4,6 @@
 //! for command-line TTS inference.
 
 use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
-use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== GPT-SoVITS Rust Inference Example ===\n");
@@ -16,7 +15,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     println!("Initializing pipeline...");
-    let mut pipeline = Pipeline::new(config)?;
+    let _pipeline = Pipeline::new(config)?;
 
     // Note: In a real application, you would load actual model files:
     // pipeline.load_gpt("models/gpt-model.safetensors")?;
