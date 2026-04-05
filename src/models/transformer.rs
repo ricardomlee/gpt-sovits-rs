@@ -267,21 +267,109 @@ impl Transformer {
         self.output_projection.forward(&x)
     }
 
-    /// Generate tokens autoregressively (placeholder)
+    /// Generate tokens autoregressively
+    ///
+    /// # Arguments
+    /// * `prompt` - Input prompt tensor
+    /// * `max_tokens` - Maximum number of tokens to generate
+    /// * `temperature` - Sampling temperature
+    /// * `top_k` - Top-k filtering
+    /// * `top_p` - Top-p (nucleus) filtering
     pub fn generate(
         &self,
-        _prompt: &Tensor,
+        prompt: &Tensor,
         max_tokens: usize,
-        _temperature: f32,
-        _top_k: usize,
-        _top_p: f32,
+        temperature: f32,
+        top_k: usize,
+        top_p: f32,
     ) -> Result<Vec<u32>> {
-        // Placeholder - returns sequential token IDs
-        let mut tokens = Vec::with_capacity(max_tokens);
-        for i in 0..max_tokens {
-            tokens.push((i % self.config.vocab_size) as u32);
+        use candle_core::D;
+        use candle_nn::ops::softmax;
+
+        let mut current = prompt.clone();
+        let mut generated = Vec::new();
+
+        for _ in 0..max_tokens {
+            let seq_len = current.dims()[1];
+
+            // Forward pass
+            let logits = self.forward(&current)?;
+
+            // Get logits for last position: [batch, seq_len, vocab] -> [vocab]
+            let last_logits = logits.narrow(1, seq_len - 1, 1)?.squeeze(0)?;
+
+            // Apply temperature
+            let mut logits = last_logits.to_dtype(candle_core::DType::F32)?;
+            if temperature != 1.0 && temperature > 0.0 {
+                let t = candle_core::Tensor::full(temperature, logits.dims(), &logits.device())?;
+                logits = logits.broadcast_div(&t)?;
+            }
+
+            // Softmax to get probabilities
+            let probs = softmax(&logits, D::Minus1)?;
+            let probs_vec: Vec<f32> = probs.to_vec1()?;
+
+            // Create (prob, index) pairs and sort descending
+            let mut indexed_probs: Vec<(f32, usize)> = probs_vec
+                .into_iter()
+                .enumerate()
+                .map(|(i, p)| (p, i))
+                .collect();
+            indexed_probs.sort_by(|a, b| {
+                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+
+            // Apply top-k
+            if top_k < indexed_probs.len() && top_k > 0 {
+                indexed_probs.truncate(top_k);
+            }
+
+            // Apply top-p (nucleus) sampling
+            let mut cumsum = 0.0f32;
+            let mut cutoff = indexed_probs.len();
+            for (i, (prob, _)) in indexed_probs.iter().enumerate() {
+                cumsum += *prob;
+                if cumsum >= top_p {
+                    cutoff = i + 1;
+                    break;
+                }
+            }
+            indexed_probs.truncate(cutoff);
+
+            // Renormalize
+            let total: f32 = indexed_probs.iter().map(|(p, _)| p).sum();
+            if total > 0.0 {
+                for (prob, _) in indexed_probs.iter_mut() {
+                    *prob /= total;
+                }
+            }
+
+            // Sample
+            let rand_val = rand::random::<f32>();
+            let mut cumsum = 0.0f32;
+            let next_token = indexed_probs
+                .iter()
+                .find(|&&(prob, _)| {
+                    cumsum += prob;
+                    rand_val <= cumsum
+                })
+                .map(|(_, idx)| *idx as u32)
+                .unwrap_or(indexed_probs.first().map(|(_, i)| *i as u32).unwrap_or(0));
+
+            // Check for EOS (last token in vocab)
+            if next_token >= (self.config.vocab_size - 1) as u32 {
+                break;
+            }
+
+            generated.push(next_token);
+
+            // Append to input for next iteration
+            let next_tensor =
+                candle_core::Tensor::new(&[next_token as i64], &self.device)?.unsqueeze(0)?;
+            current = candle_core::Tensor::cat(&[current, next_tensor], 1)?;
         }
-        Ok(tokens)
+
+        Ok(generated)
     }
 }
 

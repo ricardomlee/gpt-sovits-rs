@@ -179,27 +179,31 @@ impl Pipeline {
             Error::ModelLoadError("SoVITS model not loaded".to_string())
         })?;
 
-        // Step 1: Process text through frontend
+        // Step 1: Process text through frontend to get phoneme IDs
         let phoneme_ids = self.text_frontend.process(text, options.language)?;
 
         // Step 2: Extract features from reference audio
-        // TODO: Implement Hubert feature extraction
+        // Note: Hubert features require ONNX Runtime (candle-onnx or ort crate)
+        // Currently using placeholder until ONNX support is enabled
         let _hubert_features = if let Some(hubert) = &self.hubert_model {
             hubert.extract(reference_audio.as_ref())?
         } else {
-            // Placeholder - would extract from actual audio
+            // Placeholder: zero tensor with expected shape [batch, time, hidden=768]
             Tensor::zeros((1, 100, 768), DType::F32, &Device::Cpu)?
         };
 
         // Step 3: Get BERT features
+        // Note: BERT requires ONNX Runtime or candle-onnx
         let _bert_features = if let Some(bert) = &self.bert_model {
             bert.extract(text)?
         } else {
+            // Placeholder: zero tensor with expected shape [batch, hidden=768, seq_len]
             Tensor::zeros((1, 768, 10), DType::F32, &Device::Cpu)?
         };
 
         // Step 4: Run GPT model to generate semantic tokens
-        let _semantic_tokens = gpt.generate(
+        // phoneme_ids is already Vec<usize> from text_frontend
+        let semantic_tokens = gpt.generate(
             &phoneme_ids,
             options.top_k,
             options.top_p,
@@ -207,14 +211,18 @@ impl Pipeline {
         )?;
 
         // Step 5: Run SoVITS to generate mel spectrogram
-        let _mel_spec = sovits.synthesize(&_semantic_tokens)?;
+        let mel_spec = sovits.synthesize(&semantic_tokens)?;
 
         // Step 6: Run BigVGAN to generate waveform
         let waveform = if let Some(bigvgan) = &self.bigvgan_model {
-            bigvgan.generate(&_mel_spec)?
+            bigvgan.generate(&mel_spec)?
         } else {
-            // Placeholder audio
-            vec![0.0f32; 24000]
+            // Fallback: generate simple waveform from mel spec dimensions
+            // This produces silence but with correct duration
+            let mel_dims = mel_spec.dims();
+            let frames = mel_dims[2];
+            let hop_length = 256;
+            vec![0.0f32; frames * hop_length]
         };
 
         // Create audio buffer

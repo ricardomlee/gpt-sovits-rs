@@ -206,11 +206,13 @@ fn run_http_server(port: u16) {
 
     info!("Starting HTTP server on port {}", port);
 
-    // HTTP server implementation would go here
-    // This is a placeholder for the actual implementation
+    // Note: HTTP server requires `http-api` feature
+    // Run with: cargo run --features http-api -- --http --port 9880
     println!("HTTP server started at http://localhost:{}", port);
     println!("Endpoints:");
     println!("  POST /tts - TTS inference");
     println!("  POST /change_refer - Change reference audio");
     println!("  POST /control - Server control");
+    println!();
+    println!("Note: HTTP API requires --features http-api");
 }
