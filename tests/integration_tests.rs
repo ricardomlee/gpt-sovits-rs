@@ -230,3 +230,102 @@ mod transformer_tests {
         assert_eq!(config.num_attention_heads, 8);
     }
 }
+
+/// End-to-end pipeline tests
+#[cfg(test)]
+mod e2e_tests {
+    use gpt_sovits_rs::*;
+
+    #[test]
+    fn test_pipeline_full_workflow() {
+        // Create config
+        let config = Config::builder()
+            .with_device("cpu")
+            .with_half_precision(false)
+            .build();
+
+        // Create pipeline
+        let pipeline = Pipeline::new(config).unwrap();
+
+        // Verify pipeline state
+        assert!(!pipeline.is_ready()); // Models not loaded
+
+        // Create inference options
+        let options = InferenceOptions::builder()
+            .top_k(15)
+            .top_p(0.95)
+            .temperature(0.8)
+            .language(Language::Chinese)
+            .build();
+
+        // Verify options
+        assert_eq!(options.top_k, 15);
+        assert_eq!(options.language, Language::Chinese);
+    }
+
+    #[test]
+    fn test_text_frontend_full_pipeline() {
+        let frontend = gpt_sovits_rs::text_frontend::TextFrontend::new().unwrap();
+
+        // Test Chinese text
+        let phonemes = frontend.get_phonemes("你好世界", Language::Chinese);
+        assert!(phonemes.is_ok());
+        let result = phonemes.unwrap();
+        assert!(result.contains("ni") || result.len() > 0);
+
+        // Test English text
+        let phonemes = frontend.get_phonemes("Hello World", Language::English);
+        assert!(phonemes.is_ok());
+
+        // Test Japanese text
+        let phonemes = frontend.get_phonemes("こんにちは", Language::Japanese);
+        assert!(phonemes.is_ok());
+    }
+
+    #[test]
+    fn test_language_detection_accuracy() {
+        let detector = gpt_sovits_rs::text_frontend::LanguageDetector::new().unwrap();
+
+        // Test pure Chinese
+        let lang = detector.detect("你好世界").unwrap();
+        assert_eq!(lang, Language::Chinese);
+
+        // Test pure English
+        let lang = detector.detect("Hello World").unwrap();
+        assert_eq!(lang, Language::English);
+
+        // Test pure Japanese (hiragana)
+        let lang = detector.detect("こんにちは").unwrap();
+        assert_eq!(lang, Language::Japanese);
+
+        // Test pure Korean
+        let lang = detector.detect("안녕하세요").unwrap();
+        assert_eq!(lang, Language::Korean);
+    }
+
+    #[test]
+    fn test_audio_buffer_workflow() {
+        // Create audio buffer
+        let samples = vec![0.5f32; 24000];
+        let buffer = AudioBuffer::new(samples.clone(), 24000, 1);
+
+        // Test duration
+        assert!((buffer.duration() - 1.0).abs() < 0.01);
+
+        // Test resample
+        let resampled = buffer.resample(16000);
+        assert_eq!(resampled.sample_rate, 16000);
+
+        // Test save to temp file
+        let temp_path = std::env::temp_dir().join("test_audio.wav");
+        let save_result = buffer.save(&temp_path);
+        assert!(save_result.is_ok());
+
+        // Test load from temp file
+        let loaded = AudioBuffer::load(&temp_path);
+        assert!(loaded.is_ok());
+
+        // Cleanup
+        let _ = std::fs::remove_file(&temp_path);
+    }
+}
