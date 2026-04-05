@@ -185,7 +185,7 @@ impl Pipeline {
         // Step 2: Extract features from reference audio
         // Note: Hubert features require ONNX Runtime (--features onnx)
         // Without ONNX, uses zero tensor fallback
-        let _hubert_features = if let Some(hubert) = &self.hubert_model {
+        let _hubert_features = if let Some(hubert) = &mut self.hubert_model {
             hubert.extract(reference_audio.as_ref())?
         } else {
             // Fallback: zero tensor with expected shape [batch=1, time=100, hidden=768]
@@ -195,7 +195,7 @@ impl Pipeline {
         // Step 3: Get BERT features
         // Note: BERT requires ONNX Runtime (--features onnx)
         // Without ONNX, uses zero tensor fallback
-        let _bert_features = if let Some(bert) = &self.bert_model {
+        let _bert_features = if let Some(bert) = &mut self.bert_model {
             bert.extract(text)?
         } else {
             // Fallback: zero tensor with expected shape [batch=1, hidden=768, seq_len=10]

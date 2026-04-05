@@ -1,27 +1,18 @@
-//! BERT Feature Extractor with ONNX Runtime support
-//!
-//! Compile with --features onnx to enable ONNX Runtime
+//! BERT Feature Extractor with ONNX Runtime
 
-#[cfg(feature = "onnx")]
-use ort::{Session, Value, inputs};
-
-use candle_core::{Device, Tensor, DType};
+use ort::{session::Session, value::Value, inputs};
+use candle_core::{Device, Tensor};
 use crate::Result;
 
 /// BERT model for text feature extraction
 pub struct BertModel {
-    #[cfg(feature = "onnx")]
     session: Session,
-    #[cfg(not(feature = "onnx"))]
-    _marker: std::marker::PhantomData<()>,
     device: String,
-    #[cfg(feature = "onnx")]
     max_length: usize,
 }
 
 impl BertModel {
     /// Load BERT model from ONNX file
-    #[cfg(feature = "onnx")]
     pub fn load(path: &str) -> Result<Self> {
         let session = Session::builder()?
             .commit_from_file(path)
@@ -34,50 +25,41 @@ impl BertModel {
         })
     }
 
-    /// Load BERT model (placeholder when ONNX feature is disabled)
-    #[cfg(not(feature = "onnx"))]
-    pub fn load(_path: &str) -> Result<Self> {
-        Ok(Self {
-            _marker: std::marker::PhantomData,
-            device: "cpu".to_string(),
-        })
-    }
-
     /// Extract BERT features from text
-    #[cfg(feature = "onnx")]
-    pub fn extract(&self, text: &str) -> Result<Tensor> {
-        // Tokenize input (simple word-level tokenization for now)
-        let tokens: Vec<&str> = text.split_whitespace().take(self.max_length).collect();
-        let input_ids: Vec<i64> = tokens.iter().map(|t| t.len() as i64).collect();
+    pub fn extract(&mut self, text: &str) -> Result<Tensor> {
+        // Simple tokenization - convert chars to IDs
+        let chars: Vec<char> = text.chars().take(self.max_length).collect();
+        let input_ids: Vec<i64> = chars.iter().map(|&c| c as i64).collect();
+        let seq_len = input_ids.len();
 
-        // Create ONNX inputs
+        // Create attention mask (all 1s for valid tokens)
+        let attention_mask: Vec<i64> = vec![1; seq_len];
+
+        // Create ONNX inputs - need (shape, data) tuple format
+        let input_ids_array = (vec![1i64, seq_len as i64], input_ids);
+        let attention_mask_array = (vec![1i64, seq_len as i64], attention_mask);
+
         let inputs = inputs! {
-            "input_ids" => Value::from_array(input_ids)?,
-        }.map_err(|e| crate::Error::InferenceError(format!("ONNX inputs error: {}", e)))?;
+            "input_ids" => Value::from_array(input_ids_array)?,
+            "attention_mask" => Value::from_array(attention_mask_array)?,
+        };
 
         // Run inference
         let outputs = self.session.run(inputs)
             .map_err(|e| crate::Error::InferenceError(format!("ONNX run error: {}", e)))?;
 
-        // Extract features from output
-        let output_tensor = outputs["last_hidden_state"]
-            .try_extract_tensor::<f32>()
+        // Extract features from output - use known output name
+        let output_value = outputs.get("last_hidden_state")
+            .ok_or_else(|| crate::Error::InferenceError("No 'last_hidden_state' output from BERT".to_string()))?;
+
+        // Extract tensor data: try_extract_tensor returns (&Shape, &[T])
+        let (shape, data) = output_value.try_extract_tensor::<f32>()
             .map_err(|e| crate::Error::InferenceError(format!("Extract error: {}", e)))?;
 
-        // Convert to Candle tensor
-        let shape: Vec<usize> = output_tensor.shape().dims().iter().map(|&d| d as usize).collect();
-        let data: Vec<f32> = output_tensor.iter().copied().collect();
+        // Convert shape to Candle format (Shape derefs to [i64])
+        let candle_shape: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
 
-        Tensor::from_vec(data, &shape, &Device::Cpu)
-            .map_err(|e| e.into())
-    }
-
-    /// Extract BERT features from text (placeholder when ONNX feature is disabled)
-    #[cfg(not(feature = "onnx"))]
-    pub fn extract(&self, _text: &str) -> Result<Tensor> {
-        // Return dummy features for now
-        // Shape: [batch=1, hidden=768, seq_len=10]
-        Tensor::zeros((1, 768, 10), DType::F32, &Device::Cpu)
+        Tensor::from_vec(data.to_vec(), candle_shape.as_slice(), &Device::Cpu)
             .map_err(|e| e.into())
     }
 
@@ -88,14 +70,8 @@ impl BertModel {
 }
 
 impl crate::models::Model for BertModel {
-    #[cfg(feature = "onnx")]
     fn load(path: &str) -> Result<Self> {
         Self::load(path)
-    }
-
-    #[cfg(not(feature = "onnx"))]
-    fn load(_path: &str) -> Result<Self> {
-        Self::load("placeholder")
     }
 
     fn device(&self) -> &str {

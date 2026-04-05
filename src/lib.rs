@@ -90,9 +90,9 @@ pub enum Error {
     #[error("Candle error: {0}")]
     CandleError(#[from] candle_core::Error),
 
-    // ONNX error commented out - ONNX Runtime disabled
-    // #[error("ONNX error: {0}")]
-    // OnnxError(#[from] ort::Error),
+    #[cfg(feature = "onnx")]
+    #[error("ONNX Runtime error: {0}")]
+    OnnxError(#[from] ort::Error),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
