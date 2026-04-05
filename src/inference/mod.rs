@@ -183,21 +183,22 @@ impl Pipeline {
         let phoneme_ids = self.text_frontend.process(text, options.language)?;
 
         // Step 2: Extract features from reference audio
-        // Note: Hubert features require ONNX Runtime (candle-onnx or ort crate)
-        // Currently using placeholder until ONNX support is enabled
+        // Note: Hubert features require ONNX Runtime (--features onnx)
+        // Without ONNX, uses zero tensor fallback
         let _hubert_features = if let Some(hubert) = &self.hubert_model {
             hubert.extract(reference_audio.as_ref())?
         } else {
-            // Placeholder: zero tensor with expected shape [batch, time, hidden=768]
+            // Fallback: zero tensor with expected shape [batch=1, time=100, hidden=768]
             Tensor::zeros((1, 100, 768), DType::F32, &Device::Cpu)?
         };
 
         // Step 3: Get BERT features
-        // Note: BERT requires ONNX Runtime or candle-onnx
+        // Note: BERT requires ONNX Runtime (--features onnx)
+        // Without ONNX, uses zero tensor fallback
         let _bert_features = if let Some(bert) = &self.bert_model {
             bert.extract(text)?
         } else {
-            // Placeholder: zero tensor with expected shape [batch, hidden=768, seq_len]
+            // Fallback: zero tensor with expected shape [batch=1, hidden=768, seq_len=10]
             Tensor::zeros((1, 768, 10), DType::F32, &Device::Cpu)?
         };
 
