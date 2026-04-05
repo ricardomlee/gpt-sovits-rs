@@ -133,7 +133,7 @@ mod text_frontend_tests {
 
     #[test]
     fn test_g2p_converter() {
-        let converter = G2PConverter::new();
+        let converter = G2PConverter::new().expect("Failed to create G2PConverter");
 
         let result = converter.convert("测试", Language::Chinese);
         assert!(result.is_ok());

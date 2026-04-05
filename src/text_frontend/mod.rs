@@ -29,7 +29,7 @@ impl TextFrontend {
         Ok(Self {
             normalizer: TextNormalizer::new(),
             language_detector: LanguageDetector::new()?,
-            g2p_converter: G2PConverter::new(),
+            g2p_converter: G2PConverter::new()?,
             symbol_table: SymbolTable::new(),
         })
     }
