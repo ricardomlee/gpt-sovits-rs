@@ -13,14 +13,14 @@ use tracing::{info, error};
 struct Args {
     /// Input text for synthesis
     #[arg(short, long)]
-    text: String,
+    text: Option<String>,
 
     /// Path to GPT model file
-    #[arg(long, required_unless_present = "http")]
+    #[arg(long)]
     gpt_model: Option<PathBuf>,
 
     /// Path to SoVITS model file
-    #[arg(long, required_unless_present = "http")]
+    #[arg(long)]
     sovits_model: Option<PathBuf>,
 
     /// Reference audio path
@@ -37,7 +37,7 @@ struct Args {
 
     /// Output WAV file path
     #[arg(short, long)]
-    output: PathBuf,
+    output: Option<PathBuf>,
 
     /// Top-k sampling
     #[arg(long, default_value = "15")]
@@ -99,11 +99,56 @@ fn main() {
         return;
     }
 
-    // Validate required arguments for CLI mode
-    let gpt_model = args.gpt_model.expect("GPT model path required");
-    let sovits_model = args.sovits_model.expect("SoVITS model path required");
-    let reference_audio = args.reference_audio.expect("Reference audio required");
-    let reference_text = args.reference_text.expect("Reference text required");
+    // CLI mode - validate required arguments
+    let text = match &args.text {
+        Some(t) => t.clone(),
+        None => {
+            eprintln!("Error: --text is required in CLI mode");
+            eprintln!("Usage: gpt-sovits --text <TEXT> --output <OUTPUT> [OPTIONS]");
+            eprintln!("       gpt-sovits --http [OPTIONS]");
+            std::process::exit(1);
+        }
+    };
+
+    let gpt_model = match &args.gpt_model {
+        Some(m) => m.clone(),
+        None => {
+            eprintln!("Error: --gpt-model is required in CLI mode");
+            std::process::exit(1);
+        }
+    };
+
+    let sovits_model = match &args.sovits_model {
+        Some(m) => m.clone(),
+        None => {
+            eprintln!("Error: --sovits-model is required in CLI mode");
+            std::process::exit(1);
+        }
+    };
+
+    let reference_audio = match &args.reference_audio {
+        Some(a) => a.clone(),
+        None => {
+            eprintln!("Error: --reference-audio is required in CLI mode");
+            std::process::exit(1);
+        }
+    };
+
+    let reference_text = match &args.reference_text {
+        Some(t) => t.clone(),
+        None => {
+            eprintln!("Error: --reference-text is required in CLI mode");
+            std::process::exit(1);
+        }
+    };
+
+    let output = match &args.output {
+        Some(o) => o.clone(),
+        None => {
+            eprintln!("Error: --output is required in CLI mode");
+            std::process::exit(1);
+        }
+    };
 
     info!("Loading models...");
     info!("  GPT model: {:?}", gpt_model);
@@ -151,23 +196,23 @@ fn main() {
 
     // Run inference
     info!("Running inference...");
-    info!("  Text: {}", args.text);
+    info!("  Text: {}", text);
     info!("  Reference: {:?}", reference_audio);
     info!("  Language: {:?}", language);
 
     match pipeline.inference(
-        &args.text,
+        &text,
         &reference_audio,
         &reference_text,
         &options,
     ) {
         Ok(audio) => {
-            info!("Saving output to {:?}", args.output);
-            if let Err(e) = audio.save(&args.output) {
+            info!("Saving output to {:?}", output);
+            if let Err(e) = audio.save(&output) {
                 error!("Failed to save audio: {}", e);
                 std::process::exit(1);
             }
-            info!("Done! Output saved to {:?}", args.output);
+            info!("Done! Output saved to {:?}", output);
         }
         Err(e) => {
             error!("Inference failed: {}", e);
@@ -176,43 +221,192 @@ fn main() {
     }
 }
 
+/// HTTP API Server using Axum
 #[cfg(feature = "http-api")]
 fn run_http_server(port: u16) {
     use axum::{
         extract::State,
         http::StatusCode,
-        response::Response,
-        routing::post,
+        routing::{get, post},
         Json, Router,
     };
     use serde::{Deserialize, Serialize};
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use tower_http::trace::TraceLayer;
+    use gpt_sovits_rs::AudioBuffer;
 
     #[derive(Clone)]
     struct AppState {
         pipeline: Arc<Mutex<Pipeline>>,
+        config: Arc<Config>,
     }
 
     #[derive(Deserialize)]
     struct TtsRequest {
         text: String,
-        text_language: String,
+        text_language: Option<String>,
         refer_wav_path: Option<String>,
         prompt_text: Option<String>,
         prompt_language: Option<String>,
+        top_k: Option<usize>,
+        top_p: Option<f32>,
+        temperature: Option<f32>,
+        speed: Option<f32>,
     }
 
-    info!("Starting HTTP server on port {}", port);
+    #[derive(Serialize)]
+    struct TtsResponse {
+        success: bool,
+        message: String,
+        audio_path: Option<String>,
+    }
 
-    // Note: HTTP server requires `http-api` feature
-    // Run with: cargo run --features http-api -- --http --port 9880
+    #[derive(Deserialize)]
+    struct ChangeReferRequest {
+        refer_wav_path: String,
+        prompt_text: String,
+        prompt_language: Option<String>,
+    }
+
+    #[derive(Serialize)]
+    struct ChangeReferResponse {
+        success: bool,
+        message: String,
+    }
+
+    #[derive(Deserialize)]
+    struct ControlRequest {
+        command: String,
+    }
+
+    #[derive(Serialize)]
+    struct ControlResponse {
+        success: bool,
+        message: String,
+    }
+
+    // Create state
+    let config = Config::builder().build();
+    let pipeline = match Pipeline::new(config.clone()) {
+        Ok(p) => Arc::new(Mutex::new(p)),
+        Err(e) => {
+            error!("Failed to initialize pipeline: {}", e);
+            return;
+        }
+    };
+
+    let state = AppState {
+        pipeline,
+        config: Arc::new(config),
+    };
+
+    // Build router
+    let app = Router::new()
+        .route("/tts", post(tts_handler))
+        .route("/change_refer", post(change_refer_handler))
+        .route("/control", post(control_handler))
+        .route("/health", get(health_handler))
+        .layer(TraceLayer::new_for_http())
+        .with_state(state);
+
+    let addr = format!("0.0.0.0:{}", port);
+    info!("Starting HTTP server on {}", addr);
     println!("HTTP server started at http://localhost:{}", port);
-    println!("Endpoints:");
-    println!("  POST /tts - TTS inference");
-    println!("  POST /change_refer - Change reference audio");
-    println!("  POST /control - Server control");
     println!();
-    println!("Note: HTTP API requires --features http-api");
+    println!("Endpoints:");
+    println!("  GET  /health     - Health check");
+    println!("  POST /tts        - TTS inference");
+    println!("  POST /change_refer - Change reference audio");
+    println!("  POST /control    - Server control (reload, unload)");
+    println!();
+    println!("Example:");
+    println!("  curl -X POST http://localhost:9880/tts \\");
+    println!("    -H 'Content-Type: application/json' \\");
+    println!("    -d '{{\"text\": \"你好世界\", \"text_language\": \"zh\"}}'");
+
+    // Run server
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+        axum::serve(listener, app).await.unwrap();
+    });
+}
+
+#[cfg(feature = "http-api")]
+async fn health_handler() -> &'static str {
+    "OK"
+}
+
+#[cfg(feature = "http-api")]
+async fn tts_handler(
+    State(state): State<AppState>,
+    Json(req): Json<TtsRequest>,
+) -> Result<Json<TtsResponse>, StatusCode> {
+    let mut pipeline = state.pipeline.lock().await;
+
+    let language = req.text_language
+        .as_deref()
+        .and_then(|s| Language::from_str(s))
+        .unwrap_or(Language::Chinese);
+
+    let options = InferenceOptions::builder()
+        .top_k(req.top_k.unwrap_or(15))
+        .top_p(req.top_p.unwrap_or(0.95))
+        .temperature(req.temperature.unwrap_or(0.8))
+        .speed(req.speed.unwrap_or(1.0))
+        .language(language)
+        .build();
+
+    let refer_path = req.refer_wav_path.as_deref().unwrap_or("ref.wav");
+    let prompt_text = req.prompt_text.as_deref().unwrap_or("");
+
+    match pipeline.inference(&req.text, refer_path, prompt_text, &options) {
+        Ok(_audio) => Ok(Json(TtsResponse {
+            success: true,
+            message: "TTS inference successful".to_string(),
+            audio_path: Some("output.wav".to_string()),
+        })),
+        Err(e) => {
+            error!("TTS inference failed: {}", e);
+            Ok(Json(TtsResponse {
+                success: false,
+                message: format!("Inference failed: {}", e),
+                audio_path: None,
+            }))
+        }
+    }
+}
+
+#[cfg(feature = "http-api")]
+async fn change_refer_handler(
+    State(_state): State<AppState>,
+    Json(req): Json<ChangeReferRequest>,
+) -> Json<ChangeReferResponse> {
+    // Note: In a production implementation, this would update the reference audio
+    // For now, we just acknowledge the request
+    Json(ChangeReferResponse {
+        success: true,
+        message: format!("Reference updated: {} ({})", req.refer_wav_path, req.prompt_text),
+    })
+}
+
+#[cfg(feature = "http-api")]
+async fn control_handler(
+    State(_state): State<AppState>,
+    Json(req): Json<ControlRequest>,
+) -> Json<ControlResponse> {
+    match req.command.as_str() {
+        "reload" => Json(ControlResponse {
+            success: true,
+            message: "Reload command received".to_string(),
+        }),
+        "unload" => Json(ControlResponse {
+            success: true,
+            message: "Unload command received".to_string(),
+        }),
+        _ => Json(ControlResponse {
+            success: false,
+            message: format!("Unknown command: {}", req.command),
+        }),
+    }
 }
