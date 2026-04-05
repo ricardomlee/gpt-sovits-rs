@@ -6,7 +6,7 @@ use candle_core::{DType, Device, Tensor};
 use safetensors::{SafeTensors, tensor::Dtype};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 
 use crate::{Error, Result};
@@ -168,8 +168,61 @@ impl Embedding {
     }
 
     pub fn forward(&self, input: &Tensor) -> Result<Tensor> {
-        // Simple embedding lookup
-        self.weight.index_select(input, 0).map_err(|e| e.into())
+        self.embedding(input)
+    }
+
+    /// Lookup embeddings for input indices
+    /// Handles both 1D [seq_len] and 2D [batch, seq_len] inputs
+    /// Output: [batch, seq_len, hidden_dim] or [seq_len, hidden_dim] for 1D input
+    pub fn embedding(&self, input: &Tensor) -> Result<Tensor> {
+        let input_dims = input.dims();
+        let vocab_size = self.weight.dims()[0];
+        eprintln!("DEBUG embedding: START - input_dims={:?}, vocab_size={}", input_dims, vocab_size);
+        let _ = std::io::stderr().flush();
+
+        if input_dims.len() == 1 {
+            // 1D input: [seq_len] -> [seq_len, hidden_dim]
+            let seq_len = input_dims[0];
+            let indices: Vec<i64> = input.to_vec1()?;
+            eprintln!("DEBUG embedding: 1D input, seq_len={}, indices={:?}, vocab_size={}", seq_len, indices, vocab_size);
+            let mut result = Vec::with_capacity(seq_len);
+            for &idx in &indices {
+                if idx as usize >= vocab_size {
+                    eprintln!("DEBUG: idx {} out of range for vocab {}", idx, vocab_size);
+                }
+                let emb = self.weight.get(idx as usize)?;
+                result.push(emb);
+            }
+            Ok(Tensor::stack(&result, 0)?)
+        } else if input_dims.len() == 2 {
+            // 2D input: [batch, seq_len] -> [batch, seq_len, hidden_dim]
+            let batch = input_dims[0];
+            let seq_len = input_dims[1];
+            eprintln!("DEBUG embedding: 2D input, batch={}, seq_len={}, vocab_size={}", batch, seq_len, vocab_size);
+            let mut result = Vec::with_capacity(batch);
+            for b in 0..batch {
+                let batch_indices: Vec<i64> = input.narrow(0, b, 1)?.squeeze(0)?.to_vec1()?;
+                eprintln!("DEBUG: batch {} indices={:?}", b, batch_indices);
+                let mut batch_embs = Vec::with_capacity(seq_len);
+                for &idx in &batch_indices {
+                    if idx as usize >= vocab_size {
+                        eprintln!("DEBUG: idx {} out of range for vocab {}", idx, vocab_size);
+                    }
+                    let emb = self.weight.get(idx as usize)?;
+                    batch_embs.push(emb);
+                }
+                let batch_tensor = Tensor::stack(&batch_embs, 0)?;
+                result.push(batch_tensor);
+            }
+            Ok(Tensor::stack(&result, 0)?)
+        } else {
+            use candle_core::Shape;
+            Err(candle_core::Error::UnexpectedShape {
+                msg: "Embedding input must be 1D or 2D".to_string(),
+                expected: Shape::from(&[1usize]),
+                got: Shape::from(input.dims()),
+            }.into())
+        }
     }
 
     pub fn num_embeddings(&self) -> usize {
@@ -195,14 +248,33 @@ impl Linear {
 
     pub fn forward(&self, input: &Tensor) -> Result<Tensor> {
         // Matrix multiplication: input @ weight.T
+        // Handle both 2D [batch, hidden] and 3D [batch, seq, hidden] inputs
+        let input_dims = input.dims();
         let weight_t = self.weight.t()?;
-        let output = input.matmul(&weight_t)?;
+
+        let output = if input_dims.len() == 3 {
+            // 3D input: [batch, seq, hidden] -> reshape to [batch*seq, hidden] -> matmul -> reshape back
+            let (batch, seq, hidden) = (input_dims[0], input_dims[1], input_dims[2]);
+            let flat = input.reshape((batch * seq, hidden))?;
+            let result = flat.matmul(&weight_t)?;
+            result.reshape((batch, seq, self.weight.dims()[0]))?
+        } else {
+            // 2D input: [batch, hidden]
+            input.matmul(&weight_t)?
+        };
 
         match &self.bias {
             Some(bias) => {
                 let bias_len = bias.dims()[0];
-                let bias_reshaped = bias.reshape(&[1, 1, bias_len])?;
-                Ok(output.broadcast_add(&bias_reshaped)?)
+                // Convert bias to match output dtype
+                let bias_converted = bias.to_dtype(output.dtype())?;
+                if output.dims().len() == 3 {
+                    let bias_reshaped = bias_converted.reshape(&[1, 1, bias_len])?;
+                    Ok(output.broadcast_add(&bias_reshaped)?)
+                } else {
+                    let bias_reshaped = bias_converted.reshape(&[1, bias_len])?;
+                    Ok(output.broadcast_add(&bias_reshaped)?)
+                }
             }
             None => Ok(output),
         }
@@ -249,7 +321,11 @@ impl LayerNorm {
         let mean = input.mean_keepdim(candle_core::D::Minus1)?;
         let centered = input.broadcast_sub(&mean)?;
         let var = centered.sqr()?.mean_keepdim(candle_core::D::Minus1)?;
-        let eps = Tensor::full(self.eps, var.dims(), &var.device())?;
+
+        // Convert eps to match input dtype
+        let eps_val = self.eps as f32;
+        let eps = Tensor::full(eps_val, var.dims(), &var.device())?;
+        let eps = eps.to_dtype(var.dtype())?;
         let std = var.add(&eps)?.sqrt()?;
         let normalized = centered.broadcast_div(&std)?;
 

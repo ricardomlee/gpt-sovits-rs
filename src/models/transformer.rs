@@ -51,15 +51,23 @@ impl MultiHeadAttention {
         // Scaled dot-product attention: attn = softmax(Q @ K^T / sqrt(d_k))
         let k_t = k.transpose(D::Minus2, D::Minus1)?;
         let attn_weights = q.matmul(&k_t)?;
-        let scale_tensor = Tensor::full(self.scale, attn_weights.dims(), &attn_weights.device())?;
+
+        // Apply scale - convert to match attn_weights dtype
+        let scale_val = self.scale as f32;
+        let scale_tensor = Tensor::full(scale_val, attn_weights.dims(), &attn_weights.device())?;
+        let scale_tensor = scale_tensor.to_dtype(attn_weights.dtype())?;
         let attn_weights = attn_weights.broadcast_mul(&scale_tensor)?;
 
         // Apply causal mask if provided
         let attn_weights = if let Some(m) = mask {
             // Expand mask to match attention weights shape
             let mask_expanded = m.broadcast_left((batch_size, self.n_heads))?;
+            // Convert mask to match attn_weights dtype
+            let mask_expanded = mask_expanded.to_dtype(attn_weights.dtype())?;
             // Mask with a large negative value for positions we want to ignore
-            let neg_inf = Tensor::full(-1e9f32, attn_weights.dims(), &attn_weights.device())?;
+            let neg_inf_val = -1e9f32;
+            let neg_inf = Tensor::full(neg_inf_val, attn_weights.dims(), &attn_weights.device())?;
+            let neg_inf = neg_inf.to_dtype(attn_weights.dtype())?;
             let mask_weighted = mask_expanded.broadcast_mul(&neg_inf)?;
             attn_weights.add(&mask_weighted)?
         } else {
@@ -385,5 +393,142 @@ mod tests {
         // First row should be [1, 0, 0, 0]
         assert_eq!(mask_vec[0], 1.0);
         assert_eq!(mask_vec[1], 0.0);
+    }
+}
+
+/// Transformer for GPT-SoVITS with fused QKV and SwiGLU
+#[derive(Debug, Clone)]
+pub struct TransformerGPTSoVITS {
+    pub config: TransformerConfig,
+    token_embedding: Embedding,
+    layers: Vec<TransformerBlock>,
+    device: Device,
+}
+
+impl TransformerGPTSoVITS {
+    pub fn new(config: TransformerConfig, weights: &StateDict, device: &Device) -> Result<Self> {
+        // Load text embedding
+        let token_embedding = weights.get_embedding("model.ar_text_embedding.word_embeddings.weight")?;
+
+        // Create transformer layers with GPT-SoVITS format
+        let mut layers = Vec::with_capacity(config.num_hidden_layers);
+        for i in 0..config.num_hidden_layers {
+            let prefix = format!("model.h.layers.{}", i);
+
+            // Load fused QKV projection: [hidden * 3, hidden]
+            // Split into separate Q, K, V weights
+            let in_proj_weight = weights.get(&format!("{}.self_attn.in_proj_weight", prefix))?
+                .to_device(device)?;
+            let in_proj_bias = weights.get(&format!("{}.self_attn.in_proj_bias", prefix))?
+                .to_device(device)?;
+
+            // Split QKV weight into three parts: [hidden, hidden] each
+            let hidden = config.hidden_size;
+            let q_weight = in_proj_weight.narrow(0, 0, hidden)?;
+            let k_weight = in_proj_weight.narrow(0, hidden, hidden)?;
+            let v_weight = in_proj_weight.narrow(0, hidden * 2, hidden)?;
+
+            // Split QKV bias into three parts
+            let q_bias = in_proj_bias.narrow(0, 0, hidden)?;
+            let k_bias = in_proj_bias.narrow(0, hidden, hidden)?;
+            let v_bias = in_proj_bias.narrow(0, hidden * 2, hidden)?;
+
+            // Create Linear weights manually
+            let wq = Linear::new(q_weight, Some(q_bias));
+            let wk = Linear::new(k_weight, Some(k_bias));
+            let wv = Linear::new(v_weight, Some(v_bias));
+
+            // Load output projection
+            let wo_weight = weights.get(&format!("{}.self_attn.out_proj.weight", prefix))?
+                .to_device(device)?;
+            let wo_bias = weights.get(&format!("{}.self_attn.out_proj.bias", prefix))?
+                .to_device(device)?;
+            let wo = Linear::new(wo_weight, Some(wo_bias));
+
+            let attn = MultiHeadAttention::new(wq, wk, wv, wo, config.num_attention_heads);
+
+            // Load FFN
+            // GPT-SoVITS uses SwiGLU with: linear1 (gate), linear2 (output)
+            // But we need w1 (gate), w2 (out), w3 (up) for our FeedForward
+            // Looking at shapes: linear1.weight [2048, 512], linear2.weight [512, 2048]
+            // This means linear1 is the gate projection and linear2 is the output
+            // For SwiGLU we need a separate up projection - GPT-SoVITS may use the same weights for gate and up
+            let linear1_weight = weights.get(&format!("{}.linear1.weight", prefix))?
+                .to_device(device)?;
+            let linear1_bias = weights.get(&format!("{}.linear1.bias", prefix))?
+                .to_device(device)?;
+            let linear2_weight = weights.get(&format!("{}.linear2.weight", prefix))?
+                .to_device(device)?;
+            let linear2_bias = weights.get(&format!("{}.linear2.bias", prefix))?
+                .to_device(device)?;
+
+            // Use linear1 for both gate (w1) and up (w3), linear2 for output (w2)
+            let w1 = Linear::new(linear1_weight.clone(), Some(linear1_bias.clone()));
+            let w3 = Linear::new(linear1_weight.clone(), Some(linear1_bias.clone()));
+            let w2 = Linear::new(linear2_weight, Some(linear2_bias));
+
+            let ff = FeedForward::new(w1, w2, w3);
+
+            // Load layer norms
+            let attn_norm = weights.get_layer_norm(&format!("{}.norm1", prefix))?;
+            let ffn_norm = weights.get_layer_norm(&format!("{}.norm2", prefix))?;
+
+            let block = TransformerBlock::new(attn, ff, attn_norm, ffn_norm);
+            layers.push(block);
+        }
+
+        // GPT-SoVITS doesn't have a final layer norm
+
+        Ok(Self {
+            config,
+            token_embedding,
+            layers,
+            device: device.clone(),
+        })
+    }
+
+    /// Create causal attention mask
+    pub fn create_causal_mask(seq_len: usize, device: &Device) -> Result<Tensor> {
+        Transformer::create_causal_mask(seq_len, device)
+    }
+
+    /// Forward pass without position embeddings (uses RoPE internally or none)
+    pub fn forward(&self, input_ids: &Tensor) -> Result<Tensor> {
+        let (_, seq_len) = input_ids.dims2()?;
+
+        // Get token embeddings
+        let mut x = self.token_embedding.forward(input_ids)?;
+
+        // Create causal mask
+        let causal_mask = Self::create_causal_mask(seq_len, &self.device)?;
+
+        // Apply transformer layers
+        for layer in &self.layers {
+            x = layer.forward(&x, Some(&causal_mask))?;
+        }
+
+        Ok(x)
+    }
+
+    /// Forward pass from pre-computed embeddings
+    pub fn forward_from_embedding(&self, embeddings: &Tensor) -> Result<Tensor> {
+        let (_, seq_len, _) = embeddings.dims3()?;
+
+        let mut x = embeddings.clone();
+
+        // Create causal mask
+        let causal_mask = Self::create_causal_mask(seq_len, &self.device)?;
+
+        // Apply transformer layers
+        for layer in &self.layers {
+            x = layer.forward(&x, Some(&causal_mask))?;
+        }
+
+        Ok(x)
+    }
+
+    /// Get hidden size
+    pub fn hidden_size(&self) -> usize {
+        self.config.hidden_size
     }
 }

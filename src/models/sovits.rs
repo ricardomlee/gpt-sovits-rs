@@ -21,7 +21,10 @@ pub struct SoVITSModel {
 /// Text encoder for phoneme features
 pub struct TextEncoder {
     embedding: Tensor,
+    #[allow(dead_code)]
     layers: Vec<EncoderLayer>,
+    #[allow(dead_code)]
+    hidden_size: usize,
 }
 
 struct EncoderLayer {
@@ -177,8 +180,9 @@ impl SoVITSModel {
 
 impl TextEncoder {
     pub fn new(state_dict: &StateDict, device: &Device) -> Result<Self> {
-        // Try to load embedding, use defaults if not found
-        let embedding = state_dict.get("text_encoder.embedding.weight")
+        // Try to load embedding from GPT-SoVITS checkpoint
+        // Key: enc_p.text_embedding.weight [vocab_size=322, hidden=192]
+        let embedding = state_dict.get("enc_p.text_embedding.weight")
             .ok()
             .cloned()
             .unwrap_or_else(|| {
@@ -186,36 +190,32 @@ impl TextEncoder {
                 Tensor::zeros((512, 256), DType::F32, device).unwrap()
             });
 
+        let hidden_size = embedding.dims()[1];
+
         // Create encoder layers (simplified - just one layer for now)
-        let mut layers = Vec::new();
+        let layers = Vec::new();
 
-        // Try to load conv layers
-        if state_dict.contains("text_encoder.conv1.weight") {
-            let conv1_weight = state_dict.get("text_encoder.conv1.weight")?.clone();
-            let conv1_bias = state_dict.get("text_encoder.conv1.bias").ok().cloned();
-            let conv1 = Conv1d::new(conv1_weight, conv1_bias, 1, 1, 1);
-
-            let conv2_weight = state_dict.get("text_encoder.conv2.weight")?.clone();
-            let conv2_bias = state_dict.get("text_encoder.conv2.bias").ok().cloned();
-            let conv2 = Conv1d::new(conv2_weight, conv2_bias, 1, 1, 1);
-
-            let norm = state_dict.get_layer_norm("text_encoder.norm").ok()
-                .unwrap_or_else(|| LayerNorm::new(
-                    Tensor::ones(256, DType::F32, device).unwrap(),
-                    Tensor::zeros(256, DType::F32, device).unwrap(),
-                ));
-
-            layers.push(EncoderLayer { conv1, conv2, norm });
+        // Try to load conv layers from enc_p.encoder_text
+        if state_dict.contains("enc_p.encoder_text.attn_layers.0.conv_q.weight") {
+            // Note: The actual GPT-SoVITS model uses a different architecture
+            // For now, we'll skip loading these complex layers
+            // and use a simplified encode path
         }
 
-        Ok(Self { embedding, layers })
+        Ok(Self {
+            embedding,
+            layers,
+            #[allow(dead_code)]
+            hidden_size,
+        })
     }
 
     pub fn encode(&self, input: &Tensor) -> Result<Tensor> {
         // Get embeddings: [1, seq_len] -> [1, seq_len, hidden_dim]
-        let mut x = self.embedding.index_select(input, 0)?;
+        // Use our custom embedding lookup that handles 2D inputs
+        let mut x = self.embedding_lookup(input)?;
 
-        // Apply encoder layers
+        // Apply encoder layers if available
         for layer in &self.layers {
             // Transpose for conv: [1, seq_len, hidden] -> [1, hidden, seq_len]
             let x_t = x.transpose(1, 2)?;
@@ -229,6 +229,37 @@ impl TextEncoder {
         }
 
         Ok(x)
+    }
+
+    /// Custom embedding lookup for 2D input
+    fn embedding_lookup(&self, input: &Tensor) -> Result<Tensor> {
+        let dims = input.dims();
+        if dims.len() != 2 {
+            return Err(candle_core::Error::UnexpectedShape {
+                msg: "Expected 2D input for embedding".to_string(),
+                expected: candle_core::Shape::from(&[1usize, 1]),
+                got: candle_core::Shape::from(dims),
+            }.into());
+        }
+
+        let (batch, seq_len) = (dims[0], dims[1]);
+
+        // Flatten to 1D for processing
+        let indices_flat: Vec<i64> = input.flatten_all()?.to_vec1()?;
+
+        // Lookup each index and stack
+        let mut embeddings = Vec::with_capacity(indices_flat.len());
+        for &idx in &indices_flat {
+            let emb = self.embedding.get(idx as usize)?;
+            embeddings.push(emb);
+        }
+
+        // Stack: [batch*seq_len, hidden]
+        let stacked = Tensor::stack(&embeddings, 0)?;
+
+        // Reshape to [batch, seq_len, hidden]
+        stacked.reshape((batch, seq_len, self.embedding.dims()[1]))
+            .map_err(|e| e.into())
     }
 }
 

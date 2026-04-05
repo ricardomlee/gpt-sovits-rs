@@ -1,16 +1,60 @@
 //! GPT Model for semantic token prediction
+//!
+//! This module implements the GPT model from GPT-SoVITS, which uses:
+//! - Fused QKV projection (in_proj_weight combines Q, K, V weights)
+//! - RoPE (Rotary Position Embedding) instead of learned positions
+//! - Separate text and audio embeddings
+//! - BERT feature projection
 
 use candle_core::{Device, DType, Tensor, D};
 use candle_nn::ops::softmax;
 use crate::{Result, Error};
 use crate::utils::{StateDict, load_safetensors};
-use super::transformer::{Transformer, TransformerConfig};
+use super::transformer::{TransformerGPTSoVITS, TransformerConfig};
 
 /// GPT Model for semantic token prediction
 pub struct GPTModel {
-    transformer: Transformer,
+    text_embedding: Tensor,      // model.ar_text_embedding.word_embeddings.weight [vocab_size, hidden_size]
+    #[allow(dead_code)]
+    audio_embedding: Tensor,     // model.ar_audio_embedding.word_embeddings.weight [1025, hidden_size]
+    #[allow(dead_code)]
+    bert_proj: Option<(Tensor, Tensor)>, // (weight, bias) for BERT features [512, 1024], [512]
+    transformer: TransformerGPTSoVITS,
+    ar_predict_layer: Tensor,    // output projection [vocab_size, hidden_size]
     device: Device,
     dtype: DType,
+    vocab_size: usize,
+}
+
+/// Lookup embeddings from a tensor table
+fn embedding_lookup(embedding_table: &Tensor, indices: &Tensor) -> Result<Tensor> {
+    let dims = indices.dims();
+    if dims.len() != 2 {
+        return Err(candle_core::Error::UnexpectedShape {
+            msg: "Expected 2D input for embedding".to_string(),
+            expected: candle_core::Shape::from(&[1usize, 1]),
+            got: candle_core::Shape::from(dims),
+        }.into());
+    }
+
+    let (batch, seq_len) = (dims[0], dims[1]);
+
+    // Flatten indices to 1D for processing
+    let indices_flat: Vec<i64> = indices.flatten_all()?.to_vec1()?;
+
+    // Lookup each index and stack
+    let mut embeddings = Vec::with_capacity(indices_flat.len());
+    for &idx in &indices_flat {
+        let emb = embedding_table.get(idx as usize)?;
+        embeddings.push(emb);
+    }
+
+    // Stack: [batch*seq_len, hidden]
+    let stacked = Tensor::stack(&embeddings, 0)?;
+
+    // Reshape to [batch, seq_len, hidden]
+    stacked.reshape((batch, seq_len, embedding_table.dims()[1]))
+        .map_err(|e| e.into())
 }
 
 impl GPTModel {
@@ -25,40 +69,68 @@ impl GPTModel {
         let weights_map = load_safetensors(path)?;
         let state_dict = StateDict::new(weights_map);
 
-        // Infer config from weights
-        let vocab_size = state_dict.get("tok_emb.weight")?.dims()[0];
-        let hidden_size = state_dict.get("tok_emb.weight")?.dims()[1];
+        // Load text embedding: [vocab_size, hidden_size]
+        let text_emb_key = "model.ar_text_embedding.word_embeddings.weight";
+        let text_embedding = state_dict.get(text_emb_key)?
+            .to_device(device)?;
 
-        // Count number of layers
+        let vocab_size = text_embedding.dims()[0];
+        let hidden_size = text_embedding.dims()[1];
+
+        // Load audio embedding: [1025, hidden_size]
+        let audio_emb_key = "model.ar_audio_embedding.word_embeddings.weight";
+        let audio_embedding = state_dict.get(audio_emb_key)?
+            .to_device(device)?;
+
+        // Load BERT projection (optional): weight [512, 1024], bias [512]
+        let bert_proj = if state_dict.contains("model.bert_proj.weight") {
+            let bert_weight = state_dict.get("model.bert_proj.weight")?.to_device(device)?;
+            let bert_bias = state_dict.get("model.bert_proj.bias")?.to_device(device)?;
+            Some((bert_weight, bert_bias))
+        } else {
+            None
+        };
+
+        // Count number of transformer layers
         let mut num_hidden_layers = 0;
         for key in state_dict.keys() {
-            if key.starts_with("layers.") && key.contains(".attention.wq") {
+            if key.starts_with("model.h.layers.") && key.contains(".self_attn.in_proj_weight") {
                 num_hidden_layers += 1;
             }
         }
 
-        // Infer number of attention heads
-        let wq_out_features = state_dict.get("layers.0.attention.wq.weight")?.dims()[0];
-        let num_attention_heads = if hidden_size == 512 { 8 } else { wq_out_features / (hidden_size / num_hidden_layers.max(1)) };
+        // Infer number of attention heads (GPT-SoVITS uses 8 heads for 512 hidden)
+        let num_attention_heads = 8;
 
-        let max_seq_len = state_dict.get("pos_emb.weight")?.dims()[0];
+        // Get intermediate size from FFN
+        let intermediate_size = state_dict.get("model.h.layers.0.linear1.weight")?.dims()[0];
 
+        // Create config for transformer
         let config = TransformerConfig {
             vocab_size,
             hidden_size,
-            intermediate_size: state_dict.get("layers.0.ffn.w1.weight")?.dims()[0],
+            intermediate_size,
             num_hidden_layers,
             num_attention_heads,
-            max_seq_len,
+            max_seq_len: 2048,
         };
 
-        // Create transformer
-        let transformer = Transformer::new(config, &state_dict, device)?;
+        // Create transformer with GPT-SoVITS style weights
+        let transformer = TransformerGPTSoVITS::new(config, &state_dict, device)?;
+
+        // Load output projection: [vocab_size, hidden_size]
+        let ar_predict_layer = state_dict.get("model.ar_predict_layer.weight")?
+            .to_device(device)?;
 
         Ok(Self {
+            text_embedding,
+            audio_embedding,
+            bert_proj,
             transformer,
+            ar_predict_layer,
             device: device.clone(),
             dtype: DType::F32,
+            vocab_size,
         })
     }
 
@@ -157,17 +229,25 @@ impl GPTModel {
         for _ in 0..max_new_tokens {
             let seq_len = current_ids.dims()[1];
 
-            // Forward pass through transformer
-            let logits = self.transformer.forward(&current_ids)?;
+            // Get token embeddings
+            let token_emb = embedding_lookup(&self.text_embedding, &current_ids)?;
 
-            // Get logits for the last position: [1, seq_len, vocab_size] -> [vocab_size]
-            let last_logits = logits.narrow(1, seq_len - 1, 1)?.squeeze(0)?;
+            // Forward pass through transformer
+            let hidden = self.transformer.forward_from_embedding(&token_emb)?;
+
+            // Project to vocab: [1, seq_len, hidden] @ [vocab, hidden]^T -> [1, seq_len, vocab]
+            // ar_predict_layer is [vocab, hidden], so we need to transpose
+            let last_hidden = hidden.narrow(1, seq_len - 1, 1)?; // [1, 1, hidden]
+            let last_hidden = last_hidden.squeeze(0)?; // [1, hidden]
+            // last_hidden is now [1, hidden], matmul with [hidden, vocab] -> [1, vocab]
+            let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?; // [1, vocab]
+            let logits = logits.squeeze(0)?; // [vocab]
 
             // Sample next token
-            let next_token = Self::sample_token(&last_logits, top_k, top_p, temperature)?;
+            let next_token = Self::sample_token(&logits, top_k, top_p, temperature)?;
 
-            // Check for end-of-sequence token (assuming vocab_size - 1 is EOS)
-            if next_token >= self.transformer.config.vocab_size - 1 {
+            // Check for end-of-sequence token
+            if next_token >= self.vocab_size - 1 {
                 break;
             }
 
