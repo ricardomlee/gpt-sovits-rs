@@ -26,8 +26,13 @@ pub struct GPTModel {
     vocab_size: usize,
 }
 
-/// Lookup embeddings from a tensor table
-fn embedding_lookup(embedding_table: &Tensor, indices: &Tensor) -> Result<Tensor> {
+/// Lookup embeddings handling both text and audio tokens
+fn mixed_embedding_lookup(
+    text_emb: &Tensor,
+    audio_emb: &Tensor,
+    indices: &Tensor,
+    text_vocab_size: usize,
+) -> Result<Tensor> {
     let dims = indices.dims();
     if dims.len() != 2 {
         return Err(candle_core::Error::UnexpectedShape {
@@ -38,15 +43,32 @@ fn embedding_lookup(embedding_table: &Tensor, indices: &Tensor) -> Result<Tensor
     }
 
     let (batch, seq_len) = (dims[0], dims[1]);
-    let device = embedding_table.device();
+    let hidden_size = text_emb.dims()[1];
+    let device = text_emb.device();
 
     // Flatten indices to 1D for processing
     let indices_flat: Vec<i64> = indices.flatten_all()?.to_vec1()?;
 
-    // Lookup each index and stack
+    // Lookup each index - text tokens use text_emb, audio tokens use audio_emb
     let mut embeddings = Vec::with_capacity(indices_flat.len());
     for &idx in &indices_flat {
-        let emb = embedding_table.get(idx as usize)?;
+        let emb = if (idx as usize) < text_vocab_size {
+            // Text token - use text embedding
+            text_emb.get(idx as usize)?
+        } else {
+            // Audio/semantic token - use audio embedding
+            // Audio tokens are in range [0, audio_vocab), so subtract text_vocab_size
+            let audio_idx = (idx as usize).saturating_sub(text_vocab_size);
+            if audio_idx >= audio_emb.dims()[0] {
+                eprintln!("WARN: audio_idx {} out of range for audio_emb {:?}", audio_idx, audio_emb.dims());
+                return Err(candle_core::Error::UnexpectedShape {
+                    msg: format!("Audio token index {} out of range [0, {})", audio_idx, audio_emb.dims()[0]),
+                    expected: candle_core::Shape::from(&[1usize, 1]),
+                    got: candle_core::Shape::from(&[audio_idx, 1]),
+                }.into());
+            }
+            audio_emb.get(audio_idx)?
+        };
         embeddings.push(emb);
     }
 
@@ -54,7 +76,7 @@ fn embedding_lookup(embedding_table: &Tensor, indices: &Tensor) -> Result<Tensor
     let stacked = Tensor::stack(&embeddings, 0)?.to_device(device)?;
 
     // Reshape to [batch, seq_len, hidden]
-    stacked.reshape((batch, seq_len, embedding_table.dims()[1]))
+    stacked.reshape((batch, seq_len, hidden_size))
         .map_err(|e| e.into())
 }
 
@@ -230,11 +252,11 @@ impl GPTModel {
         let max_new_tokens = 200; // Maximum tokens to generate
 
         // Autoregressive generation
-        for _ in 0..max_new_tokens {
+        for _step in 0..max_new_tokens {
             let seq_len = current_ids.dims()[1];
 
-            // Get token embeddings
-            let token_emb = embedding_lookup(&self.text_embedding, &current_ids)?;
+            // Get token embeddings - use mixed lookup for text + audio tokens
+            let token_emb = mixed_embedding_lookup(&self.text_embedding, &self.audio_embedding, &current_ids, self.vocab_size)?;
 
             // Forward pass through transformer
             let hidden = self.transformer.forward_from_embedding(&token_emb)?;
@@ -250,8 +272,9 @@ impl GPTModel {
             // Sample next token
             let next_token = Self::sample_token(&logits, top_k, top_p, temperature)?;
 
-            // Check for end-of-sequence token
-            if next_token >= self.vocab_size - 1 {
+            // Check for end-of-sequence token (EOS is the last token in audio vocab)
+            let audio_vocab_size = self.ar_predict_layer.dims()[0];
+            if next_token >= audio_vocab_size - 1 {
                 break;
             }
 

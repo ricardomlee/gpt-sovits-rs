@@ -27,6 +27,10 @@ struct Args {
     #[arg(long)]
     sovits_model: Option<PathBuf>,
 
+    /// Path to BigVGAN model file
+    #[arg(long)]
+    bigvgan_model: Option<PathBuf>,
+
     /// Reference audio path
     #[arg(long)]
     reference_audio: Option<PathBuf>,
@@ -190,6 +194,17 @@ fn main() {
     if let Err(e) = pipeline.load_sovits(&sovits_model) {
         error!("Failed to load SoVITS model: {}", e);
         std::process::exit(1);
+    }
+
+    // Load BigVGAN model (optional but recommended for proper audio synthesis)
+    if let Some(ref bigvgan_path) = args.bigvgan_model {
+        info!("Loading BigVGAN model...");
+        if let Err(e) = pipeline.load_bigvgan(bigvgan_path) {
+            error!("Failed to load BigVGAN model: {}", e);
+            std::process::exit(1);
+        }
+    } else {
+        info!("BigVGAN model not specified, using fallback synthesis");
     }
 
     // Parse language
