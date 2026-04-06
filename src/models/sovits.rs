@@ -79,9 +79,9 @@ impl SoVITSModel {
         // So we need to project from 192 to 512 first
         let features = self.enc_q.encode(&embeddings)?;
 
-        // For now, return features as mel spectrogram proxy
-        // TODO: Implement full flow + decoder
-        Ok(features)
+        // Narrow to n_mels channels
+        let mel_spec = features.narrow(1, 0, self.n_mels)?;
+        Ok(mel_spec)
     }
 
     /// Lookup embeddings for semantic tokens
@@ -155,10 +155,14 @@ impl EncoderQ {
 
     pub fn encode(&self, tokens: &Tensor) -> Result<Tensor> {
         // tokens: [1, 192, seq_len]
-        let h = tokens.clone();
-
-        // Return original tokens for now - full enc_q implementation is complex
-        // TODO: Implement proper enc_q with channel projection
+        let mut h = self.cond_layer.forward(tokens)?;
+        for (in_layer, res_skip_layer) in self.in_layers.iter().zip(self.res_skip_layers.iter()) {
+            let residual = h.clone();
+            let x = in_layer.forward(&h)?;
+            let x = x.relu()?;
+            let x = res_skip_layer.forward(&x)?;
+            h = x.broadcast_add(&residual)?;
+        }
         Ok(h)
     }
 }
