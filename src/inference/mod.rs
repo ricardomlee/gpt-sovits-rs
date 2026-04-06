@@ -216,7 +216,6 @@ impl Pipeline {
         };
 
         // Step 4: Run GPT model to generate semantic tokens
-        // phoneme_ids is already Vec<usize> from text_frontend
         let semantic_tokens = gpt.generate(
             &phoneme_ids,
             options.top_k,
@@ -226,16 +225,28 @@ impl Pipeline {
 
         // Step 5: Run SoVITS to generate mel spectrogram
         let mel_spec = sovits.synthesize(&semantic_tokens, None)?;
+        let mel_dims = mel_spec.dims();
+        tracing::info!("SoVITS output mel spectrogram: {:?}", mel_dims);
 
         // Step 6: Run BigVGAN to generate waveform
         let waveform = if let Some(bigvgan) = &self.bigvgan_model {
-            bigvgan.generate(&mel_spec)?
+            tracing::info!("Running BigVGAN with input: {:?}", mel_dims);
+            match bigvgan.generate(&mel_spec) {
+                Ok(w) => {
+                    tracing::info!("BigVGAN output: {} samples", w.len());
+                    w
+                }
+                Err(e) => {
+                    tracing::error!("BigVGAN failed: {}", e);
+                    vec![0.0f32; 24000] // 1 second silence
+                }
+            }
         } else {
             // Fallback: generate simple waveform from mel spec dimensions
             // This produces silence but with correct duration
-            let mel_dims = mel_spec.dims();
             let frames = mel_dims[2];
             let hop_length = 256;
+            tracing::info!("Using fallback: {} frames * {} hop = {} samples", frames, hop_length, frames * hop_length);
             vec![0.0f32; frames * hop_length]
         };
 

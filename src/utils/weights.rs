@@ -2,7 +2,7 @@
 //!
 //! Utilities for loading and converting model weights from safetensors format
 
-use candle_core::{DType, Device, Tensor};
+use candle_core::{DType, Device, Tensor, D};
 use safetensors::{SafeTensors, tensor::Dtype};
 use std::collections::HashMap;
 use std::fs::File;
@@ -434,11 +434,25 @@ impl Conv1dWeightNorm {
     /// Compute actual weight from g/v decomposition
     pub fn get_weight(&self) -> Result<Tensor> {
         // weight = (weight_v / ||weight_v||) * weight_g
-        // Manual norm: sqrt(sum(weight_v^2))
+        // weight_g: [out_channels, in_channels, kernel] (same shape as weight_v)
+        // weight_v: [out_channels, in_channels, kernel]
+        // Need to compute norm per output channel
+
+        // Compute ||weight_v|| per output channel
+        // weight_v: [out_ch, in_ch, kernel] -> norm: [out_ch]
         let v_squared = self.weight_v.sqr()?;
-        let v_sum = v_squared.sum_all()?;
-        let v_norm = v_sum.sqrt()?;
-        let v_normalized = self.weight_v.broadcast_div(&v_norm)?;
+        // Sum over in_channels and kernel dimensions (dims 1 and 2)
+        let v_sum_in = v_squared.sum(D::Minus1)?; // [out_ch, in_ch] -> [out_ch]
+        let v_sum = v_sum_in.sum(D::Minus1)?; // [out_ch]
+        let v_norm = v_sum.sqrt()?; // [out_ch]
+
+        // Reshape v_norm to [out_ch, 1, 1] for broadcasting
+        let weight_v_dims = self.weight_v.dims();
+        let out_channels = weight_v_dims[0];
+        let v_norm_reshaped = v_norm.reshape((out_channels, 1, 1))?;
+
+        // weight = weight_v / v_norm * weight_g
+        let v_normalized = self.weight_v.broadcast_div(&v_norm_reshaped)?;
         Ok(v_normalized.broadcast_mul(&self.weight_g)?)
     }
 

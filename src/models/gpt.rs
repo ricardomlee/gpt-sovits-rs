@@ -249,7 +249,7 @@ impl GPTModel {
             .unsqueeze(0)?;
 
         let mut generated_tokens = Vec::new();
-        let max_new_tokens = 500; // Maximum tokens to generate - increased for longer utterances
+        let max_new_tokens = 500;
 
         // Autoregressive generation
         for _step in 0..max_new_tokens {

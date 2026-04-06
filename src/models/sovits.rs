@@ -69,7 +69,6 @@ impl SoVITSModel {
         }
 
         // Convert semantic tokens to one-hot like tensor for conv1d
-        // semantic_tokens: [seq_len] with values 0-1024 -> tensor: [1, 1025, seq_len]
         let seq_len = semantic_tokens.len();
         let mut token_tensor = vec![0.0f32; 1025 * seq_len];
         for (i, &token) in semantic_tokens.iter().enumerate() {
@@ -79,17 +78,15 @@ impl SoVITSModel {
         }
         let token_tensor = Tensor::from_vec(token_tensor, (1, 1025, seq_len), &self.device)?;
 
-        // Step 1: Project through pre layer: [1, 1025, seq_len] -> [1, 192, seq_len]
+        // Step 1: Project through pre layer
         let embeddings = self.pre_layer.forward(&token_tensor)?;
 
-        // Step 2: Transpose for enc_q conv1d: [1, 192, seq_len]
-        // Already in correct format for conv1d
-
-        // Step 3: Run through enc_q
+        // Step 2: Run through enc_q
         let features = self.enc_q.encode(&embeddings)?;
 
         // Narrow to n_mels channels
         let mel_spec = features.narrow(1, 0, self.n_mels)?;
+
         Ok(mel_spec)
     }
 
