@@ -21,22 +21,32 @@ impl BertModel {
     /// Load BERT model from ONNX file
     #[cfg(feature = "onnx")]
     pub fn load(path: &str) -> Result<Self> {
+        Self::load_with_device(path, "cpu")
+    }
+
+    #[cfg(feature = "onnx")]
+    pub fn load_with_device(path: &str, device: &str) -> Result<Self> {
         let session = Session::builder()?
             .commit_from_file(path)
             .map_err(|e| crate::Error::ModelLoadError(format!("Failed to load ONNX: {}", e)))?;
 
         Ok(Self {
             session,
-            device: "cpu".to_string(),
+            device: device.to_string(),
             max_length: 512,
         })
     }
 
     #[cfg(not(feature = "onnx"))]
     pub fn load(_path: &str) -> Result<Self> {
+        Self::load_with_device(_path, "cpu")
+    }
+
+    #[cfg(not(feature = "onnx"))]
+    pub fn load_with_device(_path: &str, device: &str) -> Result<Self> {
         Ok(Self {
             _marker: std::marker::PhantomData,
-            device: "cpu".to_string(),
+            device: device.to_string(),
             max_length: 512,
         })
     }

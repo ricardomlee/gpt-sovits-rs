@@ -38,6 +38,7 @@ fn embedding_lookup(embedding_table: &Tensor, indices: &Tensor) -> Result<Tensor
     }
 
     let (batch, seq_len) = (dims[0], dims[1]);
+    let device = embedding_table.device();
 
     // Flatten indices to 1D for processing
     let indices_flat: Vec<i64> = indices.flatten_all()?.to_vec1()?;
@@ -50,7 +51,7 @@ fn embedding_lookup(embedding_table: &Tensor, indices: &Tensor) -> Result<Tensor
     }
 
     // Stack: [batch*seq_len, hidden]
-    let stacked = Tensor::stack(&embeddings, 0)?;
+    let stacked = Tensor::stack(&embeddings, 0)?.to_device(device)?;
 
     // Reshape to [batch, seq_len, hidden]
     stacked.reshape((batch, seq_len, embedding_table.dims()[1]))

@@ -98,6 +98,7 @@ pub struct Pipeline {
     #[allow(dead_code)]
     config: Config,
     text_frontend: TextFrontend,
+    device: Device,
     gpt_model: Option<GPTModel>,
     sovits_model: Option<SoVITSModel>,
     bert_model: Option<BertModel>,
@@ -108,9 +109,11 @@ pub struct Pipeline {
 impl Pipeline {
     /// Create a new pipeline with configuration
     pub fn new(config: Config) -> Result<Self> {
+        let device = config.candle_device();
         Ok(Self {
             config,
             text_frontend: TextFrontend::new()?,
+            device,
             gpt_model: None,
             sovits_model: None,
             bert_model: None,
@@ -121,35 +124,45 @@ impl Pipeline {
 
     /// Load GPT model
     pub fn load_gpt<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let model = GPTModel::load(path.as_ref().to_str().unwrap())?;
+        let model = GPTModel::load_with_device(path.as_ref().to_str().unwrap(), &self.device)?;
         self.gpt_model = Some(model);
         Ok(())
     }
 
     /// Load SoVITS model
     pub fn load_sovits<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let model = SoVITSModel::load(path.as_ref().to_str().unwrap())?;
+        let model = SoVITSModel::load_with_device(path.as_ref().to_str().unwrap(), &self.device)?;
         self.sovits_model = Some(model);
         Ok(())
     }
 
     /// Load BERT model (optional, uses ONNX)
     pub fn load_bert<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let model = BertModel::load(path.as_ref().to_str().unwrap())?;
+        let device_str = match self.device {
+            Device::Cpu => "cpu",
+            Device::Cuda(_) => "cuda",
+            Device::Metal(_) => "mps",
+        };
+        let model = BertModel::load_with_device(path.as_ref().to_str().unwrap(), device_str)?;
         self.bert_model = Some(model);
         Ok(())
     }
 
     /// Load Hubert model (optional, uses ONNX)
     pub fn load_hubert<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let model = HubertModel::load(path.as_ref().to_str().unwrap())?;
+        let device_str = match self.device {
+            Device::Cpu => "cpu",
+            Device::Cuda(_) => "cuda",
+            Device::Metal(_) => "mps",
+        };
+        let model = HubertModel::load_with_device(path.as_ref().to_str().unwrap(), device_str)?;
         self.hubert_model = Some(model);
         Ok(())
     }
 
     /// Load BigVGAN model
     pub fn load_bigvgan<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let model = BigVGAN::load(path.as_ref().to_str().unwrap())?;
+        let model = BigVGAN::load_with_device(path.as_ref().to_str().unwrap(), &self.device)?;
         self.bigvgan_model = Some(model);
         Ok(())
     }
@@ -189,7 +202,7 @@ impl Pipeline {
             hubert.extract(reference_audio.as_ref())?
         } else {
             // Fallback: zero tensor with expected shape [batch=1, time=100, hidden=768]
-            Tensor::zeros((1, 100, 768), DType::F32, &Device::Cpu)?
+            Tensor::zeros((1, 100, 768), DType::F32, &self.device)?
         };
 
         // Step 3: Get BERT features
@@ -199,7 +212,7 @@ impl Pipeline {
             bert.extract(text)?
         } else {
             // Fallback: zero tensor with expected shape [batch=1, hidden=768, seq_len=10]
-            Tensor::zeros((1, 768, 10), DType::F32, &Device::Cpu)?
+            Tensor::zeros((1, 768, 10), DType::F32, &self.device)?
         };
 
         // Step 4: Run GPT model to generate semantic tokens

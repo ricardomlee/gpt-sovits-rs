@@ -49,8 +49,9 @@ impl MultiHeadAttention {
         let v = self.split_heads(&v, batch_size, seq_len)?;
 
         // Scaled dot-product attention: attn = softmax(Q @ K^T / sqrt(d_k))
-        let k_t = k.transpose(D::Minus2, D::Minus1)?;
-        let attn_weights = q.matmul(&k_t)?;
+        let k_t = k.transpose(D::Minus2, D::Minus1)?.contiguous()?;
+        let q_contiguous = q.contiguous()?;
+        let attn_weights = q_contiguous.matmul(&k_t)?;
 
         // Apply scale - convert to match attn_weights dtype
         let scale_val = self.scale as f32;
@@ -78,7 +79,9 @@ impl MultiHeadAttention {
         let attn_probs = candle_nn::ops::softmax(&attn_weights, D::Minus1)?;
 
         // Apply attention to values: [batch, n_heads, seq_len, head_dim]
-        let attn_output = attn_probs.matmul(&v)?;
+        let attn_probs = attn_probs.contiguous()?;
+        let v_contiguous = v.contiguous()?;
+        let attn_output = attn_probs.matmul(&v_contiguous)?;
 
         // Concatenate heads: [batch, seq_len, hidden_size]
         let attn_output = attn_output

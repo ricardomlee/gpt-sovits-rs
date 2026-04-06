@@ -23,10 +23,10 @@ path = "examples/cli_inference.rs"
 
 [dependencies]
 # Deep Learning Inference
-candle-core = "0.8"
-candle-nn = "0.8"
-candle-transformers = "0.8"
-# candle-onnx = "0.8"  # requires protoc
+candle-core = "0.10"
+candle-nn = "0.10"
+candle-transformers = "0.10"
+# candle-onnx = "0.10"  # requires protoc
 half = { version = "2.4", features = ["num-traits", "zerocopy"] }
 
 # ONNX Runtime (optional, for BERT/Hubert if needed)

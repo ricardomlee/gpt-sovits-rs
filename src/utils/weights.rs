@@ -342,9 +342,9 @@ impl LayerNorm {
         let mut shape = vec![1; last_dim];
         shape[last_dim - 1] = self.weight.dims()[0];
 
-        // Convert weight and bias to match normalized tensor dtype
-        let weight = self.weight.to_dtype(normalized.dtype())?;
-        let bias = self.bias.to_dtype(normalized.dtype())?;
+        // Convert weight and bias to match input device and dtype
+        let weight = self.weight.to_device(&input.device())?.to_dtype(normalized.dtype())?;
+        let bias = self.bias.to_device(&input.device())?.to_dtype(normalized.dtype())?;
         let weight_reshaped = weight.reshape(&*shape)?;
         let bias_reshaped = bias.reshape(&*shape)?;
 

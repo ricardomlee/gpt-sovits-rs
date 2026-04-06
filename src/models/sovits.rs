@@ -19,7 +19,7 @@ pub struct SoVITSModel {
 /// Encoder Q - Semantic token encoder
 #[allow(dead_code)]
 pub struct EncoderQ {
-    #[allow(dead_code)]
+    proj: Conv1dWeightNorm,
     cond_layer: Conv1dWeightNorm,
     in_layers: Vec<Conv1dWeightNorm>,
     res_skip_layers: Vec<Conv1dWeightNorm>,
@@ -93,7 +93,7 @@ impl SoVITSModel {
         }
 
         // Stack: [seq_len, 192]
-        let stacked = Tensor::stack(&embeddings, 0)?;
+        let stacked = Tensor::stack(&embeddings, 0)?.to_device(&self.device)?;
 
         // Add batch dimension: [1, seq_len, 192]
         Ok(stacked.unsqueeze(0)?)
@@ -121,7 +121,17 @@ impl SoVITSModel {
 }
 
 impl EncoderQ {
-    pub fn new(state_dict: &StateDict, _device: &Device) -> Result<Self> {
+    pub fn new(state_dict: &StateDict, device: &Device) -> Result<Self> {
+        // Load projection layer: [384, 192, 1] - projects from 192 to 384
+        // This is a regular conv, not weight-norm, so we need to create dummy g/v
+        let proj_weight = state_dict.get("enc_q.proj.weight")?.to_device(device)?;
+        let proj_bias = state_dict.get("enc_q.proj.bias")?.to_device(device)?;
+        // Create weight_g as norm of weight_v
+        let weight_v = proj_weight.clone();
+        let weight_g = Tensor::full(1.0f32, weight_v.dims(), &weight_v.device())?;
+        let proj = Conv1dWeightNorm::new(weight_g, weight_v, Some(proj_bias), 1, 0, 1);
+
+        // Load cond layer: expects input channels based on cond_layer shape
         let cond_layer = state_dict.get_conv1d_weight_norm("enc_q.enc.cond_layer")?;
 
         let mut in_layers = Vec::new();
@@ -147,6 +157,7 @@ impl EncoderQ {
         }
 
         Ok(Self {
+            proj,
             cond_layer,
             in_layers,
             res_skip_layers,
@@ -155,7 +166,10 @@ impl EncoderQ {
 
     pub fn encode(&self, tokens: &Tensor) -> Result<Tensor> {
         // tokens: [1, 192, seq_len]
-        let mut h = self.cond_layer.forward(tokens)?;
+        // First project from 192 to 384
+        let mut h = self.proj.forward(tokens)?;
+        // Then through cond_layer
+        h = self.cond_layer.forward(&h)?;
         for (in_layer, res_skip_layer) in self.in_layers.iter().zip(self.res_skip_layers.iter()) {
             let residual = h.clone();
             let x = in_layer.forward(&h)?;
