@@ -73,7 +73,8 @@ impl GPTModel {
         // Load text embedding: [vocab_size, hidden_size]
         let text_emb_key = "model.ar_text_embedding.word_embeddings.weight";
         let text_embedding = state_dict.get(text_emb_key)?
-            .to_device(device)?;
+            .to_device(device)?
+            .to_dtype(DType::F32)?;
 
         let vocab_size = text_embedding.dims()[0];
         let hidden_size = text_embedding.dims()[1];
@@ -81,12 +82,13 @@ impl GPTModel {
         // Load audio embedding: [1025, hidden_size]
         let audio_emb_key = "model.ar_audio_embedding.word_embeddings.weight";
         let audio_embedding = state_dict.get(audio_emb_key)?
-            .to_device(device)?;
+            .to_device(device)?
+            .to_dtype(DType::F32)?;
 
         // Load BERT projection (optional): weight [512, 1024], bias [512]
         let bert_proj = if state_dict.contains("model.bert_proj.weight") {
-            let bert_weight = state_dict.get("model.bert_proj.weight")?.to_device(device)?;
-            let bert_bias = state_dict.get("model.bert_proj.bias")?.to_device(device)?;
+            let bert_weight = state_dict.get("model.bert_proj.weight")?.to_device(device)?.to_dtype(DType::F32)?;
+            let bert_bias = state_dict.get("model.bert_proj.bias")?.to_device(device)?.to_dtype(DType::F32)?;
             Some((bert_weight, bert_bias))
         } else {
             None
@@ -121,7 +123,8 @@ impl GPTModel {
 
         // Load output projection: [vocab_size, hidden_size]
         let ar_predict_layer = state_dict.get("model.ar_predict_layer.weight")?
-            .to_device(device)?;
+            .to_device(device)?
+            .to_dtype(DType::F32)?;
 
         Ok(Self {
             text_embedding,

@@ -10,7 +10,7 @@ use crate::utils::{StateDict, load_safetensors, Conv1dWeightNorm};
 pub struct SoVITSModel {
     device: Device,
     dtype: DType,
-    text_embedding: Tensor,      // [322, 192]
+    pre_layer: Conv1dWeightNorm,   // [192, 1025, 1] - projects semantic tokens to 192 dim
     enc_q: EncoderQ,
     n_mels: usize,
     sampling_rate: u32,
@@ -37,11 +37,13 @@ impl SoVITSModel {
         let weights_map = load_safetensors(path)?;
         let state_dict = StateDict::new(weights_map);
 
-        // Load text embedding [322, 192]
-        let text_embedding = state_dict
-            .get("enc_p.text_embedding.weight")?
-            .to_device(device)?
-            .clone();
+        // Load pre layer: [192, 1025, 1] - regular conv, not weight-norm
+        let pre_weight = state_dict.get("enc_q.pre.weight")?.to_device(device)?.to_dtype(DType::F32)?;
+        let pre_bias = state_dict.get("enc_q.pre.bias")?.to_device(device)?.to_dtype(DType::F32)?;
+        // Create Conv1dWeightNorm with dummy g/v for regular conv
+        let weight_v = pre_weight;
+        let weight_g = Tensor::full(1.0f32, weight_v.dims(), &weight_v.device())?;
+        let pre_layer = Conv1dWeightNorm::new(weight_g, weight_v, Some(pre_bias), 1, 0, 1);
 
         // Create enc_q
         let enc_q = EncoderQ::new(&state_dict, device)?;
@@ -49,7 +51,7 @@ impl SoVITSModel {
         Ok(Self {
             device: device.clone(),
             dtype: DType::F32,
-            text_embedding,
+            pre_layer,
             enc_q,
             n_mels: 100,
             sampling_rate: 24000,
@@ -66,37 +68,29 @@ impl SoVITSModel {
             return Err(Error::InferenceError("Empty semantic tokens".to_string()));
         }
 
-        // Step 1: Lookup embeddings for semantic tokens
-        // semantic_tokens: [seq_len] -> embeddings: [1, seq_len, 192]
-        let embeddings = self.lookup_embeddings(semantic_tokens)?;
+        // Convert semantic tokens to one-hot like tensor for conv1d
+        // semantic_tokens: [seq_len] with values 0-1024 -> tensor: [1, 1025, seq_len]
+        let seq_len = semantic_tokens.len();
+        let mut token_tensor = vec![0.0f32; 1025 * seq_len];
+        for (i, &token) in semantic_tokens.iter().enumerate() {
+            if token < 1025 {
+                token_tensor[token * seq_len + i] = 1.0;
+            }
+        }
+        let token_tensor = Tensor::from_vec(token_tensor, (1, 1025, seq_len), &self.device)?;
 
-        // Step 2: Transpose for conv1d: [1, 192, seq_len]
-        let embeddings = embeddings.transpose(1, 2)?;
+        // Step 1: Project through pre layer: [1, 1025, seq_len] -> [1, 192, seq_len]
+        let embeddings = self.pre_layer.forward(&token_tensor)?;
+
+        // Step 2: Transpose for enc_q conv1d: [1, 192, seq_len]
+        // Already in correct format for conv1d
 
         // Step 3: Run through enc_q
-        // enc_q expects [1, 512, seq_len] input based on cond_layer shape
-        // But in_layers expect 192 channels based on in_layers.0.weight_v: [384, 192, 5]
-        // So we need to project from 192 to 512 first
         let features = self.enc_q.encode(&embeddings)?;
 
         // Narrow to n_mels channels
         let mel_spec = features.narrow(1, 0, self.n_mels)?;
         Ok(mel_spec)
-    }
-
-    /// Lookup embeddings for semantic tokens
-    fn lookup_embeddings(&self, tokens: &[usize]) -> Result<Tensor> {
-        let mut embeddings = Vec::with_capacity(tokens.len());
-        for &idx in tokens {
-            let emb = self.text_embedding.get(idx as usize)?;
-            embeddings.push(emb);
-        }
-
-        // Stack: [seq_len, 192]
-        let stacked = Tensor::stack(&embeddings, 0)?.to_device(&self.device)?;
-
-        // Add batch dimension: [1, seq_len, 192]
-        Ok(stacked.unsqueeze(0)?)
     }
 
     /// Get model device
@@ -124,15 +118,20 @@ impl EncoderQ {
     pub fn new(state_dict: &StateDict, device: &Device) -> Result<Self> {
         // Load projection layer: [384, 192, 1] - projects from 192 to 384
         // This is a regular conv, not weight-norm, so we need to create dummy g/v
-        let proj_weight = state_dict.get("enc_q.proj.weight")?.to_device(device)?;
-        let proj_bias = state_dict.get("enc_q.proj.bias")?.to_device(device)?;
-        // Create weight_g as norm of weight_v
+        let proj_weight = state_dict
+            .get("enc_q.proj.weight")?
+            .to_device(device)?
+            .to_dtype(DType::F32)?;
+        let proj_bias = state_dict
+            .get("enc_q.proj.bias")?
+            .to_device(device)?
+            .to_dtype(DType::F32)?;
         let weight_v = proj_weight.clone();
         let weight_g = Tensor::full(1.0f32, weight_v.dims(), &weight_v.device())?;
         let proj = Conv1dWeightNorm::new(weight_g, weight_v, Some(proj_bias), 1, 0, 1);
 
-        // Load cond layer: expects input channels based on cond_layer shape
-        let cond_layer = state_dict.get_conv1d_weight_norm("enc_q.enc.cond_layer")?;
+        // Load all layers with explicit F32 conversion to avoid dtype mismatch
+        let cond_layer = Self::load_conv1d_weight_norm(state_dict, "enc_q.enc.cond_layer", device)?;
 
         let mut in_layers = Vec::new();
         let mut i = 0;
@@ -141,7 +140,11 @@ impl EncoderQ {
             if !state_dict.contains(&key) {
                 break;
             }
-            in_layers.push(state_dict.get_conv1d_weight_norm(&format!("enc_q.enc.in_layers.{}", i))?);
+            in_layers.push(Self::load_conv1d_weight_norm(
+                state_dict,
+                &format!("enc_q.enc.in_layers.{}", i),
+                device,
+            )?);
             i += 1;
         }
 
@@ -152,7 +155,11 @@ impl EncoderQ {
             if !state_dict.contains(&key) {
                 break;
             }
-            res_skip_layers.push(state_dict.get_conv1d_weight_norm(&format!("enc_q.enc.res_skip_layers.{}", i))?);
+            res_skip_layers.push(Self::load_conv1d_weight_norm(
+                state_dict,
+                &format!("enc_q.enc.res_skip_layers.{}", i),
+                device,
+            )?);
             i += 1;
         }
 
@@ -164,20 +171,76 @@ impl EncoderQ {
         })
     }
 
+    fn load_conv1d_weight_norm(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+    ) -> Result<Conv1dWeightNorm> {
+        let weight_g = state_dict
+            .get(&format!("{}.weight_g", prefix))?
+            .to_device(device)?
+            .to_dtype(DType::F32)?;
+        let weight_v = state_dict
+            .get(&format!("{}.weight_v", prefix))?
+            .to_device(device)?
+            .to_dtype(DType::F32)?;
+        let bias = if state_dict.contains(&format!("{}.bias", prefix)) {
+            Some(
+                state_dict
+                    .get(&format!("{}.bias", prefix))?
+                    .to_device(device)?
+                    .to_dtype(DType::F32)?,
+            )
+        } else {
+            None
+        };
+
+        // Infer kernel size from weight_v shape [out_channels, in_channels, kernel_size]
+        let weight_v_shape = weight_v.dims();
+        let kernel_size = if weight_v_shape.len() >= 3 {
+            weight_v_shape[2]
+        } else {
+            1
+        };
+        // Calculate padding to maintain sequence length: padding = (kernel_size - 1) / 2
+        let padding = (kernel_size - 1) / 2;
+
+        let stride = 1;
+        let dilation = 1;
+        Ok(Conv1dWeightNorm::new(weight_g, weight_v, bias, stride, padding, dilation))
+    }
+
     pub fn encode(&self, tokens: &Tensor) -> Result<Tensor> {
-        // tokens: [1, 192, seq_len]
-        // First project from 192 to 384
-        let mut h = self.proj.forward(tokens)?;
-        // Then through cond_layer
-        h = self.cond_layer.forward(&h)?;
+        // tokens: [1, 192, seq_len] from pre layer
+        // Modified WaveNet: hidden state stays at 192 dims
+        // in_layer: 192 -> 384, then take first 192 dims for next layer
+        // res_skip: accumulates to output
+        let mut h = tokens.clone();
+        let mut output: Option<Tensor> = None;
+
         for (in_layer, res_skip_layer) in self.in_layers.iter().zip(self.res_skip_layers.iter()) {
             let residual = h.clone();
+
+            // in_layer: 192 -> 384
             let x = in_layer.forward(&h)?;
             let x = x.relu()?;
-            let x = res_skip_layer.forward(&x)?;
-            h = x.broadcast_add(&residual)?;
+
+            // Take first 192 channels for next hidden state
+            h = x.narrow(1, 0, 192)?;
+
+            // res_skip: 192 -> 384 or 192
+            let res_skip = res_skip_layer.forward(&residual)?;
+
+            // Add to output accumulator
+            output = Some(match output {
+                Some(o) if o.dims()[1] == res_skip.dims()[1] => o.broadcast_add(&res_skip)?,
+                Some(o) => o, // Skip if shape mismatch (last layer)
+                None => res_skip,
+            });
         }
-        Ok(h)
+
+        // Return sum of skip connections
+        output.ok_or_else(|| Error::InferenceError("No output".to_string()))
     }
 }
 

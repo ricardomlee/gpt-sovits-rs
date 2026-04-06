@@ -2,7 +2,7 @@
 //!
 //! Implementation of transformer encoder-decoder architecture
 
-use candle_core::{Tensor, Device, D};
+use candle_core::{Tensor, Device, D, DType};
 use crate::Result;
 use crate::utils::{StateDict, Embedding, Linear, LayerNorm};
 
@@ -212,24 +212,45 @@ impl Transformer {
             let attn = MultiHeadAttention::new(wq, wk, wv, wo, config.num_attention_heads);
 
             // Feed-forward network (SwiGLU uses 3 linear layers)
-            let w1 = weights.get_linear(&format!("{}.ffn.w1", prefix))?;
-            let w2 = weights.get_linear(&format!("{}.ffn.w2", prefix))?;
-            let w3 = weights.get_linear(&format!("{}.ffn.w3", prefix))?;
+            let w1 = Linear::new(
+                weights.get(&format!("{}.ffn.w1.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?,
+                weights.get(&format!("{}.ffn.w1.bias", prefix)).ok().and_then(|t| t.to_device(device).ok()).and_then(|t| t.to_dtype(DType::F32).ok())
+            );
+            let w2 = Linear::new(
+                weights.get(&format!("{}.ffn.w2.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?,
+                weights.get(&format!("{}.ffn.w2.bias", prefix)).ok().and_then(|t| t.to_device(device).ok()).and_then(|t| t.to_dtype(DType::F32).ok())
+            );
+            let w3 = Linear::new(
+                weights.get(&format!("{}.ffn.w3.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?,
+                weights.get(&format!("{}.ffn.w3.bias", prefix)).ok().and_then(|t| t.to_device(device).ok()).and_then(|t| t.to_dtype(DType::F32).ok())
+            );
             let ff = FeedForward::new(w1, w2, w3);
 
-            // Layer norms
-            let attn_norm = weights.get_layer_norm(&format!("{}.attn_norm", prefix))?;
-            let ffn_norm = weights.get_layer_norm(&format!("{}.ffn_norm", prefix))?;
+            // Layer norms with F32 conversion
+            let attn_norm = LayerNorm::new(
+                weights.get(&format!("{}.attn_norm.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?,
+                weights.get(&format!("{}.attn_norm.bias", prefix))?.to_device(device)?.to_dtype(DType::F32)?
+            );
+            let ffn_norm = LayerNorm::new(
+                weights.get(&format!("{}.ffn_norm.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?,
+                weights.get(&format!("{}.ffn_norm.bias", prefix))?.to_device(device)?.to_dtype(DType::F32)?
+            );
 
             let block = TransformerBlock::new(attn, ff, attn_norm, ffn_norm);
             layers.push(block);
         }
 
-        // Create final norm
-        let norm = weights.get_layer_norm("norm")?;
+        // Create final norm with F32 conversion
+        let norm = LayerNorm::new(
+            weights.get("norm.weight")?.to_device(device)?.to_dtype(DType::F32)?,
+            weights.get("norm.bias")?.to_device(device)?.to_dtype(DType::F32)?
+        );
 
-        // Create output projection
-        let output_projection = weights.get_linear("output")?;
+        // Create output projection with F32 conversion
+        let output_projection = Linear::new(
+            weights.get("output.weight")?.to_device(device)?.to_dtype(DType::F32)?,
+            weights.get("output.bias").ok().and_then(|t| t.to_device(device).ok()).and_then(|t| t.to_dtype(DType::F32).ok())
+        );
 
         Ok(Self {
             config,
@@ -410,8 +431,12 @@ pub struct TransformerGPTSoVITS {
 
 impl TransformerGPTSoVITS {
     pub fn new(config: TransformerConfig, weights: &StateDict, device: &Device) -> Result<Self> {
-        // Load text embedding
-        let token_embedding = weights.get_embedding("model.ar_text_embedding.word_embeddings.weight")?;
+        // Load text embedding with F32 conversion
+        let token_embedding_weight = weights
+            .get("model.ar_text_embedding.word_embeddings.weight")?
+            .to_device(device)?
+            .to_dtype(DType::F32)?;
+        let token_embedding = Embedding::new(token_embedding_weight);
 
         // Create transformer layers with GPT-SoVITS format
         let mut layers = Vec::with_capacity(config.num_hidden_layers);
@@ -419,11 +444,13 @@ impl TransformerGPTSoVITS {
             let prefix = format!("model.h.layers.{}", i);
 
             // Load fused QKV projection: [hidden * 3, hidden]
-            // Split into separate Q, K, V weights
+            // Split into separate Q, K, V weights with F32 conversion
             let in_proj_weight = weights.get(&format!("{}.self_attn.in_proj_weight", prefix))?
-                .to_device(device)?;
+                .to_device(device)?
+                .to_dtype(DType::F32)?;
             let in_proj_bias = weights.get(&format!("{}.self_attn.in_proj_bias", prefix))?
-                .to_device(device)?;
+                .to_device(device)?
+                .to_dtype(DType::F32)?;
 
             // Split QKV weight into three parts: [hidden, hidden] each
             let hidden = config.hidden_size;
@@ -441,29 +468,30 @@ impl TransformerGPTSoVITS {
             let wk = Linear::new(k_weight, Some(k_bias));
             let wv = Linear::new(v_weight, Some(v_bias));
 
-            // Load output projection
+            // Load output projection with F32 conversion
             let wo_weight = weights.get(&format!("{}.self_attn.out_proj.weight", prefix))?
-                .to_device(device)?;
+                .to_device(device)?
+                .to_dtype(DType::F32)?;
             let wo_bias = weights.get(&format!("{}.self_attn.out_proj.bias", prefix))?
-                .to_device(device)?;
+                .to_device(device)?
+                .to_dtype(DType::F32)?;
             let wo = Linear::new(wo_weight, Some(wo_bias));
 
             let attn = MultiHeadAttention::new(wq, wk, wv, wo, config.num_attention_heads);
 
-            // Load FFN
-            // GPT-SoVITS uses SwiGLU with: linear1 (gate), linear2 (output)
-            // But we need w1 (gate), w2 (out), w3 (up) for our FeedForward
-            // Looking at shapes: linear1.weight [2048, 512], linear2.weight [512, 2048]
-            // This means linear1 is the gate projection and linear2 is the output
-            // For SwiGLU we need a separate up projection - GPT-SoVITS may use the same weights for gate and up
+            // Load FFN with F32 conversion
             let linear1_weight = weights.get(&format!("{}.linear1.weight", prefix))?
-                .to_device(device)?;
+                .to_device(device)?
+                .to_dtype(DType::F32)?;
             let linear1_bias = weights.get(&format!("{}.linear1.bias", prefix))?
-                .to_device(device)?;
+                .to_device(device)?
+                .to_dtype(DType::F32)?;
             let linear2_weight = weights.get(&format!("{}.linear2.weight", prefix))?
-                .to_device(device)?;
+                .to_device(device)?
+                .to_dtype(DType::F32)?;
             let linear2_bias = weights.get(&format!("{}.linear2.bias", prefix))?
-                .to_device(device)?;
+                .to_device(device)?
+                .to_dtype(DType::F32)?;
 
             // Use linear1 for both gate (w1) and up (w3), linear2 for output (w2)
             let w1 = Linear::new(linear1_weight.clone(), Some(linear1_bias.clone()));
@@ -472,9 +500,14 @@ impl TransformerGPTSoVITS {
 
             let ff = FeedForward::new(w1, w2, w3);
 
-            // Load layer norms
-            let attn_norm = weights.get_layer_norm(&format!("{}.norm1", prefix))?;
-            let ffn_norm = weights.get_layer_norm(&format!("{}.norm2", prefix))?;
+            // Load layer norms with F32 conversion
+            let attn_norm_weight = weights.get(&format!("{}.norm1.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
+            let attn_norm_bias = weights.get(&format!("{}.norm1.bias", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
+            let attn_norm = LayerNorm::new(attn_norm_weight, attn_norm_bias);
+
+            let ffn_norm_weight = weights.get(&format!("{}.norm2.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
+            let ffn_norm_bias = weights.get(&format!("{}.norm2.bias", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
+            let ffn_norm = LayerNorm::new(ffn_norm_weight, ffn_norm_bias);
 
             let block = TransformerBlock::new(attn, ff, attn_norm, ffn_norm);
             layers.push(block);
