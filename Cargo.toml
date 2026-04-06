@@ -30,7 +30,8 @@ candle-transformers = "0.10"
 half = { version = "2.4", features = ["num-traits", "zerocopy"] }
 
 # ONNX Runtime (optional, for BERT/Hubert if needed)
-ort = { version = "2.0.0-rc.12", features = ["download-binaries"], optional = true }
+# ort 2.x uses Execution Providers - cuda feature enables CUDA EP
+ort = { version = "2.0.0-rc.12", features = ["cuda"], optional = true }
 
 # Audio Processing
 hound = "3.5"                    # WAV I/O

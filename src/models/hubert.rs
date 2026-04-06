@@ -1,9 +1,12 @@
 //! Hubert Feature Extractor with ONNX Runtime (optional)
 
 #[cfg(feature = "onnx")]
-use ort::{session::Session, value::Value, inputs};
+use ort::{ep, session::Session, value::Value, inputs};
 
+#[cfg(not(feature = "onnx"))]
 use candle_core::{Device, Tensor};
+#[cfg(feature = "onnx")]
+use candle_core::{Tensor, Device};
 use crate::Result;
 use std::path::Path;
 
@@ -26,9 +29,16 @@ impl HubertModel {
 
     #[cfg(feature = "onnx")]
     pub fn load_with_device(path: &str, device: &str) -> Result<Self> {
-        let session = Session::builder()?
-            .commit_from_file(path)
-            .map_err(|e| crate::Error::ModelLoadError(format!("Failed to load ONNX: {}", e)))?;
+        let session = if device == "cuda" {
+            Session::builder()?
+                .with_execution_providers([ep::CUDA::default().build()])
+                .map_err(|e| crate::Error::ModelLoadError(format!("Failed to configure CUDA EP: {}", e)))?
+                .commit_from_file(path)
+        } else {
+            Session::builder()?
+                .commit_from_file(path)
+        }
+        .map_err(|e| crate::Error::ModelLoadError(format!("Failed to load ONNX: {}", e)))?;
 
         Ok(Self {
             session,
