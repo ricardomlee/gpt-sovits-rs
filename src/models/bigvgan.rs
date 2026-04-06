@@ -226,16 +226,15 @@ impl BigVGAN {
 
         // Load upsampling layers with interleaved resblocks
         // Architecture: conv_pre → ups.0 → resblocks 0-2 → ups.1 → resblocks 3-5 → ... → conv_post
+        // Each upsampling layer has stride=2, total upsampling = 2^6 = 64
         let mut ups = Vec::new();
         for i in 0..6 {
             let prefix = format!("ups.{}.0", i);
             if state_dict.contains(&format!("{}.weight_v", prefix)) {
                 let conv = Self::load_conv(&state_dict, &prefix, device)?;
-                // Upsample factors from kernel stride
-                let upsample_factor = if i < 2 { 8 } else { 4 };
                 ups.push(Upsample {
                     conv,
-                    upsample_factor,
+                    upsample_factor: 2, // Each layer upsamples by 2x
                 });
             }
         }
@@ -330,15 +329,18 @@ impl BigVGAN {
         let weight = conv.get_weight()?;
         let weight_dims = weight.dims();
 
-        let in_channels_w = weight_dims[0];
-        let out_channels_w = weight_dims[1];
+        // Weight shape from Conv1dWeightNorm: [out_ch, in_ch, kernel]
+        // For transposed conv: input channels = out_ch_fwd, output channels = in_ch_fwd
+        // stride = out_ch_fwd / in_ch_fwd (e.g., 1536/768 = 2 for 2x upsampling)
+        let out_ch_fwd = weight_dims[0];
+        let in_ch_fwd = weight_dims[1];
         let kernel_size = weight_dims[2];
-        let stride = in_channels_w / out_channels_w;
 
-        // For ConvTranspose1d, candle expects weight [in, out, kernel]
-        // Our weight is already in correct format
+        // Calculate stride as ceiling division to ensure stride >= 1
+        let stride = (out_ch_fwd + in_ch_fwd - 1) / in_ch_fwd;
+        let stride = stride.max(1);
 
-        // For 'same' padding: output_length = input_length * stride
+        // For 'same' padding with transposed conv
         let padding = (kernel_size - stride) / 2;
 
         // conv_transpose1d: input [N, in, L] -> output [N, out, L*stride]
