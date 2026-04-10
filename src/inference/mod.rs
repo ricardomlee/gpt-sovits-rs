@@ -2,7 +2,7 @@
 //!
 //! Main pipeline for TTS inference
 
-use candle_core::{Device, Tensor, DType};
+use candle_core::Device;
 use crate::config::Config;
 use crate::models::{BertModel, BigVGAN, GPTModel, HubertModel, SoVITSModel};
 use crate::text_frontend::TextFrontend;
@@ -181,7 +181,7 @@ impl Pipeline {
         &mut self,
         text: &str,
         reference_audio: P,
-        _reference_text: &str,
+        reference_text: &str,
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
         // Validate models are loaded
@@ -195,33 +195,48 @@ impl Pipeline {
         // Step 1: Process text through frontend to get phoneme IDs
         let phoneme_ids = self.text_frontend.process(text, options.language)?;
 
-        // Step 2: Extract features from reference audio
-        // Note: Hubert features require ONNX Runtime (--features onnx)
-        // Without ONNX, uses zero tensor fallback
-        let _hubert_features = if let Some(hubert) = &mut self.hubert_model {
-            hubert.extract(reference_audio.as_ref())?
+        // Step 2: Extract Hubert features from reference audio
+        let hubert_features = if let Some(hubert) = &mut self.hubert_model {
+            match hubert.extract(reference_audio.as_ref()) {
+                Ok(features) => {
+                    tracing::info!("Extracted Hubert features: {:?}", features.dims());
+                    Some(features)
+                }
+                Err(e) => {
+                    tracing::warn!("Hubert extraction failed: {}, using zero tensor", e);
+                    None
+                }
+            }
         } else {
-            // Fallback: zero tensor with expected shape [batch=1, time=100, hidden=768]
-            Tensor::zeros((1, 100, 768), DType::F32, &self.device)?
+            None
         };
 
-        // Step 3: Get BERT features
-        // Note: BERT requires ONNX Runtime (--features onnx)
-        // Without ONNX, uses zero tensor fallback
-        let _bert_features = if let Some(bert) = &mut self.bert_model {
-            bert.extract(text)?
+        // Step 3: Get BERT features from text
+        let bert_features = if let Some(bert) = &mut self.bert_model {
+            match bert.extract(text) {
+                Ok(features) => {
+                    tracing::info!("Extracted BERT features: {:?}", features.dims());
+                    Some(features)
+                }
+                Err(e) => {
+                    tracing::warn!("BERT extraction failed: {}, using zero tensor", e);
+                    None
+                }
+            }
         } else {
-            // Fallback: zero tensor with expected shape [batch=1, hidden=768, seq_len=10]
-            Tensor::zeros((1, 768, 10), DType::F32, &self.device)?
+            None
         };
 
-        // Step 4: Run GPT model to generate semantic tokens
-        let semantic_tokens = gpt.generate(
+        // Step 4: Run GPT model to generate semantic tokens (with BERT/Hubert features if available)
+        let semantic_tokens = gpt.generate_with_features(
             &phoneme_ids,
+            bert_features.as_ref(),
+            hubert_features.as_ref(),
             options.top_k,
             options.top_p,
             options.temperature,
         )?;
+        tracing::info!("Generated {} semantic tokens", semantic_tokens.len());
 
         // Step 5: Run SoVITS to generate mel spectrogram
         let mel_spec = sovits.synthesize(&semantic_tokens, None)?;

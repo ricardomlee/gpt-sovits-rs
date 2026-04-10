@@ -21,6 +21,10 @@ path = "src/main.rs"
 name = "cli_inference"
 path = "examples/cli_inference.rs"
 
+[[example]]
+name = "test_hubert_fusion"
+path = "examples/test_hubert_fusion.rs"
+
 [dependencies]
 # Deep Learning Inference
 candle-core = "0.10"

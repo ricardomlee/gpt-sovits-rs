@@ -5,6 +5,7 @@
 //! - RoPE (Rotary Position Embedding) instead of learned positions
 //! - Separate text and audio embeddings
 //! - BERT feature projection
+//! - Hubert feature projection for prosody guidance
 
 use candle_core::{Device, DType, Tensor, D};
 use candle_nn::ops::softmax;
@@ -17,8 +18,8 @@ pub struct GPTModel {
     text_embedding: Tensor,      // model.ar_text_embedding.word_embeddings.weight [vocab_size, hidden_size]
     #[allow(dead_code)]
     audio_embedding: Tensor,     // model.ar_audio_embedding.word_embeddings.weight [1025, hidden_size]
-    #[allow(dead_code)]
     bert_proj: Option<(Tensor, Tensor)>, // (weight, bias) for BERT features [512, 1024], [512]
+    hubert_proj: Option<(Tensor, Tensor)>, // (weight, bias) for Hubert features [512, 768], [512]
     transformer: TransformerGPTSoVITS,
     ar_predict_layer: Tensor,    // output projection [vocab_size, hidden_size]
     device: Device,
@@ -116,6 +117,15 @@ impl GPTModel {
             None
         };
 
+        // Load Hubert projection (optional): weight [512, 768], bias [512]
+        let hubert_proj = if state_dict.contains("model.hubert_proj.weight") {
+            let hubert_weight = state_dict.get("model.hubert_proj.weight")?.to_device(device)?.to_dtype(DType::F32)?;
+            let hubert_bias = state_dict.get("model.hubert_proj.bias")?.to_device(device)?.to_dtype(DType::F32)?;
+            Some((hubert_weight, hubert_bias))
+        } else {
+            None
+        };
+
         // Count number of transformer layers
         let mut num_hidden_layers = 0;
         for key in state_dict.keys() {
@@ -152,6 +162,7 @@ impl GPTModel {
             text_embedding,
             audio_embedding,
             bert_proj,
+            hubert_proj,
             transformer,
             ar_predict_layer,
             device: device.clone(),
@@ -222,7 +233,7 @@ impl GPTModel {
         Ok(indexed_probs.first().map(|(_, i)| *i).unwrap_or(0))
     }
 
-    /// Generate semantic tokens from phoneme IDs
+    /// Generate semantic tokens from phoneme IDs (without BERT/Hubert features)
     ///
     /// # Arguments
     /// * `phoneme_ids` - Input phoneme sequence
@@ -239,6 +250,30 @@ impl GPTModel {
         top_p: f32,
         temperature: f32,
     ) -> Result<Vec<usize>> {
+        self.generate_with_features(phoneme_ids, None, None, top_k, top_p, temperature)
+    }
+
+    /// Generate semantic tokens with BERT and Hubert features
+    ///
+    /// # Arguments
+    /// * `phoneme_ids` - Input phoneme sequence
+    /// * `bert_features` - Optional BERT features [batch, seq_len, 768]
+    /// * `hubert_features` - Optional Hubert features [batch, frames, 768]
+    /// * `top_k` - Top-k sampling parameter
+    /// * `top_p` - Top-p (nucleus) sampling parameter
+    /// * `temperature` - Sampling temperature
+    ///
+    /// # Returns
+    /// Vector of semantic token IDs
+    pub fn generate_with_features(
+        &self,
+        phoneme_ids: &[usize],
+        bert_features: Option<&Tensor>,
+        hubert_features: Option<&Tensor>,
+        top_k: usize,
+        top_p: f32,
+        temperature: f32,
+    ) -> Result<Vec<usize>> {
         if phoneme_ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -251,6 +286,61 @@ impl GPTModel {
         let mut generated_tokens = Vec::new();
         let max_new_tokens = 500;
 
+        // Prepare BERT projection if available
+        let bert_proj_result = if let Some(bert) = bert_features {
+            if let Some((proj_w, proj_b)) = &self.bert_proj {
+                // Project BERT features: [batch, seq, 768] @ [768, 512] + bias -> [batch, seq, 512]
+                // BERT output is typically [1, 768, seq] or [1, seq, 768]
+                let bert_dims = bert.dims();
+                let bert_reshaped = if bert_dims.len() == 3 && bert_dims[1] == 768 {
+                    // Shape: [batch, 768, seq] -> transpose to [batch, seq, 768]
+                    bert.transpose(1, 2)?
+                } else {
+                    bert.clone()
+                };
+
+                // Ensure last dim is 768 for projection
+                if bert_reshaped.dims().last().copied() == Some(768) {
+                    let projected = bert_reshaped.matmul(&proj_w.t()?)?;
+                    let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
+                    Some(projected)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Prepare Hubert projection
+        let hubert_proj_result = if let Some(hubert) = hubert_features {
+            if let Some((proj_w, proj_b)) = &self.hubert_proj {
+                // Project Hubert features: [batch, frames, 768] @ [768, 512] + bias -> [batch, frames, 512]
+                let hubert_dims = hubert.dims();
+                if hubert_dims.len() >= 2 && hubert_dims.last().copied() == Some(768) {
+                    // Transpose if needed to get [batch, frames, 768]
+                    let hubert_reshaped = if hubert_dims.len() == 3 && hubert_dims[1] == 768 {
+                        hubert.transpose(1, 2)?
+                    } else {
+                        hubert.clone()
+                    };
+
+                    // Project to hidden size
+                    let projected = hubert_reshaped.matmul(&proj_w.t()?)?;
+                    let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
+                    Some(projected)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
         // Autoregressive generation
         for _step in 0..max_new_tokens {
             let seq_len = current_ids.dims()[1];
@@ -258,21 +348,77 @@ impl GPTModel {
             // Get token embeddings - use mixed lookup for text + audio tokens
             let token_emb = mixed_embedding_lookup(&self.text_embedding, &self.audio_embedding, &current_ids, self.vocab_size)?;
 
+            // Fuse with BERT features if available
+            let mut fused_emb = token_emb;
+            if let Some(ref bert_proj) = bert_proj_result {
+                // Ensure shapes match for fusion
+                if bert_proj.dims().len() >= 2 {
+                    let bert_seq_len = bert_proj.dims()[1];
+                    if bert_seq_len >= seq_len {
+                        // Narrow BERT features to match current sequence length
+                        let bert_narrowed = if bert_seq_len > seq_len {
+                            bert_proj.narrow(1, 0, seq_len)?
+                        } else {
+                            bert_proj.clone()
+                        };
+                        // Add BERT features to embeddings (residual connection)
+                        // Scale factor to balance embeddings and BERT features
+                        if bert_narrowed.dims() == fused_emb.dims() {
+                            // Apply layer norm-like scaling
+                            let scale = 0.5f32;
+                            let scaled_bert = bert_narrowed.broadcast_mul(&Tensor::full(scale, bert_narrowed.dims(), &self.device)?)?;
+                            fused_emb = fused_emb.broadcast_add(&scaled_bert)?;
+                        }
+                    }
+                }
+            }
+
+            // Fuse with Hubert features if available
+            if let Some(ref hubert_proj) = hubert_proj_result {
+                // Hubert features are in frame space (e.g., 49 frames for 1s audio)
+                // We need to interpolate/align to match the phoneme sequence length
+                let hubert_frames = hubert_proj.dims()[1];
+
+                if hubert_frames > 0 {
+                    // Simple approach: repeat Hubert features to match sequence length
+                    // or use the last available frame if sequence is longer
+                    let hubert_aligned = if hubert_frames >= seq_len {
+                        // Narrow Hubert features to match sequence
+                        hubert_proj.narrow(1, 0, seq_len)?
+                    } else {
+                        // Repeat the last Hubert frame to fill the sequence
+                        // This is a simplification; full MRTE uses cross-attention
+                        let last_frame = hubert_proj.narrow(1, hubert_frames - 1, 1)?;
+                        let mut frames = vec![hubert_proj.clone()];
+                        for _ in 0..(seq_len - hubert_frames) {
+                            frames.push(last_frame.clone());
+                        }
+                        Tensor::cat(&frames, 1).unwrap_or_else(|_| hubert_proj.clone())
+                    };
+
+                    // Ensure shapes match and fuse
+                    if hubert_aligned.dims() == fused_emb.dims() {
+                        // Apply scaling for Hubert features (prosody guidance)
+                        let scale = 0.3f32;
+                        let scaled_hubert = hubert_aligned.broadcast_mul(&Tensor::full(scale, hubert_aligned.dims(), &self.device)?)?;
+                        fused_emb = fused_emb.broadcast_add(&scaled_hubert)?;
+                    }
+                }
+            }
+
             // Forward pass through transformer
-            let hidden = self.transformer.forward_from_embedding(&token_emb)?;
+            let hidden = self.transformer.forward_from_embedding(&fused_emb)?;
 
             // Project to vocab: [1, seq_len, hidden] @ [vocab, hidden]^T -> [1, seq_len, vocab]
-            // ar_predict_layer is [vocab, hidden], so we need to transpose
             let last_hidden = hidden.narrow(1, seq_len - 1, 1)?; // [1, 1, hidden]
             let last_hidden = last_hidden.squeeze(0)?; // [1, hidden]
-            // last_hidden is now [1, hidden], matmul with [hidden, vocab] -> [1, vocab]
             let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?; // [1, vocab]
             let logits = logits.squeeze(0)?; // [vocab]
 
             // Sample next token
             let next_token = Self::sample_token(&logits, top_k, top_p, temperature)?;
 
-            // Check for end-of-sequence token (EOS is the last token in audio vocab)
+            // Check for end-of-sequence token
             let audio_vocab_size = self.ar_predict_layer.dims()[0];
             if next_token >= audio_vocab_size - 1 {
                 break;
