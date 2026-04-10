@@ -61,9 +61,9 @@ impl SnakeParams {
         // Input is [batch, channels, time]
         // alpha/beta can be [channels] or scalar-like
         let (alpha_reshaped, beta_reshaped) = if x_dims.len() == 3 {
-            let batch = x_dims[0];
+            let _batch = x_dims[0];
             let channels = x_dims[1];
-            let time = x_dims[2];
+            let _time = x_dims[2];
 
             if alpha_dims.len() == 1 && alpha_dims[0] == channels {
                 // alpha matches input channels, reshape to [1, channels, 1]

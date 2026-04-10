@@ -181,7 +181,7 @@ impl Pipeline {
         &mut self,
         text: &str,
         reference_audio: P,
-        reference_text: &str,
+        _reference_text: &str,  // TODO: Use for prosody alignment in future
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
         // Validate models are loaded

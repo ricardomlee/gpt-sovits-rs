@@ -376,7 +376,7 @@ impl GPTModel {
                 // MRTE expects: [batch, channels, seq_len] format
                 if let (Some(bert), Some(hubert)) = (bert_proj_result.as_ref(), hubert_proj_result.as_ref()) {
                     // Transpose embeddings: [1, seq, 512] -> [1, 512, seq]
-                    let token_emb_t = token_emb.transpose(1, 2)?;
+                    let _token_emb_t = token_emb.transpose(1, 2)?;
 
                     // Prepare BERT features as text encoding [1, 512, bert_seq]
                     let bert_t = bert.transpose(1, 2)?;
