@@ -98,6 +98,26 @@ impl ConfigBuilder {
         self
     }
 
+    /// Auto-detect and use GPU if available (CUDA > Metal > CPU)
+    pub fn with_auto_device(mut self) -> Self {
+        // Try CUDA first, then Metal, fallback to CPU
+        #[cfg(feature = "cuda")]
+        {
+            if candle_core::Device::new_cuda(0).is_ok() {
+                self.device = Some(Device::Cuda);
+                return self;
+            }
+        }
+        // Try Metal
+        if candle_core::Device::new_metal(0).is_ok() {
+            self.device = Some(Device::Mps);
+            return self;
+        }
+        // Fallback to CPU
+        self.device = Some(Device::Cpu);
+        self
+    }
+
     pub fn with_half_precision(mut self, half: bool) -> Self {
         self.half_precision = Some(half);
         self
@@ -110,7 +130,16 @@ impl ConfigBuilder {
 
     pub fn build(self) -> Config {
         Config {
-            device: self.device.unwrap_or_default(),
+            device: self.device.unwrap_or_else(|| {
+                // Auto-detect: prefer GPU if available
+                #[cfg(feature = "cuda")]
+                {
+                    // CUDA is available and enabled
+                    return Device::Cuda;
+                }
+                // Default to CPU if CUDA not available
+                Device::Cpu
+            }),
             half_precision: self.half_precision.unwrap_or(true),
             model_version: self.model_version.unwrap_or_default(),
         }

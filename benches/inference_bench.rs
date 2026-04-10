@@ -32,7 +32,9 @@ fn audio_benchmark(c: &mut Criterion) {
 }
 
 fn tensor_benchmark(c: &mut Criterion) {
-    let device = Device::Cpu;
+    // Prefer GPU for tensor operations
+    let device = Device::new_cuda(0).unwrap_or(Device::Cpu);
+    eprintln!("Using device: {:?}", device);
 
     // Tensor operations benchmark
     c.bench_function("tensor_matmul_512x512", |b| {
@@ -68,7 +70,9 @@ fn tensor_benchmark(c: &mut Criterion) {
 }
 
 fn feature_fusion_benchmark(c: &mut Criterion) {
-    let device = Device::Cpu;
+    // Prefer GPU for feature operations
+    let device = Device::new_cuda(0).unwrap_or(Device::Cpu);
+    eprintln!("Using device: {:?}", device);
 
     // Simulate BERT feature fusion
     // BERT output: [batch, seq, 768]

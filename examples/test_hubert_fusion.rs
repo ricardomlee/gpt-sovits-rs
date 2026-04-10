@@ -11,9 +11,10 @@ fn main() {
 fn run_test() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== Testing Hubert Feature Fusion ===\n");
 
-    // Initialize pipeline
+    // Initialize pipeline with GPU (CUDA) preference
     let config = Config::builder()
-        .with_device("cpu")
+        .with_device("cuda")  // Prefer GPU
+        .with_half_precision(true)  // Use FP16 for better performance
         .build();
 
     let mut pipeline = Pipeline::new(config)?;
