@@ -6,6 +6,7 @@ pub mod bert;
 pub mod bigvgan;
 pub mod gpt;
 pub mod hubert;
+pub mod mrte;
 pub mod sovits;
 pub mod transformer;
 
@@ -13,6 +14,7 @@ pub use bert::BertModel;
 pub use bigvgan::BigVGAN;
 pub use gpt::GPTModel;
 pub use hubert::HubertModel;
+pub use mrte::MRTE;
 pub use sovits::SoVITSModel;
 pub use transformer::{Transformer, TransformerConfig, TransformerBlock, MultiHeadAttention};
 

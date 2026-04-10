@@ -6,12 +6,14 @@
 //! - Separate text and audio embeddings
 //! - BERT feature projection
 //! - Hubert feature projection for prosody guidance
+//! - MRTE (Multi-Reference Timbre Encoder) for advanced fusion
 
 use candle_core::{Device, DType, Tensor, D};
 use candle_nn::ops::softmax;
 use crate::{Result, Error};
 use crate::utils::{StateDict, load_safetensors};
 use super::transformer::{TransformerGPTSoVITS, TransformerConfig};
+use super::mrte::MRTE;
 
 /// GPT Model for semantic token prediction
 pub struct GPTModel {
@@ -20,6 +22,7 @@ pub struct GPTModel {
     audio_embedding: Tensor,     // model.ar_audio_embedding.word_embeddings.weight [1025, hidden_size]
     bert_proj: Option<(Tensor, Tensor)>, // (weight, bias) for BERT features [512, 1024], [512]
     hubert_proj: Option<(Tensor, Tensor)>, // (weight, bias) for Hubert features [512, 768], [512]
+    mrte: Option<MRTE>,          // MRTE module for advanced cross-attention fusion
     transformer: TransformerGPTSoVITS,
     ar_predict_layer: Tensor,    // output projection [vocab_size, hidden_size]
     device: Device,
@@ -126,6 +129,24 @@ impl GPTModel {
             None
         };
 
+        // Load MRTE module (optional) - for advanced cross-attention fusion
+        // MRTE is used when both BERT and Hubert features are available
+        let mrte = if state_dict.contains("model.mrte.cross_attention.conv_q.weight") {
+            // Convert StateDict to HashMap for VarBuilder
+            let mrte_vb = candle_nn::VarBuilder::from_tensors(
+                state_dict.as_hash_map().clone(),
+                DType::F32,
+                device,
+            );
+            // Check if we can access MRTE weights
+            match MRTE::new(768, 512, 512, 8, mrte_vb.pp("model.mrte")) {
+                Ok(mrte) => Some(mrte),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+
         // Count number of transformer layers
         let mut num_hidden_layers = 0;
         for key in state_dict.keys() {
@@ -163,6 +184,7 @@ impl GPTModel {
             audio_embedding,
             bert_proj,
             hubert_proj,
+            mrte,
             transformer,
             ar_predict_layer,
             device: device.clone(),
@@ -348,63 +370,95 @@ impl GPTModel {
             // Get token embeddings - use mixed lookup for text + audio tokens
             let token_emb = mixed_embedding_lookup(&self.text_embedding, &self.audio_embedding, &current_ids, self.vocab_size)?;
 
-            // Fuse with BERT features if available
-            let mut fused_emb = token_emb;
-            if let Some(ref bert_proj) = bert_proj_result {
-                // Ensure shapes match for fusion
-                if bert_proj.dims().len() >= 2 {
-                    let bert_seq_len = bert_proj.dims()[1];
-                    if bert_seq_len >= seq_len {
-                        // Narrow BERT features to match current sequence length
-                        let bert_narrowed = if bert_seq_len > seq_len {
-                            bert_proj.narrow(1, 0, seq_len)?
+            // Fuse features using MRTE if available, otherwise fall back to simple addition
+            let fused_emb = if let Some(ref mrte) = self.mrte {
+                // Use MRTE for advanced cross-attention fusion
+                // MRTE expects: [batch, channels, seq_len] format
+                if let (Some(bert), Some(hubert)) = (bert_proj_result.as_ref(), hubert_proj_result.as_ref()) {
+                    // Transpose embeddings: [1, seq, 512] -> [1, 512, seq]
+                    let token_emb_t = token_emb.transpose(1, 2)?;
+
+                    // Prepare BERT features as text encoding [1, 512, bert_seq]
+                    let bert_t = bert.transpose(1, 2)?;
+
+                    // Prepare Hubert features as content encoding [1, 512, hubert_frames]
+                    let hubert_t = hubert.transpose(1, 2)?;
+
+                    // Create masks
+                    let ones_mask = Tensor::ones((1, 1, seq_len), DType::F32, &self.device)?;
+
+                    // MRTE forward: content (Hubert) attends to text (BERT)
+                    match mrte.forward(&hubert_t, &ones_mask, &bert_t, &ones_mask, None) {
+                        Ok(mrte_out) => {
+                            // MRTE output: [1, 512, hubert_frames]
+                            // Need to align to token_emb seq_len
+                            let mrte_frames = mrte_out.dims()[2];
+                            let mrte_aligned = if mrte_frames >= seq_len {
+                                mrte_out.narrow(2, 0, seq_len)?
+                            } else {
+                                // Repeat last frame
+                                let last_frame = mrte_out.narrow(2, mrte_frames - 1, 1)?;
+                                let mut frames = vec![mrte_out.clone()];
+                                for _ in 0..(seq_len - mrte_frames) {
+                                    frames.push(last_frame.clone());
+                                }
+                                Tensor::cat(&frames, 2).unwrap_or_else(|_| mrte_out.clone())
+                            };
+                            // Transpose back: [1, 512, seq] -> [1, seq, 512]
+                            mrte_aligned.transpose(1, 2).unwrap_or_else(|_| token_emb.clone())
+                        }
+                        Err(_) => token_emb.clone(),
+                    }
+                } else {
+                    token_emb.clone()
+                }
+            } else {
+                // Fallback: simple residual fusion with BERT and Hubert
+                let mut fused_emb = token_emb.clone();
+
+                // Fuse with BERT features if available
+                if let Some(ref bert_proj) = bert_proj_result {
+                    if bert_proj.dims().len() >= 2 {
+                        let bert_seq_len = bert_proj.dims()[1];
+                        if bert_seq_len >= seq_len {
+                            let bert_narrowed = if bert_seq_len > seq_len {
+                                bert_proj.narrow(1, 0, seq_len)?
+                            } else {
+                                bert_proj.clone()
+                            };
+                            if bert_narrowed.dims() == fused_emb.dims() {
+                                let scale = 0.5f32;
+                                let scaled_bert = bert_narrowed.broadcast_mul(&Tensor::full(scale, bert_narrowed.dims(), &self.device)?)?;
+                                fused_emb = fused_emb.broadcast_add(&scaled_bert)?;
+                            }
+                        }
+                    }
+                }
+
+                // Fuse with Hubert features if available
+                if let Some(ref hubert_proj) = hubert_proj_result {
+                    let hubert_frames = hubert_proj.dims()[1];
+                    if hubert_frames > 0 {
+                        let hubert_aligned = if hubert_frames >= seq_len {
+                            hubert_proj.narrow(1, 0, seq_len)?
                         } else {
-                            bert_proj.clone()
+                            let last_frame = hubert_proj.narrow(1, hubert_frames - 1, 1)?;
+                            let mut frames = vec![hubert_proj.clone()];
+                            for _ in 0..(seq_len - hubert_frames) {
+                                frames.push(last_frame.clone());
+                            }
+                            Tensor::cat(&frames, 1).unwrap_or_else(|_| hubert_proj.clone())
                         };
-                        // Add BERT features to embeddings (residual connection)
-                        // Scale factor to balance embeddings and BERT features
-                        if bert_narrowed.dims() == fused_emb.dims() {
-                            // Apply layer norm-like scaling
-                            let scale = 0.5f32;
-                            let scaled_bert = bert_narrowed.broadcast_mul(&Tensor::full(scale, bert_narrowed.dims(), &self.device)?)?;
-                            fused_emb = fused_emb.broadcast_add(&scaled_bert)?;
+                        if hubert_aligned.dims() == fused_emb.dims() {
+                            let scale = 0.3f32;
+                            let scaled_hubert = hubert_aligned.broadcast_mul(&Tensor::full(scale, hubert_aligned.dims(), &self.device)?)?;
+                            fused_emb = fused_emb.broadcast_add(&scaled_hubert)?;
                         }
                     }
                 }
-            }
 
-            // Fuse with Hubert features if available
-            if let Some(ref hubert_proj) = hubert_proj_result {
-                // Hubert features are in frame space (e.g., 49 frames for 1s audio)
-                // We need to interpolate/align to match the phoneme sequence length
-                let hubert_frames = hubert_proj.dims()[1];
-
-                if hubert_frames > 0 {
-                    // Simple approach: repeat Hubert features to match sequence length
-                    // or use the last available frame if sequence is longer
-                    let hubert_aligned = if hubert_frames >= seq_len {
-                        // Narrow Hubert features to match sequence
-                        hubert_proj.narrow(1, 0, seq_len)?
-                    } else {
-                        // Repeat the last Hubert frame to fill the sequence
-                        // This is a simplification; full MRTE uses cross-attention
-                        let last_frame = hubert_proj.narrow(1, hubert_frames - 1, 1)?;
-                        let mut frames = vec![hubert_proj.clone()];
-                        for _ in 0..(seq_len - hubert_frames) {
-                            frames.push(last_frame.clone());
-                        }
-                        Tensor::cat(&frames, 1).unwrap_or_else(|_| hubert_proj.clone())
-                    };
-
-                    // Ensure shapes match and fuse
-                    if hubert_aligned.dims() == fused_emb.dims() {
-                        // Apply scaling for Hubert features (prosody guidance)
-                        let scale = 0.3f32;
-                        let scaled_hubert = hubert_aligned.broadcast_mul(&Tensor::full(scale, hubert_aligned.dims(), &self.device)?)?;
-                        fused_emb = fused_emb.broadcast_add(&scaled_hubert)?;
-                    }
-                }
-            }
+                fused_emb
+            };
 
             // Forward pass through transformer
             let hidden = self.transformer.forward_from_embedding(&fused_emb)?;

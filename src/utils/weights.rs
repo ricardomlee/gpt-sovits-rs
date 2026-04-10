@@ -174,6 +174,11 @@ impl StateDict {
 
         Ok(Conv1dWeightNorm::new(weight_g, weight_v, bias, 1, padding, 1))
     }
+
+    /// Get internal HashMap for VarBuilder
+    pub fn as_hash_map(&self) -> &HashMap<String, Tensor> {
+        &self.data
+    }
 }
 
 /// Embedding layer
