@@ -140,7 +140,12 @@ pub fn update(&mut self, k: Tensor, v: Tensor) -> Result<(Tensor, Tensor)> {
 **性能分析**:
 - 理论加速：O(n²) → O(n)，500 tokens 约 250x
 - 实测加速 (CPU): 18x (20.48s vs 368.82s)
-- 实测加速 (GPU RTX 4060 Ti): GPT 生成 7.52s (vs CPU 16.17s)
+- 实测加速 (GPU RTX 4060 Ti): 1.65x (8.01s vs 13.23s)
+
+**为什么 GPU 加速比小？**
+- GPU 并行计算能力强，KV Cache 的计算优化收益相对较小
+- 但 KV Cache 减少了内存带宽压力，仍有 1.65x 提升
+- CPU 受限于内存带宽，KV Cache 收益更明显 (18x)
 
 ### 全流程性能 (GPU)
 

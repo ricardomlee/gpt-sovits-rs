@@ -124,7 +124,8 @@ GPT 自回归生成默认启用 KV Cache 优化，避免重复计算之前 token
 |------|------|------|--------|
 | CPU | 无 KV Cache | 368.82s | 1.0x |
 | CPU | 启用 KV Cache | 20.48s | **18.0x** |
-| GPU (RTX 4060 Ti) | 启用 KV Cache | 1.15s | **~320x vs CPU 无缓存** |
+| GPU (RTX 4060 Ti) | 无 KV Cache | 13.23s | 1.0x |
+| GPU (RTX 4060 Ti) | 启用 KV Cache | 8.01s | **1.65x** |
 
 **原理**:
 ```
@@ -134,8 +135,11 @@ KV Cache: O(n)  - 缓存 K/V，只计算新 token 的 K/V
 
 **运行基准测试**:
 ```bash
-# 需要 CUDA
-cargo run --release --features cuda --example benchmark_kv_cache
+# GPU 对比测试 (需要 CUDA)
+cargo run --release --features cuda --example benchmark_gpu_kv_cache
+
+# CPU 对比测试
+cargo run --release --example benchmark_kv_cache
 ```
 
 ### 全流程性能分析 (KV Cache)
