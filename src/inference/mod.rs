@@ -233,7 +233,7 @@ impl Pipeline {
                     Some(features)
                 }
                 Err(e) => {
-                    tracing::warn!("Hubert extraction failed: {}, using zero tensor", e);
+                    tracing::warn!("Failed to extract Hubert features: {}", e);
                     None
                 }
             }
@@ -241,7 +241,7 @@ impl Pipeline {
             None
         };
 
-        // Step 3: Get BERT features from text
+        // Step 3: Extract BERT features from text
         let bert_features = if let Some(bert) = &mut self.bert_model {
             match bert.extract(text) {
                 Ok(features) => {
@@ -249,7 +249,7 @@ impl Pipeline {
                     Some(features)
                 }
                 Err(e) => {
-                    tracing::warn!("BERT extraction failed: {}, using zero tensor", e);
+                    tracing::warn!("Failed to extract BERT features: {}", e);
                     None
                 }
             }
@@ -257,7 +257,7 @@ impl Pipeline {
             None
         };
 
-        // Step 4: Run GPT model to generate semantic tokens (with BERT/Hubert features if available)
+        // Step 4: Generate semantic tokens with GPT
         let semantic_tokens = gpt.generate_with_features(
             &phoneme_ids,
             bert_features.as_ref(),
@@ -266,37 +266,94 @@ impl Pipeline {
             options.top_p,
             options.temperature,
         )?;
+
         tracing::info!("Generated {} semantic tokens", semantic_tokens.len());
 
-        // Step 5: Run SoVITS to generate mel spectrogram
+        // Step 5: Synthesize mel spectrogram with SoVITS
         let mel_spec = sovits.synthesize(&semantic_tokens, None)?;
-        let mel_dims = mel_spec.dims();
-        tracing::info!("SoVITS output mel spectrogram: {:?}", mel_dims);
 
-        // Step 6: Run BigVGAN to generate waveform
-        let waveform = if let Some(bigvgan) = &self.bigvgan_model {
-            tracing::info!("Running BigVGAN with input: {:?}", mel_dims);
-            match bigvgan.generate(&mel_spec) {
-                Ok(w) => {
-                    tracing::info!("BigVGAN output: {} samples", w.len());
-                    w
-                }
-                Err(e) => {
-                    tracing::error!("BigVGAN failed: {}", e);
-                    vec![0.0f32; 24000] // 1 second silence
-                }
-            }
-        } else {
-            // Fallback: generate simple waveform from mel spec dimensions
-            // This produces silence but with correct duration
-            let frames = mel_dims[2];
-            let hop_length = 256;
-            tracing::info!("Using fallback: {} frames * {} hop = {} samples", frames, hop_length, frames * hop_length);
-            vec![0.0f32; frames * hop_length]
-        };
+        // Step 6: Generate audio with BigVGAN
+        let audio_samples = self.bigvgan_model.as_ref().ok_or_else(|| {
+            Error::ModelLoadError("BigVGAN model not loaded".to_string())
+        })?.generate(&mel_spec)?;
 
         // Create audio buffer
-        let audio = AudioBuffer::new(waveform, 24000, 1);
+        let audio = AudioBuffer::new(
+            audio_samples,
+            self.bigvgan_model.as_ref().unwrap().sampling_rate(),
+            1,
+        );
+
+        tracing::info!("Generated audio: {} samples", audio.samples.len());
+
+        Ok(audio)
+    }
+
+    /// Run TTS inference with KV cache optimization
+    pub fn inference_kv_cache<P: AsRef<Path>>(
+        &mut self,
+        text: &str,
+        reference_audio: P,
+        _reference_text: &str,
+        options: &InferenceOptions,
+    ) -> Result<AudioBuffer> {
+        // Validate models are loaded
+        let gpt = self.gpt_model.as_ref().ok_or_else(|| {
+            Error::ModelLoadError("GPT model not loaded".to_string())
+        })?;
+        let sovits = self.sovits_model.as_ref().ok_or_else(|| {
+            Error::ModelLoadError("SoVITS model not loaded".to_string())
+        })?;
+
+        // Step 1: Process text through frontend to get phoneme IDs
+        let phoneme_ids = self.text_frontend.process(text, options.language)?;
+
+        // Step 2: Extract Hubert features from reference audio
+        let hubert_features = if let Some(hubert) = &mut self.hubert_model {
+            match hubert.extract(reference_audio.as_ref()) {
+                Ok(features) => Some(features),
+                Err(_) => None
+            }
+        } else {
+            None
+        };
+
+        // Step 3: Extract BERT features from text
+        let bert_features = if let Some(bert) = &mut self.bert_model {
+            match bert.extract(text) {
+                Ok(features) => Some(features),
+                Err(_) => None
+            }
+        } else {
+            None
+        };
+
+        // Step 4: Generate semantic tokens with GPT using KV cache
+        let semantic_tokens = gpt.generate_with_features_kv_cache(
+            &phoneme_ids,
+            bert_features.as_ref(),
+            hubert_features.as_ref(),
+            options.top_k,
+            options.top_p,
+            options.temperature,
+        )?;
+
+        tracing::info!("Generated {} semantic tokens (with KV cache)", semantic_tokens.len());
+
+        // Step 5: Synthesize mel spectrogram with SoVITS
+        let mel_spec = sovits.synthesize(&semantic_tokens, None)?;
+
+        // Step 6: Generate audio with BigVGAN
+        let audio_samples = self.bigvgan_model.as_ref().ok_or_else(|| {
+            Error::ModelLoadError("BigVGAN model not loaded".to_string())
+        })?.generate(&mel_spec)?;
+
+        // Create audio buffer
+        let audio = AudioBuffer::new(
+            audio_samples,
+            self.bigvgan_model.as_ref().unwrap().sampling_rate(),
+            1,
+        );
 
         Ok(audio)
     }

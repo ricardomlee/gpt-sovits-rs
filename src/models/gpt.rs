@@ -11,7 +11,7 @@
 use candle_core::{Device, DType, Tensor, D};
 use candle_nn::ops::softmax;
 use crate::{Result, Error};
-use crate::utils::{StateDict, load_safetensors};
+use crate::utils::{StateDict, load_safetensors, KvCacheManager};
 use super::transformer::{TransformerGPTSoVITS, TransformerConfig};
 use super::mrte::MRTE;
 
@@ -28,6 +28,7 @@ pub struct GPTModel {
     device: Device,
     dtype: DType,
     vocab_size: usize,
+    num_layers: usize,           // Number of transformer layers for KV cache
 }
 
 /// Lookup embeddings handling both text and audio tokens
@@ -190,6 +191,7 @@ impl GPTModel {
             device: device.clone(),
             dtype: DType::F32,
             vocab_size,
+            num_layers: num_hidden_layers,
         })
     }
 
@@ -275,6 +277,182 @@ impl GPTModel {
         self.generate_with_features(phoneme_ids, None, None, top_k, top_p, temperature)
     }
 
+    /// Generate semantic tokens with BERT and Hubert features (with KV cache optimization)
+    ///
+    /// This method uses KV cache to speed up autoregressive generation.
+    /// KV cache avoids recomputing K and V for previous tokens.
+    ///
+    /// # Arguments
+    /// * `phoneme_ids` - Input phoneme sequence
+    /// * `bert_features` - Optional BERT features [batch, seq_len, 768]
+    /// * `hubert_features` - Optional Hubert features [batch, frames, 768]
+    /// * `top_k` - Top-k sampling parameter
+    /// * `top_p` - Top-p (nucleus) sampling parameter
+    /// * `temperature` - Sampling temperature
+    ///
+    /// # Returns
+    /// Vector of semantic token IDs
+    pub fn generate_with_features_kv_cache(
+        &self,
+        phoneme_ids: &[usize],
+        bert_features: Option<&Tensor>,
+        hubert_features: Option<&Tensor>,
+        top_k: usize,
+        top_p: f32,
+        temperature: f32,
+    ) -> Result<Vec<usize>> {
+        if phoneme_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Initialize KV cache for all transformer layers
+        let mut kv_cache_manager = KvCacheManager::new(self.num_layers);
+
+        // Convert phoneme IDs to tensor [1, seq_len]
+        let input_ids: Vec<i64> = phoneme_ids.iter().map(|&x| x as i64).collect();
+        let mut current_ids = Tensor::new(input_ids.as_slice(), &self.device)?
+            .unsqueeze(0)?;
+
+        let mut generated_tokens = Vec::new();
+        let max_new_tokens = 500;
+
+        // Prepare BERT projection if available
+        let bert_proj_result = if let Some(bert) = bert_features {
+            if let Some((proj_w, proj_b)) = &self.bert_proj {
+                let bert_dims = bert.dims();
+                // BERT output is [1, seq_len, 1024]
+                let bert_reshaped = if bert_dims.len() == 3 && bert_dims[1] == 1024 {
+                    bert.transpose(1, 2)?
+                } else {
+                    bert.clone()
+                };
+
+                // Project from 1024 to 512
+                if bert_reshaped.dims().last().copied() == Some(1024) {
+                    let projected = bert_reshaped.matmul(&proj_w.t()?)?;
+                    let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
+                    Some(projected)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Prepare Hubert projection
+        let hubert_proj_result = if let Some(hubert) = hubert_features {
+            if let Some((proj_w, proj_b)) = &self.hubert_proj {
+                let hubert_dims = hubert.dims();
+                if hubert_dims.len() >= 2 && hubert_dims.last().copied() == Some(768) {
+                    let hubert_reshaped = if hubert_dims.len() == 3 && hubert_dims[1] == 768 {
+                        hubert.transpose(1, 2)?
+                    } else {
+                        hubert.clone()
+                    };
+
+                    let projected = hubert_reshaped.matmul(&proj_w.t()?)?;
+                    let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
+                    Some(projected)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Autoregressive generation with KV cache
+        for _step in 0..max_new_tokens {
+            let seq_len = current_ids.dims()[1];
+
+            // Get token embeddings
+            let token_emb = mixed_embedding_lookup(&self.text_embedding, &self.audio_embedding, &current_ids, self.vocab_size)?;
+
+            // Fuse with BERT/Hubert features (only for the first position in generation)
+            let mut fused_emb = token_emb.clone();
+            if _step == 0 {
+                // Only fuse features at the beginning of generation
+                if let Some(ref bert_proj) = bert_proj_result {
+                    if bert_proj.dims().len() >= 2 {
+                        let bert_seq_len = bert_proj.dims()[1];
+                        if bert_seq_len >= seq_len {
+                            let bert_narrowed = if bert_seq_len > seq_len {
+                                bert_proj.narrow(1, 0, seq_len)?
+                            } else {
+                                bert_proj.clone()
+                            };
+                            if bert_narrowed.dims() == fused_emb.dims() {
+                                let scale = 0.5f32;
+                                let scaled_bert = bert_narrowed.broadcast_mul(&Tensor::full(scale, bert_narrowed.dims(), &self.device)?)?;
+                                fused_emb = fused_emb.broadcast_add(&scaled_bert)?;
+                            }
+                        }
+                    }
+                }
+
+                if let Some(ref hubert_proj) = hubert_proj_result {
+                    let hubert_frames = hubert_proj.dims()[1];
+                    if hubert_frames > 0 {
+                        let hubert_aligned = if hubert_frames >= seq_len {
+                            hubert_proj.narrow(1, 0, seq_len)?
+                        } else {
+                            let last_frame = hubert_proj.narrow(1, hubert_frames - 1, 1)?;
+                            let mut frames = vec![hubert_proj.clone()];
+                            for _ in 0..(seq_len - hubert_frames) {
+                                frames.push(last_frame.clone());
+                            }
+                            Tensor::cat(&frames, 1).unwrap_or_else(|_| hubert_proj.clone())
+                        };
+                        if hubert_aligned.dims() == fused_emb.dims() {
+                            let scale = 0.3f32;
+                            let scaled_hubert = hubert_aligned.broadcast_mul(&Tensor::full(scale, hubert_aligned.dims(), &self.device)?)?;
+                            fused_emb = fused_emb.broadcast_add(&scaled_hubert)?;
+                        }
+                    }
+                }
+            }
+
+            // For KV cache, we only pass the last token embedding
+            // The cache contains all previous tokens
+            let last_token_emb = fused_emb.narrow(1, seq_len - 1, 1)?;
+
+            // Create causal mask for current sequence length (including cached tokens)
+            let total_seq_len = kv_cache_manager.len() + 1;
+            let causal_mask = TransformerGPTSoVITS::create_causal_mask(total_seq_len, &self.device)?;
+
+            // Forward through transformer with KV cache
+            // last_token_emb: [1, 1, hidden], hidden output: [1, 1, hidden]
+            let hidden = self.transformer.forward_from_embedding_kv(&last_token_emb, Some(&causal_mask), &mut kv_cache_manager)?;
+
+            // Project to vocab: [1, 1, hidden] @ [vocab, hidden]^T -> [1, 1, vocab]
+            let last_hidden = hidden.squeeze(0)?; // [1, hidden]
+            let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?; // [1, vocab]
+            let logits = logits.squeeze(0)?; // [vocab]
+
+            // Sample next token
+            let next_token = Self::sample_token(&logits, top_k, top_p, temperature)?;
+
+            // Check for end-of-sequence token
+            let audio_vocab_size = self.ar_predict_layer.dims()[0];
+            if next_token >= audio_vocab_size - 1 {
+                break;
+            }
+
+            generated_tokens.push(next_token);
+
+            // Append token to input for next iteration
+            let next_tensor = Tensor::new(&[next_token as i64], &self.device)?;
+            current_ids = Tensor::cat(&[current_ids, next_tensor.unsqueeze(0)?], 1)?;
+        }
+
+        Ok(generated_tokens)
+    }
+
     /// Generate semantic tokens with BERT and Hubert features
     ///
     /// # Arguments
@@ -311,18 +489,18 @@ impl GPTModel {
         // Prepare BERT projection if available
         let bert_proj_result = if let Some(bert) = bert_features {
             if let Some((proj_w, proj_b)) = &self.bert_proj {
-                // Project BERT features: [batch, seq, 768] @ [768, 512] + bias -> [batch, seq, 512]
-                // BERT output is typically [1, 768, seq] or [1, seq, 768]
+                // Project BERT features: [batch, seq, 1024] @ [1024, 512] + bias -> [batch, seq, 512]
+                // BERT output is [1, seq_len, 1024]
                 let bert_dims = bert.dims();
-                let bert_reshaped = if bert_dims.len() == 3 && bert_dims[1] == 768 {
-                    // Shape: [batch, 768, seq] -> transpose to [batch, seq, 768]
+                let bert_reshaped = if bert_dims.len() == 3 && bert_dims[1] == 1024 {
+                    // Shape: [batch, 1024, seq] -> transpose to [batch, seq, 1024]
                     bert.transpose(1, 2)?
                 } else {
                     bert.clone()
                 };
 
-                // Ensure last dim is 768 for projection
-                if bert_reshaped.dims().last().copied() == Some(768) {
+                // Ensure last dim is 1024 for projection
+                if bert_reshaped.dims().last().copied() == Some(1024) {
                     let projected = bert_reshaped.matmul(&proj_w.t()?)?;
                     let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
                     Some(projected)

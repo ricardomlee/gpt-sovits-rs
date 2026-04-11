@@ -4,7 +4,7 @@
 
 use candle_core::{Tensor, Device, D, DType};
 use crate::Result;
-use crate::utils::{StateDict, Embedding, Linear, LayerNorm};
+use crate::utils::{StateDict, Embedding, Linear, LayerNorm, KvCacheManager};
 
 /// Multi-head attention mechanism
 #[derive(Debug, Clone)]
@@ -91,6 +91,97 @@ impl MultiHeadAttention {
         // Output projection
         self.wo.forward(&attn_output)
     }
+
+    /// Forward with KV cache for inference
+    ///
+    /// # Arguments
+    /// * `x` - Input tensor [batch, seq_len, hidden_size]
+    /// * `mask` - Optional attention mask
+    /// * `cache` - Optional KV cache for this layer
+    /// * `use_cache` - Whether to update cache (for inference) or just read (for prefill)
+    ///
+    /// # Returns
+    /// Output tensor and optionally updated KV cache
+    pub fn forward_kv(
+        &self,
+        x: &Tensor,
+        mask: Option<&Tensor>,
+        cache: Option<&mut crate::utils::KvCache>,
+        use_cache: bool,
+    ) -> Result<Tensor> {
+        let dims = x.dims();
+        let (batch_size, seq_len, _) = (dims[0], dims[1], dims[2]);
+
+        // Compute Q, K, V projections
+        let q = self.wq.forward(x)?;
+        let k = self.wk.forward(x)?;
+        let v = self.wv.forward(x)?;
+
+        // Split into heads
+        let q = self.split_heads(&q, batch_size, seq_len)?;
+        let k = self.split_heads(&k, batch_size, seq_len)?;
+        let v = self.split_heads(&v, batch_size, seq_len)?;
+
+        // Update KV cache if enabled
+        let (k, v) = if use_cache {
+            if let Some(cache) = cache {
+                cache.update(k, v)?
+            } else {
+                (k, v)
+            }
+        } else {
+            (k, v)
+        };
+
+        // Scaled dot-product attention with cached K, V
+        let k_t = k.transpose(D::Minus2, D::Minus1)?.contiguous()?;
+        let q_contiguous = q.contiguous()?;
+        let attn_weights = q_contiguous.matmul(&k_t)?;
+
+        // Apply scale
+        let scale_val = self.scale as f32;
+        let scale_tensor = Tensor::full(scale_val, attn_weights.dims(), &attn_weights.device())?;
+        let scale_tensor = scale_tensor.to_dtype(attn_weights.dtype())?;
+        let attn_weights = attn_weights.broadcast_mul(&scale_tensor)?;
+
+        // Apply causal mask if provided
+        // For KV cache, attn_weights shape is [batch, heads, 1, total_seq_len]
+        // We need the last row of the mask (for the new token)
+        let attn_weights = if let Some(m) = mask {
+            let total_seq_len = k.dims()[2];
+            let mask_for_q = if seq_len == 1 && total_seq_len > 1 {
+                // Only have Q for the last token, get last row of mask
+                m.narrow(0, total_seq_len - 1, 1)?
+            } else {
+                m.clone()
+            };
+            let mask_expanded = mask_for_q.broadcast_left((batch_size, self.n_heads))?;
+            let mask_expanded = mask_expanded.to_dtype(attn_weights.dtype())?;
+            let neg_inf_val = -1e9f32;
+            let neg_inf = Tensor::full(neg_inf_val, attn_weights.dims(), &attn_weights.device())?;
+            let neg_inf = neg_inf.to_dtype(attn_weights.dtype())?;
+            let mask_weighted = mask_expanded.broadcast_mul(&neg_inf)?;
+            attn_weights.add(&mask_weighted)?
+        } else {
+            attn_weights
+        };
+
+        // Softmax
+        let attn_probs = candle_nn::ops::softmax(&attn_weights, D::Minus1)?;
+
+        // Apply attention to values
+        let attn_probs = attn_probs.contiguous()?;
+        let v_contiguous = v.contiguous()?;
+        let attn_output = attn_probs.matmul(&v_contiguous)?;
+
+        // Concatenate heads
+        let attn_output = attn_output
+            .transpose(1, 2)?
+            .reshape((batch_size, seq_len, self.n_heads * self.head_dim))?;
+
+        // Output projection
+        self.wo.forward(&attn_output)
+    }
 }
 
 /// Feed-forward network with SwiGLU activation
@@ -142,6 +233,26 @@ impl TransformerBlock {
         // Pre-norm architecture
         let normed = self.attn_norm.forward(x)?;
         let attn_output = self.attention.forward(&normed, mask)?;
+        // Residual connection
+        let x = x.add(&attn_output)?;
+
+        let normed = self.ffn_norm.forward(&x)?;
+        let ff_output = self.feed_forward.forward(&normed)?;
+        // Residual connection
+        Ok(x.add(&ff_output)?)
+    }
+
+    /// Forward with KV cache for inference
+    pub fn forward_kv(
+        &self,
+        x: &Tensor,
+        mask: Option<&Tensor>,
+        cache: Option<&mut crate::utils::KvCache>,
+        use_cache: bool,
+    ) -> Result<Tensor> {
+        // Pre-norm architecture
+        let normed = self.attn_norm.forward(x)?;
+        let attn_output = self.attention.forward_kv(&normed, mask, cache, use_cache)?;
         // Residual connection
         let x = x.add(&attn_output)?;
 
@@ -558,6 +669,32 @@ impl TransformerGPTSoVITS {
         // Apply transformer layers
         for layer in &self.layers {
             x = layer.forward(&x, Some(&causal_mask))?;
+        }
+
+        Ok(x)
+    }
+
+    /// Forward from embeddings with KV cache support
+    pub fn forward_from_embedding_kv(
+        &self,
+        embeddings: &Tensor,
+        mask: Option<&Tensor>,
+        kv_cache_manager: &mut KvCacheManager,
+    ) -> Result<Tensor> {
+        let mut x = embeddings.clone();
+
+        // Use provided mask or create causal mask
+        let causal_mask = if let Some(m) = mask {
+            m.clone()
+        } else {
+            let (_, seq_len, _) = embeddings.dims3()?;
+            Self::create_causal_mask(seq_len, &self.device)?
+        };
+
+        // Apply transformer layers with KV cache
+        for (layer_idx, layer) in self.layers.iter().enumerate() {
+            let cache = kv_cache_manager.get_or_create(layer_idx);
+            x = layer.forward_kv(&x, Some(&causal_mask), Some(cache), true)?;
         }
 
         Ok(x)
