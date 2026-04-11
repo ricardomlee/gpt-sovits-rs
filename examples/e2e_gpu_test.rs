@@ -19,12 +19,12 @@ fn run_test() -> Result<(), Box<dyn std::error::Error>> {
     println!("CUDA available: {}", cuda_available);
 
     if !cuda_available {
-        eprintln!("WARNING: CUDA not available, falling back to CPU");
+        return Err("CUDA not available. Please install CUDA Toolkit and rebuild with --features cuda".into());
     }
 
     // Initialize pipeline with GPU preference
     let config = Config::builder()
-        .with_device(if cuda_available { "cuda" } else { "cpu" })
+        .with_device("cuda")
         .with_half_precision(true)
         .build();
 

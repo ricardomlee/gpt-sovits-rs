@@ -18,8 +18,12 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     let cuda_available = candle_core::Device::new_cuda(0).is_ok();
     println!("CUDA available: {}", cuda_available);
 
+    if !cuda_available {
+        return Err("CUDA not available. Please install CUDA Toolkit and rebuild with --features cuda".into());
+    }
+
     let config = Config::builder()
-        .with_device(if cuda_available { "cuda" } else { "cpu" })
+        .with_device("cuda")
         .with_half_precision(true)
         .build();
 

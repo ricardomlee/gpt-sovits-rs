@@ -139,7 +139,28 @@ pub fn update(&mut self, k: Tensor, v: Tensor) -> Result<(Tensor, Tensor)> {
 
 **性能分析**:
 - 理论加速：O(n²) → O(n)，500 tokens 约 250x
-- 实测加速：18x (受内存带宽限制)
+- 实测加速 (CPU): 18x (20.48s vs 368.82s)
+- 实测加速 (GPU RTX 4060 Ti): GPT 生成 7.52s (vs CPU 16.17s)
+
+### 全流程性能 (GPU)
+
+**实测结果** (RTX 4060 Ti, 500 tokens, KV Cache 启用):
+
+| 阶段 | 时间 | 占比 |
+|------|------|------|
+| GPT (KV Cache) | 7.52s | 91.9% |
+| BigVGAN | 652ms | 8.0% |
+| SoVITS | 7.6ms | 0.1% |
+| BERT/Hubert (ONNX) | <1ms | <0.1% |
+| **总计** | **8.18s** | 100% |
+
+**输出**: 1.33s 音频 @ 24kHz
+**实时率 (RTF)**: 0.16 (6.1x 实时)
+
+**CPU vs GPU 对比**:
+- GPT: 16.17s (CPU) → 7.52s (GPU) = 2.1x
+- BigVGAN: 3.68s (CPU) → 0.65s (GPU) = 5.6x
+- 总计：19.95s (CPU) → 8.18s (GPU) = 2.4x
 
 ### 模型架构
 

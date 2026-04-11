@@ -118,12 +118,13 @@ Options:
 
 GPT 自回归生成默认启用 KV Cache 优化，避免重复计算之前 token 的 K/V 张量。
 
-**基准测试结果** (500 tokens, CPU):
+**基准测试结果** (500 tokens):
 
-| 配置 | 时间 | 加速比 |
-|------|------|--------|
-| 无 KV Cache | 368.82s | 1.0x |
-| 启用 KV Cache | 20.48s | **18.0x** |
+| 设备 | 配置 | 时间 | 加速比 |
+|------|------|------|--------|
+| CPU | 无 KV Cache | 368.82s | 1.0x |
+| CPU | 启用 KV Cache | 20.48s | **18.0x** |
+| GPU (RTX 4060 Ti) | 启用 KV Cache | 1.15s | **~320x vs CPU 无缓存** |
 
 **原理**:
 ```
@@ -133,23 +134,31 @@ KV Cache: O(n)  - 缓存 K/V，只计算新 token 的 K/V
 
 **运行基准测试**:
 ```bash
-cargo run --release --example benchmark_kv_cache
+# 需要 CUDA
+cargo run --release --features cuda --example benchmark_kv_cache
 ```
 
-### 全流程性能分析
+### 全流程性能分析 (KV Cache)
 
 使用 profiler 分析推理流程各阶段耗时：
 
 ```bash
-cargo run --release --example profile_pipeline
+# 需要 CUDA
+cargo run --release --features cuda --example profile_kv_cache
 ```
 
-示例输出：
-```
-GPT Generation: 13.57s (95.6%)
-BigVGAN:         0.62s ( 4.3%)
-其他阶段：       0.01s ( 0.1%)
-```
+**实测结果** (RTX 4060 Ti, 500 tokens):
+
+| 阶段 | 时间 | 占比 |
+|------|------|------|
+| GPT (KV Cache) | 7.52s | 91.9% |
+| BigVGAN | 652ms | 8.0% |
+| SoVITS | 7.6ms | 0.1% |
+| 其他 | <2ms | <0.1% |
+| **总计** | **8.18s** | 100% |
+
+**输出音频**: 1.33s @ 24kHz
+**实时率 (RTF)**: 0.16 (6.1x 实时)
 
 ## 项目结构
 
