@@ -148,6 +148,36 @@ impl Pipeline {
         Ok(())
     }
 
+    /// Get mutable reference to text frontend
+    pub fn text_frontend_mut(&mut self) -> &mut TextFrontend {
+        &mut self.text_frontend
+    }
+
+    /// Get reference to Hubert model
+    pub fn hubert_model(&mut self) -> &mut Option<HubertModel> {
+        &mut self.hubert_model
+    }
+
+    /// Get reference to BERT model
+    pub fn bert_model(&mut self) -> &mut Option<BertModel> {
+        &mut self.bert_model
+    }
+
+    /// Get reference to GPT model
+    pub fn gpt_model(&self) -> &Option<GPTModel> {
+        &self.gpt_model
+    }
+
+    /// Get reference to SoVITS model
+    pub fn sovits_model(&self) -> &Option<SoVITSModel> {
+        &self.sovits_model
+    }
+
+    /// Get reference to BigVGAN model
+    pub fn bigvgan_model(&self) -> &Option<BigVGAN> {
+        &self.bigvgan_model
+    }
+
     /// Load Hubert model (optional, uses ONNX)
     pub fn load_hubert<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let device_str = match self.device {

@@ -29,6 +29,10 @@ path = "examples/test_hubert_fusion.rs"
 name = "e2e_gpu_test"
 path = "examples/e2e_gpu_test.rs"
 
+[[example]]
+name = "profile_pipeline"
+path = "examples/profile_pipeline.rs"
+
 [dependencies]
 # Deep Learning Inference
 candle-core = "0.10"
