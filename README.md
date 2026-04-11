@@ -164,6 +164,30 @@ Options:
 
 *RTF = Real Time Factor (inference time / audio duration)*
 
+### KV Cache Optimization
+
+KV Cache optimization is enabled by default for autoregressive GPT generation. This optimization avoids recomputing K/V tensors for previously generated tokens.
+
+**Benchmark Results** (500 tokens, CPU):
+| Configuration | Time | Relative |
+|---------------|------|----------|
+| Without KV Cache | 368.82s | 1.0x |
+| With KV Cache | 20.48s | **18.0x faster** |
+
+**How it works:**
+```
+Traditional: O(n²) - Recompute all K/V for each new token
+KV Cache:    O(n)  - Cache K/V, only compute for new token
+```
+
+To disable KV Cache (for debugging):
+```rust
+let options = InferenceOptions {
+    use_kv_cache: false,  // Default: true
+    ..Default::default()
+};
+```
+
 ## Project Structure
 
 ```
