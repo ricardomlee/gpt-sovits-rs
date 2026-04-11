@@ -1,82 +1,65 @@
 # GPT-SoVITS Rust Implementation
 
-A high-performance Rust implementation of the GPT-SoVITS text-to-speech inference engine.
+高性能 GPT-SoVITS 语音合成推理引擎的 Rust 实现。
 
-## Features
+## 特性
 
-- 🚀 **High Performance**: Pure Rust implementation with Candle backend for efficient inference
-- 📦 **Easy Deployment**: Single binary, no Python environment required
-- 💾 **Low Memory**: Optimized memory footprint with model quantization support
-- 🌍 **Multi-language**: Supports Chinese, English, Japanese, Korean, and Cantonese
-- 🔌 **Flexible API**: CLI tool, Rust library, and optional HTTP server
+- 🚀 **高性能**: 纯 Rust 实现，支持 CUDA GPU 加速
+- 📦 **易于部署**: 单一二进制文件，无需 Python 环境
+- 💾 **低内存**: 优化的内存占用，支持模型量化
+- 🌍 **多语言**: 支持中文、英文、日文、韩文、粤语
+- 🔌 **灵活 API**: CLI 工具、Rust 库、可选 HTTP 服务器
 
-## Architecture
+## 架构
 
 ```
-Input Text → Text Frontend → BERT → GPT Model → SoVITS → BigVGAN → Audio
-                    ↓           ↓         ↓          ↓         ↓
-                Phonemes   Features   Tokens     Mel Spec   Waveform
+输入文本 → 文本前端 → BERT → GPT 模型 → SoVITS → BigVGAN → 音频
+             ↓          ↓        ↓         ↓        ↓
+          音素     特征     语义 token   Mel 频谱  波形
 ```
 
-## Installation
+## 快速开始
 
-### Prerequisites
+### 前置要求
 
-- Rust 1.75+ (install from [rustup.rs](https://rustup.rs))
-- For CUDA support: CUDA Toolkit 12.x
+- Rust 1.75+ (从 [rustup.rs](https://rustup.rs) 安装)
+- CUDA Toolkit 12.x (可选，用于 GPU 加速)
 
-### Build from Source
+### 构建
 
 ```bash
-git clone https://github.com/RVC-Boss/GPT-SoVITS.git
-cd GPT-SoVITS/rust
+git clone https://github.com/ricardomlee/gpt-sovits-rs.git
+cd gpt-sovits-rs
 
-# CPU only
+# CPU 版本
 cargo build --release
 
-# With CUDA support
+# CUDA GPU 版本
 cargo build --release --features cuda
 ```
 
-## Quick Start
+### 准备模型
 
-### 1. Download Pretrained Models
-
-First, download the required models from [HuggingFace](https://huggingface.co/lj1995/GPT-SoVITS):
+从 [HuggingFace](https://huggingface.co/lj1995/GPT-SoVITS) 下载预训练模型：
 
 ```bash
-# Run the model download script
-python scripts/download_models.py
+python scripts/download_and_convert.py --output-dir models
 ```
 
-### 2. Convert Model Weights
-
-Convert PyTorch models to Candle format:
+### 运行推理
 
 ```bash
-# Convert GPT model
-python scripts/convert_models.py \
-    --gpt-ckpt GPT_SoVITS/pretrained_models/s1bert25hz-2kh-longer-epoch=68e-step=50232.ckpt \
-    --sovits-ckpt GPT_SoVITS/pretrained_models/s2G488k.pth \
-    --output-dir models/
-```
-
-### 3. Run Inference
-
-```bash
-# CLI inference
 cargo run --release -- \
     --gpt-model models/gpt-model.safetensors \
     --sovits-model models/sovits-model.safetensors \
+    --bigvgan-model models/bigvgan.safetensors \
     --text "你好，世界！" \
     --reference-audio ref.wav \
     --reference-text "参考文本" \
     --output output.wav
 ```
 
-## API Usage
-
-### Rust Library
+## Rust API 使用
 
 ```rust
 use gpt_sovits_rs::{Pipeline, Config, InferenceOptions};
@@ -84,11 +67,12 @@ use gpt_sovits_rs::{Pipeline, Config, InferenceOptions};
 let config = Config::default();
 let mut pipeline = Pipeline::new(config)?;
 
-// Load models
+// 加载模型
 pipeline.load_gpt("models/gpt-model.safetensors")?;
 pipeline.load_sovits("models/sovits-model.safetensors")?;
+pipeline.load_bigvgan("models/bigvgan.safetensors")?;
 
-// Run inference
+// 运行推理
 let options = InferenceOptions {
     top_k: 5,
     top_p: 0.95,
@@ -103,169 +87,147 @@ let audio = pipeline.inference(
     &options
 )?;
 
-// Save to file
+// 保存音频
 audio.save("output.wav")?;
 ```
 
-### HTTP API
-
-Start the HTTP server:
-
-```bash
-cargo run --release --features http-api -- --http --port 9880
-```
-
-API endpoints:
-
-```bash
-# TTS inference
-curl -X POST "http://localhost:9880/tts" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "text": "你好世界",
-        "text_language": "zh",
-        "refer_wav_path": "ref.wav",
-        "prompt_text": "参考文本"
-    }' \
-    --output output.wav
-```
-
-## Command Line Options
+## 命令行选项
 
 ```
 Usage: gpt-sovits [OPTIONS] --text <TEXT> --output <OUTPUT>
 
 Options:
-      --gpt-model <PATH>       Path to GPT model file
-      --sovits-model <PATH>    Path to SoVITS model file
-      --text <TEXT>            Input text for synthesis
-      --reference-audio <PATH> Reference audio path
-      --reference-text <TEXT>  Reference audio text
-      --language <LANG>        Language (zh/en/ja/ko/yue)
-      --top-k <N>              Top-k sampling (default: 15)
-      --top-p <P>              Top-p sampling (default: 0.95)
-      --temperature <T>        Sampling temperature (default: 0.8)
-      --speed <SPEED>          Speed multiplier (default: 1.0)
-      --output <PATH>          Output WAV file path
-      --http                   Start HTTP server mode
-      --port <PORT>            HTTP server port (default: 9880)
-  -h, --help                   Print help
-  -V, --version                Print version
+      --gpt-model <PATH>       GPT 模型文件路径
+      --sovits-model <PATH>    SoVITS 模型文件路径
+      --bigvgan-model <PATH>   BigVGAN 模型文件路径
+      --text <TEXT>            输入文本
+      --reference-audio <PATH> 参考音频路径
+      --reference-text <TEXT>  参考音频文本
+      --language <LANG>        语言 (zh/en/ja/ko/yue)
+      --top-k <N>              Top-k 采样 (默认：15)
+      --top-p <P>              Top-p 采样 (默认：0.95)
+      --temperature <T>        采样温度 (默认：0.8)
+      --output <PATH>          输出 WAV 文件路径
+  -h, --help                   打印帮助
+  -V, --version                打印版本
 ```
 
-## Performance Benchmarks
+## 性能基准测试
 
-| Device | RTF | Latency |
-|--------|-----|---------|
-| RTX 4090 (CUDA) | 0.012 | ~200ms |
-| RTX 4060 Ti (CUDA) | 0.025 | ~400ms |
-| M3 Max (Metal) | 0.035 | ~600ms |
-| CPU (AVX2) | 0.15 | ~2.5s |
+### KV Cache 优化
 
-*RTF = Real Time Factor (inference time / audio duration)*
+GPT 自回归生成默认启用 KV Cache 优化，避免重复计算之前 token 的 K/V 张量。
 
-### KV Cache Optimization
+**基准测试结果** (500 tokens, CPU):
 
-KV Cache optimization is enabled by default for autoregressive GPT generation. This optimization avoids recomputing K/V tensors for previously generated tokens.
+| 配置 | 时间 | 加速比 |
+|------|------|--------|
+| 无 KV Cache | 368.82s | 1.0x |
+| 启用 KV Cache | 20.48s | **18.0x** |
 
-**Benchmark Results** (500 tokens, CPU):
-| Configuration | Time | Relative |
-|---------------|------|----------|
-| Without KV Cache | 368.82s | 1.0x |
-| With KV Cache | 20.48s | **18.0x faster** |
-
-**How it works:**
+**原理**:
 ```
-Traditional: O(n²) - Recompute all K/V for each new token
-KV Cache:    O(n)  - Cache K/V, only compute for new token
+传统方法：O(n²) - 每个新 token 重新计算所有 K/V
+KV Cache: O(n)  - 缓存 K/V，只计算新 token 的 K/V
 ```
 
-To disable KV Cache (for debugging):
-```rust
-let options = InferenceOptions {
-    use_kv_cache: false,  // Default: true
-    ..Default::default()
-};
+**运行基准测试**:
+```bash
+cargo run --release --example benchmark_kv_cache
 ```
 
-## Project Structure
+### 全流程性能分析
+
+使用 profiler 分析推理流程各阶段耗时：
+
+```bash
+cargo run --release --example profile_pipeline
+```
+
+示例输出：
+```
+GPT Generation: 13.57s (95.6%)
+BigVGAN:         0.62s ( 4.3%)
+其他阶段：       0.01s ( 0.1%)
+```
+
+## 项目结构
 
 ```
 gpt-sovits-rs/
 ├── Cargo.toml
 ├── src/
-│   ├── main.rs              # CLI entry point
-│   ├── lib.rs               # Library exports
+│   ├── main.rs              # CLI 入口
+│   ├── lib.rs               # 库入口
 │   ├── config/
-│   │   └── mod.rs           # Model configuration
+│   │   └── mod.rs           # 配置管理
 │   ├── text_frontend/
-│   │   ├── mod.rs           # Text processing entry
-│   │   ├── normalizer.rs    # Text normalization
-│   │   ├── lang_detect.rs   # Language detection
+│   │   ├── mod.rs           # 文本处理
+│   │   ├── normalizer.rs    # 文本规范化
+│   │   ├── lang_detect.rs   # 语言检测
 │   │   ├── g2p.rs           # Grapheme-to-phoneme
-│   │   └── symbols.rs       # Phoneme symbols
+│   │   └── symbols.rs       # 音素符号表
 │   ├── models/
 │   │   ├── mod.rs
-│   │   ├── bert.rs          # BERT feature extractor
-│   │   ├── hubert.rs        # Hubert feature extractor
-│   │   ├── gpt.rs           # GPT semantic model
-│   │   ├── sovits.rs        # SoVITS synthesizer
-│   │   └── bigvgan.rs       # BigVGAN vocoder
+│   │   ├── bert.rs          # BERT 特征提取
+│   │   ├── hubert.rs        # Hubert 特征提取
+│   │   ├── gpt.rs           # GPT 语义模型
+│   │   ├── sovits.rs        # SoVITS 音频合成
+│   │   ├── bigvgan.rs       # BigVGAN 声码器
+│   │   └── mrte.rs          # 多参考音色编码器
 │   ├── inference/
-│   │   ├── mod.rs
-│   │   └── pipeline.rs      # Inference pipeline
+│   │   └── mod.rs           # 推理流程
 │   └── utils/
-│       ├── audio.rs         # Audio I/O
-│       └── tensor.rs        # Tensor utilities
-├── scripts/
-│   ├── download_models.py   # Model downloader
-│   └── convert_models.py    # Model converter
+│       ├── mod.rs
+│       ├── audio.rs         # 音频 I/O
+│       ├── kv_cache.rs      # KV Cache 优化
+│       └── state_dict.rs    # 模型权重加载
 ├── examples/
-│   └── cli_inference.rs     # CLI example
-└── models/                  # Model files (gitignored)
+│   ├── cli_inference.rs         # CLI 推理示例
+│   ├── benchmark_kv_cache.rs    # KV Cache 基准测试
+│   ├── profile_pipeline.rs      # 全流程性能分析
+│   └── e2e_gpu_test.rs          # GPU 端到端测试
+├── scripts/
+│   ├── download_and_convert.py  # 模型下载转换
+│   └── export_onnx.py           # ONNX 导出
+└── models/                      # 模型文件 (gitignore)
 ```
 
-## Supported Models
+## 支持的模型
 
-| Model | Format | Status |
-|-------|--------|--------|
-| GPT v1/v2/v3 | `.ckpt` | 🟡 Converting |
-| SoVITS v1/v2/v3 | `.pth` | 🟡 Converting |
-| BigVGAN v2 | `.pt` | 🟡 Converting |
-| BERT (RoBERTa) | ONNX | ⬜ Planned |
-| Hubert | ONNX | ⬜ Planned |
+| 模型 | 格式 | 状态 |
+|------|------|------|
+| GPT v1/v2/v3 | `.ckpt` → `.safetensors` | ✅ 已实现 |
+| SoVITS v1/v2/v3 | `.pth` → `.safetensors` | ✅ 已实现 |
+| BigVGAN v2 | `.pt` → `.safetensors` | ✅ 已实现 |
+| BERT (RoBERTa) | ONNX | ✅ 已实现 |
+| Hubert | ONNX | ✅ 已实现 |
 
-## Development
+## 开发
 
-### Running Tests
+### 运行测试
 
 ```bash
 cargo test
 ```
 
-### Benchmarking
-
-```bash
-cargo bench
-```
-
-### Building with CUDA
+### CUDA 支持
 
 ```bash
 export CUDA_HOME=/usr/local/cuda
 cargo build --release --features cuda
 ```
 
-## License
+## 许可证
 
-MIT License - see [LICENSE](../LICENSE) for details.
+MIT License - 详见 [LICENSE](LICENSE) 文件。
 
-## Acknowledgments
+## 致谢
 
-- Original [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) by RVC-Boss
+- 原始项目 [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) by RVC-Boss
 - [Candle](https://github.com/huggingface/candle) by Hugging Face
 - [BigVGAN](https://github.com/NVIDIA/BigVGAN) by NVIDIA
 
-## Contributing
+## 贡献
 
-Contributions are welcome! Please read our contributing guidelines first.
+欢迎贡献！请阅读我们的贡献指南。
