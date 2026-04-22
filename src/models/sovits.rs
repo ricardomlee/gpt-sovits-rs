@@ -1,28 +1,111 @@
-//! SoVITS Model for audio synthesis
+//! SoVITS Model - Complete Implementation
 //!
-//! Simplified implementation with correct data flow
+//! This module implements the complete SoVITS model for audio synthesis:
+//! semantic tokens → quantizer → enc_p → flow → decoder → waveform
+//!
+//! Two inference paths are supported:
+//! 1. Text-driven synthesis: semantic tokens + text → enc_p → flow → decoder
+//! 2. Reference-driven synthesis: reference mel → enc_q → flow → decoder
 
-use candle_core::{Device, Tensor, DType};
+use candle_core::{Device, DType, Tensor};
 use crate::{Result, Error};
-use crate::utils::{StateDict, load_safetensors, Conv1dWeightNorm};
+use crate::utils::{StateDict, load_safetensors};
 
-/// SoVITS Model for mel spectrogram generation
+use crate::models::sovits_encp::EncP;
+use crate::models::sovits_encq::EncQ;
+use crate::models::sovits_flow::ResidualCouplingBlock;
+use crate::models::sovits_decoder::Decoder;
+use crate::models::sovits_ref_enc::RefEnc;
+
+/// SoVITS Model for audio synthesis
 pub struct SoVITSModel {
     device: Device,
     dtype: DType,
-    pre_layer: Conv1dWeightNorm,   // [192, 1025, 1] - projects semantic tokens to 192 dim
-    enc_q: EncoderQ,
+
+    // Quantizer for semantic tokens
+    quantizer: Quantizer,
+
+    // Encoder P for processing semantic and text features (training teacher)
+    enc_p: EncP,
+
+    // Encoder Q for processing reference audio mel spectrograms (inference)
+    enc_q: EncQ,
+
+    // Flow model for latent variable transformation
+    flow: ResidualCouplingBlock,
+
+    // Decoder (vocoder)
+    decoder: Decoder,
+
+    // Reference encoder for speaker embedding (MelStyleEncoder)
+    ref_enc: RefEnc,
+
+    // Configuration
     n_mels: usize,
     sampling_rate: u32,
+    gin_channels: usize,
 }
 
-/// Encoder Q - Semantic token encoder
-#[allow(dead_code)]
-pub struct EncoderQ {
-    proj: Conv1dWeightNorm,
-    cond_layer: Conv1dWeightNorm,
-    in_layers: Vec<Conv1dWeightNorm>,
-    res_skip_layers: Vec<Conv1dWeightNorm>,
+/// Simple quantizer for semantic tokens
+#[derive(Debug, Clone)]
+pub struct Quantizer {
+    #[allow(dead_code)]
+    bins: usize,
+    dimension: usize,
+    codebook: Tensor,
+}
+
+impl Quantizer {
+    pub fn new(dimension: usize, bins: usize, codebook: Tensor) -> Self {
+        Self { bins, dimension, codebook }
+    }
+
+    /// Decode codes to continuous features
+    /// codes: [batch, seq_len] - semantic token IDs
+    /// Returns: [batch, dimension, seq_len]
+    pub fn decode(&self, codes: &Tensor) -> Result<Tensor> {
+        let dims = codes.dims();
+        let batch = dims[0];
+        let seq_len = dims[1];
+
+        let indices: Vec<i64> = codes.flatten_all()?.to_vec1()?;
+        let mut embeddings = Vec::new();
+
+        for &idx in &indices {
+            let emb = self.codebook.get(idx as usize)?;
+            embeddings.push(emb);
+        }
+
+        let stacked = Tensor::stack(&embeddings, 0)?;
+        let result = stacked.reshape((batch, seq_len, self.dimension))?;
+        Ok(result.transpose(1, 2)?)  // [batch, dimension, seq_len]
+    }
+}
+
+/// Nearest-neighbor 2x upsampling along the time dimension
+/// Input: [batch, channels, time] → Output: [batch, channels, time*2]
+fn nearest_upsample_2x(x: &Tensor) -> Result<Tensor> {
+    let dims = x.dims();
+    let batch = dims[0];
+    let channels = dims[1];
+    let time = dims[2];
+    let new_time = time * 2;
+
+    let mut result = Vec::with_capacity(batch * channels * new_time);
+    let flat: Vec<f32> = x.flatten_all()?.to_vec1()?;
+
+    for b in 0..batch {
+        for c in 0..channels {
+            for t in 0..time {
+                let idx = b * channels * time + c * time + t;
+                let val = flat[idx];
+                result.push(val); // first copy
+                result.push(val); // second copy (2x)
+            }
+        }
+    }
+
+    Tensor::from_vec(result, (batch, channels, new_time), x.device()).map_err(|e| crate::Error::InferenceError(e.to_string()))
 }
 
 impl SoVITSModel {
@@ -33,61 +116,143 @@ impl SoVITSModel {
 
     /// Load model with specific device
     pub fn load_with_device(path: &str, device: &Device) -> Result<Self> {
-        // Load weights from safetensors
         let weights_map = load_safetensors(path)?;
         let state_dict = StateDict::new(weights_map);
 
-        // Load pre layer: [192, 1025, 1] - regular conv, not weight-norm
-        let pre_weight = state_dict.get("enc_q.pre.weight")?.to_device(device)?.to_dtype(DType::F32)?;
-        let pre_bias = state_dict.get("enc_q.pre.bias")?.to_device(device)?.to_dtype(DType::F32)?;
-        // Create Conv1dWeightNorm with dummy g/v for regular conv
-        let weight_v = pre_weight;
-        let weight_g = Tensor::full(1.0f32, weight_v.dims(), &weight_v.device())?;
-        let pre_layer = Conv1dWeightNorm::new(weight_g, weight_v, Some(pre_bias), 1, 0, 1);
+        // Configuration
+        let hidden_channels = 192;
+        let n_layers = 6;
+        let gin_channels = 512;
+        let enc_out_channels = 192;
 
-        // Create enc_q
-        let enc_q = EncoderQ::new(&state_dict, device)?;
+        // Load quantizer (dimension=768 matches codebook embedding size)
+        let codebook = state_dict.get("quantizer.vq.layers.0._codebook.embed")?
+            .to_device(device)?.to_dtype(DType::F32)?;
+        let quantizer = Quantizer::new(768, 1024, codebook);
+
+        // Load EncP (text + semantic token encoder)
+        let enc_p = EncP::load(&state_dict, device, hidden_channels, n_layers, enc_out_channels)?;
+
+        // Load EncQ (reference audio mel encoder)
+        let enc_q = EncQ::load(&state_dict, device, hidden_channels, enc_out_channels)?;
+
+        // Load Flow (ResidualCouplingBlock)
+        let flow = ResidualCouplingBlock::load(&state_dict, "flow.flows", device, 4)?;
+
+        // Load Decoder
+        let decoder = Decoder::load(&state_dict, device)?;
+
+        // Load RefEnc (MelStyleEncoder for speaker embedding)
+        let ref_enc = RefEnc::load(&state_dict, device)?;
 
         Ok(Self {
             device: device.clone(),
             dtype: DType::F32,
-            pre_layer,
+            quantizer,
+            enc_p,
             enc_q,
+            flow,
+            decoder,
+            ref_enc,
             n_mels: 100,
             sampling_rate: 24000,
+            gin_channels,
         })
     }
 
-    /// Synthesize mel spectrogram from semantic tokens
+    /// Synthesize audio from semantic tokens and text tokens
+    ///
+    /// # Arguments
+    /// * `semantic_tokens` - GPT-generated semantic token IDs
+    /// * `text_tokens` - Phoneme IDs for target text
+    /// * `ref_audio_mel` - Optional reference audio STFT magnitude [1, 1025, time]
+    ///
+    /// The pipeline ALWAYS uses enc_p (text-driven path) for synthesis.
+    /// When ref_audio_mel is provided, it is passed through enc_q to compute
+    /// the speaker embedding (ge) via mean-pooling, which conditions enc_p.
     pub fn synthesize(
         &self,
         semantic_tokens: &[usize],
-        _ref_audio: Option<&Tensor>,
-    ) -> Result<Tensor> {
+        text_tokens: &[usize],
+        ref_audio_mel: Option<&Tensor>,
+    ) -> Result<Vec<f32>> {
         if semantic_tokens.is_empty() {
             return Err(Error::InferenceError("Empty semantic tokens".to_string()));
         }
-
-        // Convert semantic tokens to one-hot like tensor for conv1d
-        let seq_len = semantic_tokens.len();
-        let mut token_tensor = vec![0.0f32; 1025 * seq_len];
-        for (i, &token) in semantic_tokens.iter().enumerate() {
-            if token < 1025 {
-                token_tensor[token * seq_len + i] = 1.0;
-            }
+        if text_tokens.is_empty() {
+            return Err(Error::InferenceError("Empty text tokens".to_string()));
         }
-        let token_tensor = Tensor::from_vec(token_tensor, (1, 1025, seq_len), &self.device)?;
 
-        // Step 1: Project through pre layer
-        let embeddings = self.pre_layer.forward(&token_tensor)?;
+        // Convert semantic tokens to tensor [1, seq_len]
+        let codes_vec: Vec<i64> = semantic_tokens.iter().map(|&x| x as i64).collect();
+        let codes = Tensor::from_vec(codes_vec, (1, semantic_tokens.len()), &self.device)?;
 
-        // Step 2: Run through enc_q
-        let features = self.enc_q.encode(&embeddings)?;
+        // Convert text tokens to tensor [1, seq_len]
+        let text_vec: Vec<i64> = text_tokens.iter().map(|&x| x as i64).collect();
+        let text = Tensor::from_vec(text_vec, (1, text_tokens.len()), &self.device)?;
 
-        // Narrow to n_mels channels
-        let mel_spec = features.narrow(1, 0, self.n_mels)?;
+        // Compute speaker embedding using ref_enc (MelStyleEncoder)
+        // Python: ge = self.ref_enc(refer * refer_mask, refer_mask)
+        let ge = if let Some(mel) = ref_audio_mel {
+            // Use the full mel spectrogram as input (1025 channels)
+            let mel_in = mel.clone();
 
-        Ok(mel_spec)
+            // Build refer_mask from time dimension (all valid since we have full audio)
+            let time = mel_in.dims()[2];
+            let refer_mask = Tensor::full(1.0f32, &[1, 1, time], &self.device)?;
+
+            // Apply mask and compute ge
+            let mel_masked = mel_in.broadcast_mul(&refer_mask)?;
+            let ge = self.ref_enc.forward(&mel_masked, &refer_mask)?;
+            ge
+        } else {
+            Tensor::zeros((1, 512, 1), DType::F32, &self.device)?
+        };
+
+        // Decode semantic codes using quantizer
+        let quantized = self.quantizer.decode(&codes)?;
+
+        // 2x upsampling to match frame rate
+        let quantized_up = nearest_upsample_2x(&quantized)?;
+
+        // Create length tensors
+        let y_lengths = vec![quantized_up.dims()[2] as i64];
+        let text_lengths = vec![text.dims()[1] as i64];
+
+        // ge for enc_p: narrow back to 192 channels (MRTE output dim)
+        let ge_enc = ge.narrow(1, 0, 192)?;
+
+        // Pass through EncP (ALWAYS the synthesis path)
+        let (_y, m, logs, y_mask) = self.enc_p.forward(
+            &quantized_up,
+            &y_lengths,
+            &text,
+            &text_lengths,
+            &ge_enc,
+            1.0,
+        )?;
+
+        // Sample from N(m, exp(logs)) to get latent z_p
+        let noise = self.sample_noise(&m)?;
+        let logs = logs.clamp(-4.0, 4.0)?;
+        let logs_exp = logs.exp()?;
+        let z_p = m.add(&noise.broadcast_mul(&logs_exp)?)?;
+
+        // Invert flow transform: z_p → z
+        let z = self.flow.forward(&z_p, &y_mask, None, true)?;
+
+        // Apply mask
+        let z = z.broadcast_mul(&y_mask)?;
+
+        // Pass through decoder to generate waveform
+        // ge is [1, 192, 1], decoder cond expects gin_channels input
+        let output = self.decoder.forward(&z, Some(&ge))?;
+
+        Ok(output)
+    }
+
+    fn sample_noise(&self, mean: &Tensor) -> Result<Tensor> {
+        Ok(Tensor::randn(0.0f32, 1.0, mean.dims(), &self.device)?)
     }
 
     /// Get model device
@@ -108,136 +273,6 @@ impl SoVITSModel {
     /// Get sampling rate
     pub fn sampling_rate(&self) -> u32 {
         self.sampling_rate
-    }
-}
-
-impl EncoderQ {
-    pub fn new(state_dict: &StateDict, device: &Device) -> Result<Self> {
-        // Load projection layer: [384, 192, 1] - projects from 192 to 384
-        // This is a regular conv, not weight-norm, so we need to create dummy g/v
-        let proj_weight = state_dict
-            .get("enc_q.proj.weight")?
-            .to_device(device)?
-            .to_dtype(DType::F32)?;
-        let proj_bias = state_dict
-            .get("enc_q.proj.bias")?
-            .to_device(device)?
-            .to_dtype(DType::F32)?;
-        let weight_v = proj_weight.clone();
-        let weight_g = Tensor::full(1.0f32, weight_v.dims(), &weight_v.device())?;
-        let proj = Conv1dWeightNorm::new(weight_g, weight_v, Some(proj_bias), 1, 0, 1);
-
-        // Load all layers with explicit F32 conversion to avoid dtype mismatch
-        let cond_layer = Self::load_conv1d_weight_norm(state_dict, "enc_q.enc.cond_layer", device)?;
-
-        let mut in_layers = Vec::new();
-        let mut i = 0;
-        loop {
-            let key = format!("enc_q.enc.in_layers.{}.weight_g", i);
-            if !state_dict.contains(&key) {
-                break;
-            }
-            in_layers.push(Self::load_conv1d_weight_norm(
-                state_dict,
-                &format!("enc_q.enc.in_layers.{}", i),
-                device,
-            )?);
-            i += 1;
-        }
-
-        let mut res_skip_layers = Vec::new();
-        i = 0;
-        loop {
-            let key = format!("enc_q.enc.res_skip_layers.{}.weight_g", i);
-            if !state_dict.contains(&key) {
-                break;
-            }
-            res_skip_layers.push(Self::load_conv1d_weight_norm(
-                state_dict,
-                &format!("enc_q.enc.res_skip_layers.{}", i),
-                device,
-            )?);
-            i += 1;
-        }
-
-        Ok(Self {
-            proj,
-            cond_layer,
-            in_layers,
-            res_skip_layers,
-        })
-    }
-
-    fn load_conv1d_weight_norm(
-        state_dict: &StateDict,
-        prefix: &str,
-        device: &Device,
-    ) -> Result<Conv1dWeightNorm> {
-        let weight_g = state_dict
-            .get(&format!("{}.weight_g", prefix))?
-            .to_device(device)?
-            .to_dtype(DType::F32)?;
-        let weight_v = state_dict
-            .get(&format!("{}.weight_v", prefix))?
-            .to_device(device)?
-            .to_dtype(DType::F32)?;
-        let bias = if state_dict.contains(&format!("{}.bias", prefix)) {
-            Some(
-                state_dict
-                    .get(&format!("{}.bias", prefix))?
-                    .to_device(device)?
-                    .to_dtype(DType::F32)?,
-            )
-        } else {
-            None
-        };
-
-        // Infer kernel size from weight_v shape [out_channels, in_channels, kernel_size]
-        let weight_v_shape = weight_v.dims();
-        let kernel_size = if weight_v_shape.len() >= 3 {
-            weight_v_shape[2]
-        } else {
-            1
-        };
-        // Calculate padding to maintain sequence length: padding = (kernel_size - 1) / 2
-        let padding = (kernel_size - 1) / 2;
-
-        let stride = 1;
-        let dilation = 1;
-        Ok(Conv1dWeightNorm::new(weight_g, weight_v, bias, stride, padding, dilation))
-    }
-
-    pub fn encode(&self, tokens: &Tensor) -> Result<Tensor> {
-        // tokens: [1, 192, seq_len] from pre layer
-        // Modified WaveNet: hidden state stays at 192 dims
-        // in_layer: 192 -> 384, then take first 192 dims for next layer
-        // res_skip: accumulates to output
-        let mut h = tokens.clone();
-        let mut output: Option<Tensor> = None;
-
-        for (in_layer, res_skip_layer) in self.in_layers.iter().zip(self.res_skip_layers.iter()) {
-            let residual = h.clone();
-
-            // in_layer: 192 -> 384
-            let x = in_layer.forward(&h)?;
-            let x = x.relu()?;
-
-            // Take first 192 channels for next hidden state
-            h = x.narrow(1, 0, 192)?;
-
-            // res_skip: 192 -> 384 or 192
-            let res_skip = res_skip_layer.forward(&residual)?;
-
-            // Add to output accumulator
-            output = Some(match output {
-                Some(o) if o.dims()[1] == res_skip.dims()[1] => o.broadcast_add(&res_skip)?,
-                Some(o) => o, // Skip if shape mismatch (last layer)
-                None => res_skip,
-            });
-        }
-
-        // Return sum of skip connections
-        output.ok_or_else(|| Error::InferenceError("No output".to_string()))
     }
 }
 

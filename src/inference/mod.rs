@@ -6,7 +6,7 @@ use candle_core::Device;
 use crate::config::Config;
 use crate::models::{BertModel, BigVGAN, GPTModel, HubertModel, SoVITSModel};
 use crate::text_frontend::TextFrontend;
-use crate::utils::AudioBuffer;
+use crate::utils::{AudioBuffer, SpectrogramExtractor};
 use crate::{Error, Language, Result};
 use std::path::Path;
 
@@ -269,18 +269,16 @@ impl Pipeline {
 
         tracing::info!("Generated {} semantic tokens", semantic_tokens.len());
 
-        // Step 5: Synthesize mel spectrogram with SoVITS
-        let mel_spec = sovits.synthesize(&semantic_tokens, None)?;
+        // Step 5: Extract mel spectrogram from reference audio for speaker conditioning
+        let ref_mel = self.extract_ref_mel(reference_audio.as_ref(), sovits)?;
 
-        // Step 6: Generate audio with BigVGAN
-        let audio_samples = self.bigvgan_model.as_ref().ok_or_else(|| {
-            Error::ModelLoadError("BigVGAN model not loaded".to_string())
-        })?.generate(&mel_spec)?;
+        // Step 6: Synthesize audio with SoVITS (directly outputs waveform)
+        let audio_samples = sovits.synthesize(&semantic_tokens, &phoneme_ids, ref_mel.as_ref())?;
 
         // Create audio buffer
         let audio = AudioBuffer::new(
             audio_samples,
-            self.bigvgan_model.as_ref().unwrap().sampling_rate(),
+            sovits.sampling_rate(),
             1,
         );
 
@@ -340,18 +338,16 @@ impl Pipeline {
 
         tracing::info!("Generated {} semantic tokens (with KV cache)", semantic_tokens.len());
 
-        // Step 5: Synthesize mel spectrogram with SoVITS
-        let mel_spec = sovits.synthesize(&semantic_tokens, None)?;
+        // Step 5: Extract mel spectrogram from reference audio for speaker conditioning
+        let ref_mel = self.extract_ref_mel(reference_audio.as_ref(), sovits)?;
 
-        // Step 6: Generate audio with BigVGAN
-        let audio_samples = self.bigvgan_model.as_ref().ok_or_else(|| {
-            Error::ModelLoadError("BigVGAN model not loaded".to_string())
-        })?.generate(&mel_spec)?;
+        // Step 6: Synthesize audio with SoVITS (directly outputs waveform)
+        let audio_samples = sovits.synthesize(&semantic_tokens, &phoneme_ids, ref_mel.as_ref())?;
 
         // Create audio buffer
         let audio = AudioBuffer::new(
             audio_samples,
-            self.bigvgan_model.as_ref().unwrap().sampling_rate(),
+            sovits.sampling_rate(),
             1,
         );
 
@@ -361,5 +357,79 @@ impl Pipeline {
     /// Check if pipeline is ready for inference
     pub fn is_ready(&self) -> bool {
         self.gpt_model.is_some() && self.sovits_model.is_some()
+    }
+
+    /// Extract mel spectrogram from reference audio for SoVITS enc_q conditioning
+    fn extract_ref_mel<P: AsRef<Path>>(&self, ref_audio: P, sovits: &SoVITSModel) -> Result<Option<candle_core::Tensor>> {
+        use hound::WavReader;
+
+        let device = sovits.device();
+
+        // Load WAV file
+        let mut reader = WavReader::open(ref_audio.as_ref())
+            .map_err(|e| Error::AudioError(format!("Failed to open reference audio: {}", e)))?;
+
+        let spec = reader.spec();
+        let samples: Vec<f32> = match spec.sample_format {
+            hound::SampleFormat::Int => {
+                let max = match spec.bits_per_sample {
+                    8 => i8::MAX as f32,
+                    16 => i16::MAX as f32,
+                    24 => (1 << 23) as f32,
+                    _ => i16::MAX as f32,
+                };
+                reader.samples::<i32>()
+                    .filter_map(|s| s.ok())
+                    .map(|s| s as f32 / max)
+                    .collect()
+            }
+            hound::SampleFormat::Float => {
+                reader.samples::<f32>()
+                    .filter_map(|s| s.ok())
+                    .collect()
+            }
+        };
+
+        // Convert to mono if stereo
+        let samples = if spec.channels > 1 {
+            let mut mono = Vec::with_capacity(samples.len() / spec.channels as usize);
+            for chunk in samples.chunks(spec.channels as usize) {
+                mono.push(chunk.iter().sum::<f32>() / spec.channels as f32);
+            }
+            mono
+        } else {
+            samples
+        };
+
+        // Resample to 24kHz if needed
+        let target_sr = sovits.sampling_rate();
+        let samples = if spec.sample_rate != target_sr {
+            let ratio = target_sr as f64 / spec.sample_rate as f64;
+            let new_len = (samples.len() as f64 * ratio) as usize;
+            let mut resampled = vec![0.0f32; new_len];
+            for i in 0..new_len {
+                let src_idx = i as f64 / ratio;
+                let idx = src_idx.floor() as usize;
+                let frac = src_idx - idx as f64;
+                let v0 = samples.get(idx).copied().unwrap_or(0.0);
+                let v1 = samples.get(idx + 1).copied().unwrap_or(0.0);
+                resampled[i] = v0 + (v1 - v0) * frac as f32;
+            }
+            resampled
+        } else {
+            samples
+        };
+
+        // Extract STFT magnitude spectrum matching Python's spectrogram_torch
+        // Model training uses n_fft=2048, hop=512 with center=False + reflect padding
+        let n_fft = 2048;
+        let hop_length = 512;
+        let _n_mels = sovits.n_mels();
+        let extractor = SpectrogramExtractor::new(target_sr, n_fft, hop_length, _n_mels);
+        let stft_mag = extractor.extract_spectrogram_batched(&samples, device)?;
+
+        tracing::info!("Extracted reference STFT magnitude: {:?}", stft_mag.dims());
+
+        Ok(Some(stft_mag))
     }
 }
