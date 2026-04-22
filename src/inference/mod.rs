@@ -273,7 +273,7 @@ impl Pipeline {
         let ref_mel = self.extract_ref_mel(reference_audio.as_ref(), sovits)?;
 
         // Step 6: Synthesize audio with SoVITS (directly outputs waveform)
-        let audio_samples = sovits.synthesize(&semantic_tokens, &phoneme_ids, ref_mel.as_ref())?;
+        let audio_samples = sovits.synthesize(&semantic_tokens, &phoneme_ids, ref_mel.as_ref(), 0.5)?;
 
         // Create audio buffer
         let audio = AudioBuffer::new(
@@ -342,7 +342,7 @@ impl Pipeline {
         let ref_mel = self.extract_ref_mel(reference_audio.as_ref(), sovits)?;
 
         // Step 6: Synthesize audio with SoVITS (directly outputs waveform)
-        let audio_samples = sovits.synthesize(&semantic_tokens, &phoneme_ids, ref_mel.as_ref())?;
+        let audio_samples = sovits.synthesize(&semantic_tokens, &phoneme_ids, ref_mel.as_ref(), 0.5)?;
 
         // Create audio buffer
         let audio = AudioBuffer::new(

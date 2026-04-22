@@ -109,17 +109,23 @@ impl Decoder {
         };
 
         // Load upsampling layers
+        // GPT-SoVITS v1/v2 uses upsample_rates = [10, 8, 2, 2, 2] (total 640x)
+        // These CANNOT be derived from weight shapes alone - they are training config.
+        // The weight shapes are [in_ch, out_ch, kernel] where in_ch/out_ch = 2 for all layers,
+        // but the actual stride values are [10, 8, 2, 2, 2] from the training config.
+        const UPSAMPLE_RATES: [usize; 5] = [10, 8, 2, 2, 2];
         let mut ups = Vec::new();
+        let mut up_idx = 0;
         for i in 0..10 {
             let prefix = format!("dec.ups.{}", i);
             if state_dict.contains(&format!("{}.weight_v", prefix)) {
                 let conv = Self::load_conv(state_dict, &prefix, device)?;
-                let weight_v = state_dict.get(&format!("{}.weight_v", prefix))?
-                    .to_device(device)?.to_dtype(DType::F32)?;
-                let dims = weight_v.dims();
-                let kernel_size = dims[2];
-                // Use kernel_size/2 as upsampling factor for HiFi-GAN style
-                let upsample_factor = (kernel_size / 2).max(1);
+                let upsample_factor = if up_idx < UPSAMPLE_RATES.len() {
+                    UPSAMPLE_RATES[up_idx]
+                } else {
+                    2 // fallback
+                };
+                up_idx += 1;
                 ups.push(Upsample { conv, upsample_factor });
             }
         }

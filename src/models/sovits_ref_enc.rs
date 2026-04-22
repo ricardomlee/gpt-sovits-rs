@@ -253,6 +253,17 @@ impl RefEnc {
         let batch = dims[0];
         let time = dims[1];
 
+        // Python: x = x.masked_fill(mask.unsqueeze(-1), 0) → zero padded positions before attention
+        // Our mask from caller is [batch, 1, time] with 1=valid, 0=invalid
+        // x is [batch, time, 128], need mask as [batch, time, 1] to broadcast
+        let x_attn_input = if mask.dims()[1] == 1 {
+            let m_2d = mask.reshape((batch, time))?; // [batch, time]
+            let m_3d = m_2d.unsqueeze(2)?; // [batch, time, 1]
+            x.broadcast_mul(&m_3d)?  // zeros invalid positions
+        } else {
+            x.clone()
+        };
+
         let slf_attn_mask = if mask.dims()[1] == 1 {
             let m_squeezed = mask.squeeze(1)?;
             let ones = Tensor::full(1.0f32, &[batch, time], x.device())?;
@@ -263,7 +274,7 @@ impl RefEnc {
             None
         };
 
-        let x = self.self_attn.forward(&x, slf_attn_mask.as_ref())?;
+        let x = self.self_attn.forward(&x_attn_input, slf_attn_mask.as_ref())?;
 
         // === fc ===
         let x = self.fc.forward(&x)?;

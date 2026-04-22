@@ -534,8 +534,8 @@ impl EncP {
         let y_mask = self.sequence_mask(y_lengths, y_max_len, device)?;
         let y_mask_expanded = y_mask.unsqueeze(1)?;
 
-        // SSL projection
-        let mut y = self.ssl_proj.forward(&quantized)?;
+        // SSL projection (matching Python: y = self.ssl_proj(y * y_mask) * y_mask)
+        let mut y = self.ssl_proj.forward(&quantized.broadcast_mul(&y_mask_expanded)?)?;
 
         // Initial layer norm to normalize large values from ssl_proj
         y = self.initial_norm.forward(&y)?;

@@ -60,7 +60,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== SoVITS Inference (no reference audio) ===");
     let sovits = pipeline.sovits_model().as_ref().unwrap();
     let start = Instant::now();
-    let audio = sovits.synthesize(&semantic_tokens, &phoneme_ids, None)?;
+    let audio = sovits.synthesize(&semantic_tokens, &phoneme_ids, None, 0.5)?;
     let elapsed = start.elapsed();
     println!("Generated {} samples ({:.2}s) in {:.2?}",
         audio.len(), audio.len() as f64 / sovits.sampling_rate() as f64, elapsed);
@@ -87,7 +87,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("Reference STFT magnitude: {:?}", ref_mel.dims());
 
         let start = Instant::now();
-        let audio = sovits.synthesize(&semantic_tokens, &phoneme_ids, Some(&ref_mel))?;
+        let audio = sovits.synthesize(&semantic_tokens, &phoneme_ids, Some(&ref_mel), 0.5)?;
         let elapsed = start.elapsed();
         println!("Generated {} samples ({:.2}s) in {:.2?}",
             audio.len(), audio.len() as f64 / sovits.sampling_rate() as f64, elapsed);

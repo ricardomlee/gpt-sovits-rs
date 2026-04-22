@@ -167,7 +167,7 @@ impl SoVITSModel {
             decoder,
             ref_enc,
             n_mels: 100,
-            sampling_rate: 24000,
+            sampling_rate: 32000,
             gin_channels,
         })
     }
@@ -178,6 +178,7 @@ impl SoVITSModel {
     /// * `semantic_tokens` - GPT-generated semantic token IDs
     /// * `text_tokens` - Phoneme IDs for target text
     /// * `ref_audio_mel` - Optional reference audio STFT magnitude [1, 1025, time]
+    /// * `noise_scale` - Sampling randomness (Python default: 0.5, higher = more variation)
     ///
     /// The pipeline ALWAYS uses enc_p (text-driven path) for synthesis.
     /// When ref_audio_mel is provided, it is passed through enc_q to compute
@@ -187,6 +188,7 @@ impl SoVITSModel {
         semantic_tokens: &[usize],
         text_tokens: &[usize],
         ref_audio_mel: Option<&Tensor>,
+        noise_scale: f32,
     ) -> Result<Vec<f32>> {
         if semantic_tokens.is_empty() {
             return Err(Error::InferenceError("Empty semantic tokens".to_string()));
@@ -245,11 +247,11 @@ impl SoVITSModel {
             1.0,
         )?;
 
-        // Sample from N(m, exp(logs)) to get latent z_p
+        // Sample from N(m, exp(logs)) to get latent z_p (matching Python: noise_scale=0.5)
         let noise = self.sample_noise(&m_p)?;
         let logs_p = logs_p.clamp(-4.0, 4.0)?;
         let logs_exp = logs_p.exp()?;
-        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?)?;
+        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(&Tensor::full(noise_scale, m_p.dims(), &self.device)?)?)?;
 
         // Invert flow transform: z_p → z (with ge conditioning, matching Python)
         let z = self.flow.forward(&z_p, &y_mask, Some(&ge), true)?;
