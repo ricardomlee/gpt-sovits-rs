@@ -366,18 +366,8 @@ impl MRTE {
             ssl_proj_out.clone()
         };
 
-        // Residual connection (before c_post)
+        // Residual connection + speaker embedding BEFORE c_post (all at 512-dim)
         let x = x.add(&ssl_proj_out)?;
-
-        // Output projection: 512 -> 192
-        let x = if let Some(c_post) = &self.c_post {
-            let masked = x.broadcast_mul(ssl_mask)?;
-            c_post.forward(&masked)?
-        } else {
-            x
-        };
-
-        // Add speaker embedding AFTER c_post (both now 192 channels)
         let ge = match ge {
             Some(g) => g.clone(),
             None => Tensor::zeros_like(&x).unwrap(),
@@ -388,6 +378,14 @@ impl MRTE {
             ge.clone()
         };
         let x = x.add(&ge_broadcasted)?;
+
+        // Output projection: 512 -> 192
+        let x = if let Some(c_post) = &self.c_post {
+            let masked = x.broadcast_mul(ssl_mask)?;
+            c_post.forward(&masked)?
+        } else {
+            x
+        };
 
         Ok(x)
     }
@@ -567,9 +565,15 @@ impl EncP {
         if let Some(mrte) = &self.mrte {
             y = mrte.forward(&y, &y_mask_expanded, &text_emb, &text_mask_expanded, Some(ge))?;
         } else {
-            // Simple fusion: add speaker embedding
-            let ge_expanded = ge.broadcast_as(y.dims())?;
-            y = y.add(&ge_expanded)?;
+            // Simple fusion: project ge to 192 channels and add
+            let ge_192 = if ge.dims()[1] == y.dims()[1] {
+                // Same channels, just broadcast
+                ge.broadcast_as(y.dims())?
+            } else {
+                // Narrow to match (fallback)
+                ge.narrow(1, 0, y.dims()[1])?.broadcast_as(y.dims())?
+            };
+            y = y.add(&ge_192)?;
         }
 
         // Pass through encoder2

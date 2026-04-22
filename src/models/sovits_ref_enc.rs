@@ -270,30 +270,29 @@ impl RefEnc {
 
         // === temporal average pooling ===
         // Python: if mask exists, mask_fill padded positions to 0, then sum / count
-        let mask_squeezed = if mask.dims()[1] == 1 {
-            Some(mask.squeeze(1)?)
+        // refer_mask is [batch, 1, time] with 1=valid, 0=invalid
+        let valid_mask = if mask.dims()[1] == 1 {
+            Some(mask.squeeze(1)?)  // [batch, time], 1=valid
         } else {
             None
         };
 
-        let w = self.temporal_avg_pool(&x, mask_squeezed.as_ref())?;
+        let w = self.temporal_avg_pool(&x, valid_mask.as_ref())?;
 
         // Return [batch, 512, 1]
         w.unsqueeze(2).map_err(|e| crate::Error::InferenceError(e.to_string()))
     }
 
-    fn temporal_avg_pool(&self, x: &Tensor, mask: Option<&Tensor>) -> Result<Tensor> {
+    fn temporal_avg_pool(&self, x: &Tensor, valid_mask: Option<&Tensor>) -> Result<Tensor> {
         // x: [batch, time, 512]
-        // mask: [batch, time] - 0=valid, 1=invalid (padded)
-        if let Some(m) = mask {
-            // Convert mask to 0/1 float: where mask==0 (valid), keep 1; where mask==1 (invalid), set to 0
-            let ones = Tensor::full(1.0f32, m.dims(), x.device())?;
-            let valid_float = ones.broadcast_sub(m)?; // 1-valid, 0-invalid
-            let m_expanded = valid_float.unsqueeze(2)?; // [batch, time, 1]
+        // valid_mask: [batch, time] - 1=valid, 0=invalid (padded)
+        if let Some(m) = valid_mask {
+            // m is already 1=valid, 0=invalid
+            let m_expanded = m.unsqueeze(2)?; // [batch, time, 1]
             let x_masked = x.broadcast_mul(&m_expanded)?;
 
             // Count valid positions per sample
-            let valid_count = valid_float.sum_keepdim(1)?; // [batch, 1]
+            let valid_count = m.sum_keepdim(1)?; // [batch, 1]
 
             // Sum over time, then divide by count
             let sum = x_masked.sum_keepdim(1)?; // [batch, 1, 512]

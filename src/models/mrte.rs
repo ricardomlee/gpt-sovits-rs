@@ -7,6 +7,7 @@
 use candle_core::{Device, Tensor, D};
 use candle_nn::{Conv1d, Module, VarBuilder};
 use crate::Result;
+use crate::utils::StateDict;
 
 /// Multi-Head Cross-Attention module
 pub struct MultiHeadAttention {
@@ -103,6 +104,47 @@ impl MultiHeadAttention {
 
         // Output projection
         Ok(self.conv_o.forward(&output)?)
+    }
+
+    /// Load MultiHeadAttention from state dict
+    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Self> {
+        let conv_q = Self::load_conv(state_dict, &format!("{}.conv_q", prefix), device)?;
+        let conv_k = Self::load_conv(state_dict, &format!("{}.conv_k", prefix), device)?;
+        let conv_v = Self::load_conv(state_dict, &format!("{}.conv_v", prefix), device)?;
+        let conv_o = Self::load_conv(state_dict, &format!("{}.conv_o", prefix), device)?;
+
+        // Infer n_heads and k_channels from weight shapes
+        // conv_q weight: [channels, channels, 1]
+        let channels = conv_q.weight().dims()[0];
+        let n_heads = 4; // Default for GPT-SoVITS MRTE
+        let k_channels = channels / n_heads;
+
+        Ok(Self {
+            conv_q,
+            conv_k,
+            conv_v,
+            conv_o,
+            n_heads,
+            k_channels,
+            channels,
+            out_channels: channels,
+            device: device.clone(),
+        })
+    }
+
+    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1d> {
+        let weight = state_dict.get(&format!("{}.weight", prefix))?
+            .to_device(device)?.to_dtype(candle_core::DType::F32)?;
+        let bias = state_dict.get(&format!("{}.bias", prefix))?
+            .to_device(device)?.to_dtype(candle_core::DType::F32)?;
+        let config = candle_nn::Conv1dConfig {
+            padding: 0,
+            stride: 1,
+            dilation: 1,
+            groups: 1,
+            cudnn_fwd_algo: Default::default(),
+        };
+        Ok(candle_nn::Conv1d::new(weight, Some(bias), config))
     }
 }
 
@@ -205,14 +247,45 @@ impl MRTE {
         })
     }
 
+    /// Load MRTE from state dict
+    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Self> {
+        let cross_attention = MultiHeadAttention::load(state_dict, &format!("{}.cross_attention", prefix), device)?;
+        let c_pre = Self::load_conv1d(state_dict, &format!("{}.c_pre", prefix), device)?;
+        let text_pre = Self::load_conv1d(state_dict, &format!("{}.text_pre", prefix), device)?;
+        let c_post = Self::load_conv1d(state_dict, &format!("{}.c_post", prefix), device)?;
+
+        Ok(Self {
+            cross_attention,
+            c_pre,
+            text_pre,
+            c_post,
+        })
+    }
+
+    fn load_conv1d(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1d> {
+        let weight = state_dict.get(&format!("{}.weight", prefix))?
+            .to_device(device)?.to_dtype(candle_core::DType::F32)?;
+        let bias = state_dict.get(&format!("{}.bias", prefix))?
+            .to_device(device)?.to_dtype(candle_core::DType::F32)?;
+        let config = candle_nn::Conv1dConfig {
+            padding: 0,
+            stride: 1,
+            dilation: 1,
+            groups: 1,
+            cudnn_fwd_algo: Default::default(),
+        };
+        Ok(candle_nn::Conv1d::new(weight, Some(bias), config))
+    }
+
     /// Forward pass through MRTE
     ///
     /// # Arguments
-    /// * `ssl_enc` - Content features (from Hubert) [batch, content_enc_channels, ssl_len]
+    /// * `ssl_enc` - Content features [batch, content_enc_channels, ssl_len]
     /// * `ssl_mask` - Mask for content features [batch, 1, ssl_len]
     /// * `text` - Text features [batch, content_enc_channels, text_len]
     /// * `text_mask` - Mask for text features [batch, 1, text_len]
-    /// * `ge` - Optional global embedding (speaker/generator embedding) [batch, hidden_size, 1]
+    /// * `ge` - Optional global embedding (speaker embedding) [batch, hidden_size, 1]
+    ///          Must have hidden_size=512 channels to match attention output
     ///
     /// # Returns
     /// Fused features [batch, out_channels, ssl_len]
@@ -242,13 +315,20 @@ impl MRTE {
             Some(&attn_mask),
         )?;
 
-        // Residual connection + global embedding
+        // Residual + ge BEFORE c_post (matching Python exactly):
+        // x = cross_attn + ssl_enc + ge, then c_post(x)
         let mut x = attn_out.broadcast_add(&ssl_enc_proj)?;
         if let Some(ge) = ge {
-            x = x.broadcast_add(ge)?;
+            // ge is [batch, hidden_size=512, 1], broadcast across time
+            let ge_broadcast = if ge.dims()[2] == 1 && x.dims()[2] != 1 {
+                ge.broadcast_as(x.dims())?
+            } else {
+                ge.clone()
+            };
+            x = x.broadcast_add(&ge_broadcast)?;
         }
 
-        // Apply mask and final projection
+        // Apply mask and final projection: 512 → out_channels
         let x = self.c_post.forward(&x.broadcast_mul(ssl_mask)?)?;
 
         Ok(x)

@@ -82,6 +82,18 @@ impl Quantizer {
     }
 }
 
+/// Build sequence mask from lengths
+/// Returns [batch, 1, time] where positions < length are 1 and >= length are 0
+fn build_sequence_mask(lengths: &[i64], time: usize, batch: usize, device: &Device) -> Result<Tensor> {
+    let indices: Vec<i64> = (0..time as i64).collect();
+    let idx_tensor = Tensor::from_vec(indices, (1, 1, time), device)?;
+    let len_tensor = Tensor::from_vec(lengths.to_vec(), (batch, 1, 1), device)?;
+    let lengths_b = len_tensor.broadcast_as((batch, 1, time))?;
+    // mask = idx < length
+    let mask = idx_tensor.broadcast_lt(&lengths_b)?;
+    mask.to_dtype(DType::F32).map_err(|e| crate::Error::InferenceError(e.to_string()))
+}
+
 /// Nearest-neighbor 2x upsampling along the time dimension
 /// Input: [batch, channels, time] → Output: [batch, channels, time*2]
 fn nearest_upsample_2x(x: &Tensor) -> Result<Tensor> {
@@ -219,34 +231,34 @@ impl SoVITSModel {
         let y_lengths = vec![quantized_up.dims()[2] as i64];
         let text_lengths = vec![text.dims()[1] as i64];
 
-        // ge for enc_p: narrow back to 192 channels (MRTE output dim)
-        let ge_enc = ge.narrow(1, 0, 192)?;
+        // Build y_mask from y_lengths
+        let time_len = quantized_up.dims()[2];
+        let y_mask = build_sequence_mask(&y_lengths, time_len, 1, &self.device)?;
 
-        // Pass through EncP (ALWAYS the synthesis path)
-        let (_y, m, logs, y_mask) = self.enc_p.forward(
+        // Pass through enc_p
+        let (_y, m_p, logs_p, _y_mask_enc) = self.enc_p.forward(
             &quantized_up,
             &y_lengths,
             &text,
             &text_lengths,
-            &ge_enc,
+            &ge,
             1.0,
         )?;
 
         // Sample from N(m, exp(logs)) to get latent z_p
-        let noise = self.sample_noise(&m)?;
-        let logs = logs.clamp(-4.0, 4.0)?;
-        let logs_exp = logs.exp()?;
-        let z_p = m.add(&noise.broadcast_mul(&logs_exp)?)?;
+        let noise = self.sample_noise(&m_p)?;
+        let logs_p = logs_p.clamp(-4.0, 4.0)?;
+        let logs_exp = logs_p.exp()?;
+        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?)?;
 
-        // Invert flow transform: z_p → z
-        let z = self.flow.forward(&z_p, &y_mask, None, true)?;
+        // Invert flow transform: z_p → z (with ge conditioning, matching Python)
+        let z = self.flow.forward(&z_p, &y_mask, Some(&ge), true)?;
 
         // Apply mask
-        let z = z.broadcast_mul(&y_mask)?;
+        let z_masked = z.broadcast_mul(&y_mask)?;
 
-        // Pass through decoder to generate waveform
-        // ge is [1, 192, 1], decoder cond expects gin_channels input
-        let output = self.decoder.forward(&z, Some(&ge))?;
+        // Pass through decoder with full 512-dim ge (matching Python: o = self.dec((z * y_mask), g=ge))
+        let output = self.decoder.forward(&z_masked, Some(&ge))?;
 
         Ok(output)
     }
@@ -273,6 +285,31 @@ impl SoVITSModel {
     /// Get sampling rate
     pub fn sampling_rate(&self) -> u32 {
         self.sampling_rate
+    }
+
+    /// Get ref_enc
+    pub fn ref_enc(&self) -> &RefEnc {
+        &self.ref_enc
+    }
+
+    /// Get quantizer
+    pub fn quantizer(&self) -> &Quantizer {
+        &self.quantizer
+    }
+
+    /// Get enc_p
+    pub fn enc_p(&self) -> &EncP {
+        &self.enc_p
+    }
+
+    /// Get flow
+    pub fn flow(&self) -> &ResidualCouplingBlock {
+        &self.flow
+    }
+
+    /// Get decoder
+    pub fn decoder(&self) -> &Decoder {
+        &self.decoder
     }
 }
 
