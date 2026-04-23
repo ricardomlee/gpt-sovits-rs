@@ -79,7 +79,7 @@ impl WN {
         };
         let padding = (kernel_size - 1) / 2;
 
-        Ok(Conv1dWeightNorm::new(weight_g, weight_v, bias, 1, padding, 1))
+        Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)?)
     }
 
     /// Forward pass through WaveNet
@@ -211,7 +211,7 @@ impl ResidualCouplingLayer {
             let kernel_size = if weight_v.dims().len() >= 3 { weight_v.dims()[2] } else { 1 };
             let padding = (kernel_size - 1) / 2;
 
-            Ok(Conv1dWeightNorm::new(weight_g, weight_v, bias, 1, padding, 1))
+            Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)?)
         } else {
             // Regular weight format
             let weight = state_dict.get(&format!("{}.weight", prefix))?
@@ -227,7 +227,7 @@ impl ResidualCouplingLayer {
 
             // Create dummy weight_g for Conv1dWeightNorm
             let weight_g = Tensor::full(1.0f32, weight.dims(), &weight.device())?;
-            Ok(Conv1dWeightNorm::new(weight_g, weight, bias, 1, padding, 1))
+            Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight, bias, 1, padding, 1)?)
         }
     }
 

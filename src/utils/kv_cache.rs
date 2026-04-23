@@ -195,6 +195,8 @@ impl Default for KvCacheManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use candle_core::DType;
+    use candle_core::Device;
 
     #[test]
     fn test_kv_cache_update() -> Result<()> {

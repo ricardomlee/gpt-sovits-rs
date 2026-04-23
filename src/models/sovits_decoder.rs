@@ -2,7 +2,7 @@
 
 use candle_core::{Device, DType, Tensor};
 use crate::Result;
-use crate::utils::{StateDict, Conv1dWeightNorm};
+use crate::utils::{StateDict, Conv1d, Conv1dWeightNorm};
 
 /// Residual Block Type 1 (for HiFi-GAN decoder)
 #[derive(Debug, Clone)]
@@ -53,11 +53,17 @@ impl ResBlock1 {
             1
         };
 
-        // Dilated convolutions use kernel_size as dilation
-        let dilation = kernel_size;
+        // Resblock uses groups of 3 convs with dilations [1, 3, 5]
+        // Extract the convolution index from the prefix (e.g., "dec.resblocks.0.convs1.2" -> index 2)
+        let parts: Vec<&str> = prefix.split('.').collect();
+        let conv_idx = parts.last()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0);
+        let dilations = [1, 3, 5];
+        let dilation = dilations.get(conv_idx).copied().unwrap_or(1);
         let padding = (kernel_size * dilation - dilation) / 2;
 
-        Ok(Conv1dWeightNorm::new(weight_g, weight_v, bias, 1, padding, dilation))
+        Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, dilation)?)
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -78,11 +84,11 @@ impl ResBlock1 {
 /// Decoder (HiFi-GAN style vocoder)
 #[derive(Debug, Clone)]
 pub struct Decoder {
-    conv_pre: Conv1dWeightNorm,
+    conv_pre: Conv1d,
     ups: Vec<Upsample>,
     resblocks: Vec<ResBlock1>,
-    conv_post: Conv1dWeightNorm,
-    cond: Option<Conv1dWeightNorm>,
+    conv_post: Conv1d,
+    cond: Option<Conv1d>,
     gin_channels: usize,
 }
 
@@ -95,15 +101,15 @@ struct Upsample {
 impl Decoder {
     /// Load decoder from SoVITS safetensors
     pub fn load(state_dict: &StateDict, device: &Device) -> Result<Self> {
-        // Load conv_pre: [512, 192, 7]
-        let conv_pre = Self::load_conv(state_dict, "dec.conv_pre", device)?;
+        // Load conv_pre: [512, 192, 7] - PLAIN conv, NOT weight_norm
+        let conv_pre = Self::load_conv_plain(state_dict, "dec.conv_pre", device)?;
 
-        // Load conv_post: [1, 16, 7]
-        let conv_post = Self::load_conv_weight(state_dict, "dec.conv_post", device)?;
+        // Load conv_post: [1, 16, 7] - PLAIN conv, NOT weight_norm
+        let conv_post = Self::load_conv_plain_weight(state_dict, "dec.conv_post", device)?;
 
-        // Load condition layer if exists
-        let cond = if state_dict.contains("dec.cond.weight_v") {
-            Some(Self::load_conv(state_dict, "dec.cond", device)?)
+        // Load condition layer if exists - PLAIN conv, NOT weight_norm
+        let cond = if state_dict.contains("dec.cond.weight") {
+            Some(Self::load_conv_plain(state_dict, "dec.cond", device)?)
         } else {
             None
         };
@@ -119,7 +125,7 @@ impl Decoder {
         for i in 0..10 {
             let prefix = format!("dec.ups.{}", i);
             if state_dict.contains(&format!("{}.weight_v", prefix)) {
-                let conv = Self::load_conv(state_dict, &prefix, device)?;
+                let conv = Self::load_conv_wn(state_dict, &prefix, device)?;
                 let upsample_factor = if up_idx < UPSAMPLE_RATES.len() {
                     UPSAMPLE_RATES[up_idx]
                 } else {
@@ -141,7 +147,7 @@ impl Decoder {
         }
 
         // Get gin_channels from cond input channels
-        let gin_channels = cond.as_ref().map(|c| c.weight_v.dims()[0]).unwrap_or(512);
+        let gin_channels = cond.as_ref().map(|c| c.weight.dims()[0]).unwrap_or(512);
 
         Ok(Self {
             conv_pre,
@@ -153,52 +159,50 @@ impl Decoder {
         })
     }
 
-    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1dWeightNorm> {
-        // Try weight_norm format first
-        if state_dict.contains(&format!("{}.weight_g", prefix)) {
-            let weight_g = state_dict.get(&format!("{}.weight_g", prefix))?
-                .to_device(device)?.to_dtype(DType::F32)?;
-            let weight_v = state_dict.get(&format!("{}.weight_v", prefix))?
-                .to_device(device)?.to_dtype(DType::F32)?;
-            let bias = state_dict.get(&format!("{}.bias", prefix))
-                .ok()
-                .cloned()
-                .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
-                .transpose()?;
+    fn load_conv_plain(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1d> {
+        let weight = state_dict.get(&format!("{}.weight", prefix))?
+            .to_device(device)?.to_dtype(DType::F32)?;
+        let bias = state_dict.get(&format!("{}.bias", prefix))
+            .ok()
+            .cloned()
+            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
+            .transpose()?;
 
-            let weight_v_shape = weight_v.dims();
-            let kernel_size = if weight_v_shape.len() >= 3 {
-                weight_v_shape[2]
-            } else {
-                1
-            };
-
-            let padding = (kernel_size - 1) / 2;
-            Ok(Conv1dWeightNorm::new(weight_g, weight_v, bias, 1, padding, 1))
+        let weight_dims = weight.dims();
+        let kernel_size = if weight_dims.len() >= 3 {
+            weight_dims[2]
         } else {
-            // Regular conv format
-            let weight = state_dict.get(&format!("{}.weight", prefix))?
-                .to_device(device)?.to_dtype(DType::F32)?;
-            let bias = state_dict.get(&format!("{}.bias", prefix))
-                .ok()
-                .cloned()
-                .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
-                .transpose()?;
+            1
+        };
 
-            let weight_dims = weight.dims();
-            let kernel_size = if weight_dims.len() >= 3 {
-                weight_dims[2]
-            } else {
-                1
-            };
-
-            let padding = (kernel_size - 1) / 2;
-            let weight_g = Tensor::full(1.0f32, weight.dims(), &weight.device())?;
-            Ok(Conv1dWeightNorm::new(weight_g, weight, bias, 1, padding, 1))
-        }
+        let padding = (kernel_size - 1) / 2;
+        Ok(Conv1d::new(weight, bias, 1, padding, 1))
     }
 
-    fn load_conv_weight(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1dWeightNorm> {
+    /// Load weight-norm conv (used by ups and resblocks which ARE weight_norm)
+    fn load_conv_wn(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1dWeightNorm> {
+        let weight_g = state_dict.get(&format!("{}.weight_g", prefix))?
+            .to_device(device)?.to_dtype(DType::F32)?;
+        let weight_v = state_dict.get(&format!("{}.weight_v", prefix))?
+            .to_device(device)?.to_dtype(DType::F32)?;
+        let bias = state_dict.get(&format!("{}.bias", prefix))
+            .ok()
+            .cloned()
+            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
+            .transpose()?;
+
+        let weight_v_shape = weight_v.dims();
+        let kernel_size = if weight_v_shape.len() >= 3 {
+            weight_v_shape[2]
+        } else {
+            1
+        };
+
+        let padding = (kernel_size - 1) / 2;
+        Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)?)
+    }
+
+    fn load_conv_plain_weight(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1d> {
         // For conv_post, the weight is stored directly (not weight_norm)
         let weight = state_dict.get(&format!("{}.weight", prefix))?
             .to_device(device)?.to_dtype(DType::F32)?;
@@ -216,14 +220,14 @@ impl Decoder {
         };
 
         let padding = (kernel_size - 1) / 2;
-
-        // Create dummy g tensor for weight norm
-        let weight_g = Tensor::full(1.0f32, weight.dims(), &weight.device())?;
-        Ok(Conv1dWeightNorm::new(weight_g, weight, bias, 1, padding, 1))
+        Ok(Conv1d::new(weight, bias, 1, padding, 1))
     }
 
     /// Generate waveform from latent features
     pub fn forward(&self, x: &Tensor, g: Option<&Tensor>) -> Result<Vec<f32>> {
+        // Sync for accurate CUDA timing
+        let _ = x.device().synchronize();
+
         // x: [batch, channels, time]
         let mut x = self.conv_pre.forward(x)?;
 
@@ -231,7 +235,8 @@ impl Decoder {
         if let Some(cond) = &self.cond {
             if let Some(g) = g {
                 let g_proj = cond.forward(g)?;
-                x = x.add(&g_proj)?;
+                // g_proj: [batch, channels, 1] → broadcast across time
+                x = x.broadcast_add(&g_proj)?;
             }
         }
 
@@ -277,7 +282,67 @@ impl Decoder {
 
         // Convert to Vec<f32>
         let output: Vec<f32> = x.flatten_all()?.to_vec1()?;
+        let _ = x.device().synchronize();
         Ok(output)
+    }
+
+    /// Generate waveform and save intermediate outputs for debugging
+    pub fn forward_debug(&self, x: &Tensor, g: Option<&Tensor>) -> Result<Vec<f32>> {
+        let mut x = self.conv_pre.forward(x)?;
+        self.save_tensor("debug_conv_pre", &x)?;
+
+        if let Some(cond) = &self.cond {
+            if let Some(g) = g {
+                let g_proj = cond.forward(g)?;
+                x = x.broadcast_add(&g_proj)?;
+                self.save_tensor("debug_cond", &x)?;
+            }
+        }
+
+        for i in 0..self.ups.len() {
+            x = self.leaky_relu(&x, 0.1)?;
+            let up = &self.ups[i];
+            x = self.upsample_forward(&x, &up.conv, up.upsample_factor)?;
+            self.save_tensor(&format!("debug_ups{}", i), &x)?;
+
+            let resblock_start = i * 3;
+            let resblock_end = (resblock_start + 3).min(self.resblocks.len());
+
+            if resblock_start < self.resblocks.len() {
+                let mut xs_acc: Option<Tensor> = None;
+                for j in resblock_start..resblock_end {
+                    let block = &self.resblocks[j];
+                    let xs = block.forward(&x)?;
+                    xs_acc = Some(match xs_acc {
+                        Some(acc) => acc.add(&xs)?,
+                        None => xs,
+                    });
+                }
+                if let Some(xs) = xs_acc {
+                    let divisor = Tensor::full((resblock_end - resblock_start) as f32, xs.dims(), xs.device())?;
+                    x = xs.broadcast_div(&divisor)?;
+                }
+                self.save_tensor(&format!("debug_resblock{}", i), &x)?;
+            }
+        }
+
+        x = self.leaky_relu(&x, 0.1)?;
+        x = self.conv_post.forward(&x)?;
+        self.save_tensor("debug_post_conv", &x)?;
+        x = x.tanh()?;
+        self.save_tensor("debug_audio", &x)?;
+
+        let output: Vec<f32> = x.flatten_all()?.to_vec1()?;
+        Ok(output)
+    }
+
+    fn save_tensor(&self, name: &str, t: &Tensor) -> Result<()> {
+        let flat: Vec<f32> = t.flatten_all()?.to_vec1()?;
+        let dims = t.dims();
+        let header = format!("{}\n", dims.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(","));
+        let data = flat.iter().map(|v| format!("{:.10}", v)).collect::<Vec<_>>().join("\n");
+        std::fs::write(format!("{}.txt", name), format!("{}{}\n", header, data))
+            .map_err(|e| crate::Error::InferenceError(format!("Failed to save {}: {}", name, e)))
     }
 
     fn leaky_relu(&self, x: &Tensor, slope: f32) -> Result<Tensor> {
@@ -298,6 +363,15 @@ impl Decoder {
         let stride = upsample_factor;
         let padding = (kernel_size - stride) / 2;
 
-        Ok(x.conv_transpose1d(&weight, padding, 0, stride, 1, 1)?)
+        let out = x.conv_transpose1d(&weight, padding, 0, stride, 1, 1)?;
+
+        // Add bias if present
+        if let Some(bias) = &conv.bias {
+            let bias_len = bias.dims()[0];
+            let bias_reshaped = bias.reshape(&[1, bias_len, 1])?;
+            return Ok(out.broadcast_add(&bias_reshaped)?);
+        }
+
+        Ok(out)
     }
 }

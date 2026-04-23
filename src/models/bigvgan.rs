@@ -55,7 +55,7 @@ impl SnakeParams {
         // Snake(x) = x + alpha * sin^2(beta * x)
         let x_dims = x.dims();
         let alpha_dims = self.alpha.dims();
-        let beta_dims = self.beta.dims();
+        let _beta_dims = self.beta.dims();
 
         // Reshape alpha/beta to match input dimensions
         // Input is [batch, channels, time]
@@ -270,7 +270,7 @@ impl ResidualBlock {
 
         let padding = (kernel_size - 1) / 2;
 
-        Ok(Conv1dWeightNorm::new(weight_g, weight_v, bias, 1, padding, 1))
+        Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)?)
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -402,7 +402,7 @@ impl BigVGAN {
 
         let padding = (kernel_size - 1) / 2;
 
-        Ok(Conv1dWeightNorm::new(weight_g, weight_v, bias, 1, padding, 1))
+        Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)?)
     }
 
     fn load_post_activation(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<PostActivation> {
@@ -441,7 +441,7 @@ impl BigVGAN {
 
         // Step 2: Interleaved upsampling and resblocks
         for (i, up) in self.ups.iter().enumerate() {
-            x = self.upsample_forward(&x, &up.conv)?;
+            x = self.upsample_forward(&x, &up.conv, up.upsample_factor)?;
 
             let resblock_start = i * 3;
             let resblock_end = resblock_start + 3;
@@ -469,16 +469,16 @@ impl BigVGAN {
         Ok(output)
     }
 
-    fn upsample_forward(&self, x: &Tensor, conv: &Conv1dWeightNorm) -> Result<Tensor> {
+    fn upsample_forward(&self, x: &Tensor, conv: &Conv1dWeightNorm, upsample_factor: usize) -> Result<Tensor> {
         let weight = conv.get_weight()?;
         let weight_dims = weight.dims();
 
-        let out_ch_fwd = weight_dims[0];
-        let in_ch_fwd = weight_dims[1];
         let kernel_size = weight_dims[2];
 
-        let stride = (out_ch_fwd + in_ch_fwd - 1) / in_ch_fwd;
-        let stride = stride.max(1);
+        // For transposed convolution upsampling:
+        // stride = upsample_factor (typically 2)
+        // padding = (kernel_size - stride) / 2 to maintain alignment
+        let stride = upsample_factor;
         let padding = (kernel_size - stride) / 2;
 
         Ok(x.conv_transpose1d(&weight, padding, 0, stride, 1, 1)?)

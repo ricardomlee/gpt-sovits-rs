@@ -172,7 +172,7 @@ impl StateDict {
         // Calculate padding to maintain sequence length: padding = (kernel_size - 1) / 2
         let padding = (kernel_size - 1) / 2;
 
-        Ok(Conv1dWeightNorm::new(weight_g, weight_v, bias, 1, padding, 1))
+        Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)?)
     }
 
     /// Get internal HashMap for VarBuilder
@@ -331,9 +331,30 @@ impl LayerNorm {
 
     pub fn forward(&self, input: &Tensor) -> Result<Tensor> {
         // Normalize: (input - mean) / sqrt(var + eps)
-        let mean = input.mean_keepdim(candle_core::D::Minus1)?;
+        // Auto-detect format based on input shape vs weight dimension
+        let input_dims = input.dims();
+        let rank = input_dims.len();
+        let norm_dim = self.weight.dims()[0];
+
+        // Detect format:
+        // - [batch, seq_len, channels] (Transformer): last dim == norm_dim → normalize over D::Minus1
+        // - [batch, channels, seq_len] (SoVITS): middle dim == norm_dim → normalize over D::Minus2
+        let is_last_dim = rank >= 2 && input_dims[rank - 1] == norm_dim;
+        let is_middle_dim = rank >= 3 && input_dims[1] == norm_dim;
+
+        let dim = if is_last_dim {
+            candle_core::D::Minus1  // Transformer format
+        } else if is_middle_dim {
+            candle_core::D::Minus2  // SoVITS format
+        } else {
+            // Fallback: try last dimension (standard PyTorch behavior)
+            candle_core::D::Minus1
+        };
+
+        // Mean/var over the detected dimension
+        let mean = input.mean_keepdim(dim)?;
         let centered = input.broadcast_sub(&mean)?;
-        let var = centered.sqr()?.mean_keepdim(candle_core::D::Minus1)?;
+        let var = centered.sqr()?.mean_keepdim(dim)?;
 
         // Convert eps to match input dtype
         let eps_val = self.eps as f32;
@@ -342,12 +363,14 @@ impl LayerNorm {
         let std = var.add(&eps)?.sqrt()?;
         let normalized = centered.broadcast_div(&std)?;
 
-        // Apply weight and bias - reshape to match last dimension
-        let last_dim = input.rank();
-        let mut shape = vec![1; last_dim];
-        shape[last_dim - 1] = self.weight.dims()[0];
+        // Apply weight and bias with proper shape
+        let mut shape = vec![1; rank];
+        if is_last_dim {
+            shape[rank - 1] = norm_dim;  // Transformer: [1, 1, channels]
+        } else {
+            shape[1] = norm_dim;  // SoVITS: [1, channels, 1]
+        }
 
-        // Convert weight and bias to match input device and dtype
         let weight = self.weight.to_device(&input.device())?.to_dtype(normalized.dtype())?;
         let bias = self.bias.to_device(&input.device())?.to_dtype(normalized.dtype())?;
         let weight_reshaped = weight.reshape(&*shape)?;
@@ -407,6 +430,7 @@ impl Conv1d {
 
 /// Weight-parameterized Conv1d for BigVGAN/SoVITS
 /// Uses weight_g (norm) and weight_v (direction) decomposition
+/// Caches pre-computed weight to avoid recomputing norm on every forward pass
 #[derive(Debug, Clone)]
 pub struct Conv1dWeightNorm {
     pub weight_g: Tensor,
@@ -415,6 +439,8 @@ pub struct Conv1dWeightNorm {
     pub stride: usize,
     pub padding: usize,
     pub dilation: usize,
+    /// Pre-computed normalized weight (computed once during loading)
+    cached_weight: Option<Tensor>,
 }
 
 impl Conv1dWeightNorm {
@@ -433,11 +459,45 @@ impl Conv1dWeightNorm {
             stride,
             padding,
             dilation,
+            cached_weight: None,
         }
+    }
+
+    /// Create with pre-computed weight (preferred for inference)
+    pub fn new_with_cached(
+        weight_g: Tensor,
+        weight_v: Tensor,
+        bias: Option<Tensor>,
+        stride: usize,
+        padding: usize,
+        dilation: usize,
+    ) -> Result<Self> {
+        // Compute weight once during construction
+        let v_squared = weight_v.sqr()?;
+        let v_norm = v_squared.sum(D::Minus1)?.sum(D::Minus1)?.sqrt()?;
+        let out_channels = weight_v.dims()[0];
+        let v_norm_reshaped = v_norm.reshape((out_channels, 1, 1))?;
+        let v_normalized = weight_v.broadcast_div(&v_norm_reshaped)?;
+        let weight = v_normalized.broadcast_mul(&weight_g)?;
+
+        Ok(Self {
+            weight_g,
+            weight_v,
+            bias,
+            stride,
+            padding,
+            dilation,
+            cached_weight: Some(weight),
+        })
     }
 
     /// Compute actual weight from g/v decomposition
     pub fn get_weight(&self) -> Result<Tensor> {
+        // Use cached weight if available
+        if let Some(ref w) = self.cached_weight {
+            return Ok(w.clone());
+        }
+
         // weight = (weight_v / ||weight_v||) * weight_g
         // weight_g: [out_channels, in_channels, kernel] (same shape as weight_v)
         // weight_v: [out_channels, in_channels, kernel]
