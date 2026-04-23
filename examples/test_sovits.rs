@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let semantic_tokens: Vec<usize> = (0..50).map(|i| 100 + (i % 500)).collect();
     let text_tokens: Vec<usize> = (1..21).collect();  // 20 text tokens
 
-    let audio_samples = model.synthesize(&semantic_tokens, &text_tokens, None)?;
+    let audio_samples = model.synthesize(&semantic_tokens, &text_tokens, None, 0.5)?;
     println!("  Generated {} samples ({:.2}s)", audio_samples.len(), audio_samples.len() as f32 / model.sampling_rate() as f32);
     print_audio_stats(&audio_samples);
 
@@ -71,7 +71,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  STFT magnitude - mean: {:.6}, max: {:.6}", mean_mag, max_mag);
 
     // Try enc_q with flow (requires proper speaker embedding for good quality)
-    match model.synthesize(&semantic_tokens, &text_tokens, Some(&stft_mag.to_device(model.device())?)) {
+    match model.synthesize(&semantic_tokens, &text_tokens, Some(&stft_mag.to_device(model.device(), 0.5)?)) {
         Ok(audio_samples_encq) => {
             println!("  Generated {} samples ({:.2}s)", audio_samples_encq.len(), audio_samples_encq.len() as f32 / model.sampling_rate() as f32);
             print_audio_stats(&audio_samples_encq);

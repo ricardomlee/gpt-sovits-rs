@@ -59,7 +59,7 @@ fn run_profile() -> Result<(), Box<dyn std::error::Error>> {
     // Test input
     let input_text = "你好，世界！";
     let ref_audio = "/home/ric/gpt-sovits/test_zh.wav";
-    let ref_text = "这是一个测试文本。";
+    let _ref_text = "这是一个测试文本。";
 
     let options = InferenceOptions::builder()
         .top_k(15)
@@ -143,32 +143,20 @@ fn run_profile() -> Result<(), Box<dyn std::error::Error>> {
     });
     println!("  [{}] {}", format_duration(gpt_time), "GPT Generation (semantic tokens)");
 
-    // Step 6: SoVITS Inference
+    // Step 6: SoVITS Inference (includes decoder → audio)
     let sovits_start = Instant::now();
     let sovits = pipeline.sovits_model().as_ref().unwrap();
-    let mel_spec = sovits.synthesize(&semantic_tokens, None)?;
+    let audio_samples = sovits.synthesize(&semantic_tokens, &[], None, 0.5)?;
     let sovits_time = sovits_start.elapsed();
     timings.push(TimingStats {
-        name: "6. SoVITS Inference (mel spectrogram)",
+        name: "6. SoVITS Inference (with decoder)",
         duration_ms: sovits_time.as_secs_f64() * 1000.0,
         percentage: 0.0,
     });
-    println!("  [{}] {}", format_duration(sovits_time), "SoVITS Inference (mel spectrogram)");
-
-    // Step 7: BigVGAN Vocoder
-    let vocoder_start = Instant::now();
-    let bigvgan = pipeline.bigvgan_model().as_ref().unwrap();
-    let audio_samples = bigvgan.generate(&mel_spec)?;
-    let vocoder_time = vocoder_start.elapsed();
-    timings.push(TimingStats {
-        name: "7. BigVGAN Vocoder (waveform generation)",
-        duration_ms: vocoder_time.as_secs_f64() * 1000.0,
-        percentage: 0.0,
-    });
-    println!("  [{}] {}", format_duration(vocoder_time), "BigVGAN Vocoder (waveform generation)");
+    println!("  [{}] {}", format_duration(sovits_time), "SoVITS Inference (with decoder)");
 
     // Convert samples to AudioBuffer
-    let audio = gpt_sovits_rs::AudioBuffer::new(audio_samples, bigvgan.sampling_rate(), 1);
+    let audio = gpt_sovits_rs::AudioBuffer::new(audio_samples, sovits.sampling_rate(), 1);
 
     let total_time = total_start.elapsed();
     println!("\n  [{}] TOTAL", format_duration(total_time));

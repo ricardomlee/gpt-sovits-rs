@@ -30,6 +30,14 @@ name = "e2e_gpu_test"
 path = "examples/e2e_gpu_test.rs"
 
 [[example]]
+name = "benchmark_gpu_kv_cache"
+path = "examples/benchmark_gpu_kv_cache.rs"
+
+[[example]]
+name = "profile_kv_cache"
+path = "examples/profile_kv_cache.rs"
+
+[[example]]
 name = "profile_pipeline"
 path = "examples/profile_pipeline.rs"
 
@@ -48,6 +56,7 @@ ort = { version = "2.0.0-rc.12", features = ["cuda"], optional = true }
 # Audio Processing
 hound = "3.5"                    # WAV I/O
 symphonia = { version = "0.5", features = ["all"] }
+rustfft = "6.1"                  # FFT for mel spectrogram extraction
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }

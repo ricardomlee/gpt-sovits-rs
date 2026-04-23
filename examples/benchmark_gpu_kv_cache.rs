@@ -46,7 +46,7 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     // Test input
     let input_text = "你好，世界！";
     let ref_audio = "/home/ric/gpt-sovits/test_zh.wav";
-    let ref_text = "这是一个测试文本。";
+    let _ref_text = "这是一个测试文本。";
 
     let options = InferenceOptions::builder()
         .top_k(15)

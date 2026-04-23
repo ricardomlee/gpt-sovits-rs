@@ -54,7 +54,7 @@ fn run_profile() -> Result<(), Box<dyn std::error::Error>> {
     // Test input
     let input_text = "你好，世界！";
     let ref_audio = "/home/ric/gpt-sovits/test_zh.wav";
-    let ref_text = "这是一个测试文本。";
+    let _ref_text = "这是一个测试文本。";
 
     let options = InferenceOptions::builder()
         .top_k(15)
@@ -116,23 +116,15 @@ fn run_profile() -> Result<(), Box<dyn std::error::Error>> {
     timings.push(TimingStats { name: "5. GPT (KV Cache)", duration_ms: gpt_time.as_secs_f64() * 1000.0 });
     println!("  [{}] GPT (KV Cache) - {} tokens", format_duration(gpt_time), semantic_tokens.len());
 
-    // Step 6: SoVITS Inference
+    // Step 6: SoVITS Inference (includes decoder → audio)
     let sovits_start = Instant::now();
     let sovits = pipeline.sovits_model().as_ref().unwrap();
-    let mel_spec = sovits.synthesize(&semantic_tokens, None)?;
+    let audio_samples = sovits.synthesize(&semantic_tokens, &[], None, 0.5)?;
     let sovits_time = sovits_start.elapsed();
-    timings.push(TimingStats { name: "6. SoVITS", duration_ms: sovits_time.as_secs_f64() * 1000.0 });
-    println!("  [{}] SoVITS", format_duration(sovits_time));
+    timings.push(TimingStats { name: "6. SoVITS (with decoder)", duration_ms: sovits_time.as_secs_f64() * 1000.0 });
+    println!("  [{}] SoVITS (with decoder)", format_duration(sovits_time));
 
-    // Step 7: BigVGAN Vocoder
-    let vocoder_start = Instant::now();
-    let bigvgan = pipeline.bigvgan_model().as_ref().unwrap();
-    let audio_samples = bigvgan.generate(&mel_spec)?;
-    let vocoder_time = vocoder_start.elapsed();
-    timings.push(TimingStats { name: "7. BigVGAN", duration_ms: vocoder_time.as_secs_f64() * 1000.0 });
-    println!("  [{}] BigVGAN", format_duration(vocoder_time));
-
-    let audio = AudioBuffer::new(audio_samples, bigvgan.sampling_rate(), 1);
+    let audio = AudioBuffer::new(audio_samples, sovits.sampling_rate(), 1);
     let total_time = total_start.elapsed();
     println!("\n  [{}] TOTAL", format_duration(total_time));
 

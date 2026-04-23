@@ -80,14 +80,8 @@ fn run_test() -> Result<(), Box<dyn std::error::Error>> {
     // Test cases
     let test_cases = vec![
         (
-            "短文本测试",
-            "你好，世界！",
-            "/home/ric/gpt-sovits/test_zh.wav",
-            "这是一个测试文本。",
-        ),
-        (
-            "长文本测试",
-            "这是一个更长的测试文本，用于验证模型在较长输入下的表现。希望效果不错！",
+            "用户句子测试",
+            "如果确实没问题的话，运行一遍完整的pipeline生成一段音频，文字就是我的这句话",
             "/home/ric/gpt-sovits/test_zh.wav",
             "这是一个测试文本。",
         ),
