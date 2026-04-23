@@ -187,31 +187,20 @@ impl MultiHeadAttention {
 /// Feed-forward network with SwiGLU activation
 #[derive(Debug, Clone)]
 pub struct FeedForward {
-    w1: Linear,  // gate projection
-    w2: Linear,  // output projection
-    w3: Linear,  // up projection
+    linear1: Linear,  // up projection [hidden, intermediate]
+    linear2: Linear,  // down projection [intermediate, hidden]
 }
 
 impl FeedForward {
-    pub fn new(w1: Linear, w2: Linear, w3: Linear) -> Self {
-        Self { w1, w2, w3 }
+    pub fn new(linear1: Linear, linear2: Linear) -> Self {
+        Self { linear1, linear2 }
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        // SwiGLU: (swish(w1(x)) * w3(x)) @ w2
-        let gate = self.w1.forward(x)?;
-        let up = self.w3.forward(x)?;
-
-        // Swish activation: x * sigmoid(x) = x / (1 + exp(-x))
-        let gate_exp = gate.neg()?.exp()?;
-        let ones = Tensor::ones_like(&gate_exp)?;
-        let sigmoid = ones.broadcast_add(&gate_exp)?.recip()?;
-        let gate_swish = gate.broadcast_mul(&sigmoid)?;
-
-        // Element-wise multiplication
-        let ff_output = gate_swish.broadcast_mul(&up)?;
-
-        Ok(self.w2.forward(&ff_output)?)
+        // ReLU FFN: linear2(relu(linear1(x))) - matching Python
+        let hidden = self.linear1.forward(x)?;
+        let activated = hidden.clamp(0.0, f32::MAX)?;
+        Ok(self.linear2.forward(&activated)?)
     }
 }
 
@@ -230,16 +219,18 @@ impl TransformerBlock {
     }
 
     pub fn forward(&self, x: &Tensor, mask: Option<&Tensor>) -> Result<Tensor> {
-        // Pre-norm architecture
-        let normed = self.attn_norm.forward(x)?;
-        let attn_output = self.attention.forward(&normed, mask)?;
+        // Post-norm architecture (matching Python)
+        let attn_output = self.attention.forward(x, mask)?;
         // Residual connection
         let x = x.add(&attn_output)?;
+        // Normalize after residual
+        let x = self.attn_norm.forward(&x)?;
 
-        let normed = self.ffn_norm.forward(&x)?;
-        let ff_output = self.feed_forward.forward(&normed)?;
+        let ff_output = self.feed_forward.forward(&x)?;
         // Residual connection
-        Ok(x.add(&ff_output)?)
+        let x = x.add(&ff_output)?;
+        // Normalize after FFN residual
+        Ok(self.ffn_norm.forward(&x)?)
     }
 
     /// Forward with KV cache for inference
@@ -250,16 +241,18 @@ impl TransformerBlock {
         cache: Option<&mut crate::utils::KvCache>,
         use_cache: bool,
     ) -> Result<Tensor> {
-        // Pre-norm architecture
-        let normed = self.attn_norm.forward(x)?;
-        let attn_output = self.attention.forward_kv(&normed, mask, cache, use_cache)?;
+        // Post-norm architecture (matching Python)
+        let attn_output = self.attention.forward_kv(x, mask, cache, use_cache)?;
         // Residual connection
         let x = x.add(&attn_output)?;
+        // Normalize after residual
+        let x = self.attn_norm.forward(&x)?;
 
-        let normed = self.ffn_norm.forward(&x)?;
-        let ff_output = self.feed_forward.forward(&normed)?;
+        let ff_output = self.feed_forward.forward(&x)?;
         // Residual connection
-        Ok(x.add(&ff_output)?)
+        let x = x.add(&ff_output)?;
+        // Normalize after FFN residual
+        Ok(self.ffn_norm.forward(&x)?)
     }
 }
 
@@ -322,7 +315,7 @@ impl Transformer {
             let wo = weights.get_linear(&format!("{}.attention.wo", prefix))?;
             let attn = MultiHeadAttention::new(wq, wk, wv, wo, config.num_attention_heads);
 
-            // Feed-forward network (SwiGLU uses 3 linear layers)
+            // Feed-forward network (ReLU)
             let w1 = Linear::new(
                 weights.get(&format!("{}.ffn.w1.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?,
                 weights.get(&format!("{}.ffn.w1.bias", prefix)).ok().and_then(|t| t.to_device(device).ok()).and_then(|t| t.to_dtype(DType::F32).ok())
@@ -331,11 +324,7 @@ impl Transformer {
                 weights.get(&format!("{}.ffn.w2.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?,
                 weights.get(&format!("{}.ffn.w2.bias", prefix)).ok().and_then(|t| t.to_device(device).ok()).and_then(|t| t.to_dtype(DType::F32).ok())
             );
-            let w3 = Linear::new(
-                weights.get(&format!("{}.ffn.w3.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?,
-                weights.get(&format!("{}.ffn.w3.bias", prefix)).ok().and_then(|t| t.to_device(device).ok()).and_then(|t| t.to_dtype(DType::F32).ok())
-            );
-            let ff = FeedForward::new(w1, w2, w3);
+            let ff = FeedForward::new(w1, w2);
 
             // Layer norms with F32 conversion
             let attn_norm = LayerNorm::new(
@@ -604,12 +593,11 @@ impl TransformerGPTSoVITS {
                 .to_device(device)?
                 .to_dtype(DType::F32)?;
 
-            // Use linear1 for both gate (w1) and up (w3), linear2 for output (w2)
-            let w1 = Linear::new(linear1_weight.clone(), Some(linear1_bias.clone()));
-            let w3 = Linear::new(linear1_weight.clone(), Some(linear1_bias.clone()));
+            // Simple ReLU FFN: linear2(relu(linear1(x))) - matching Python
+            let w1 = Linear::new(linear1_weight, Some(linear1_bias));
             let w2 = Linear::new(linear2_weight, Some(linear2_bias));
 
-            let ff = FeedForward::new(w1, w2, w3);
+            let ff = FeedForward::new(w1, w2);
 
             // Load layer norms with F32 conversion
             let attn_norm_weight = weights.get(&format!("{}.norm1.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
@@ -697,6 +685,18 @@ impl TransformerGPTSoVITS {
             x = layer.forward_kv(&x, Some(&causal_mask), Some(cache), true)?;
         }
 
+        Ok(x)
+    }
+
+    /// Forward through only the first transformer layer
+    pub fn forward_first_layer(&self, embeddings: &Tensor, mask: &Tensor) -> Result<Tensor> {
+        let mut x = embeddings.clone();
+        if self.layers.is_empty() {
+            return Err(crate::Error::InferenceError(
+                "No transformer layers available".to_string(),
+            ));
+        }
+        x = self.layers[0].forward(&x, Some(mask))?;
         Ok(x)
     }
 

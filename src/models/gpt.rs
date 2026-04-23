@@ -18,13 +18,14 @@ use super::mrte::MRTE;
 /// GPT Model for semantic token prediction
 pub struct GPTModel {
     text_embedding: Tensor,      // model.ar_text_embedding.word_embeddings.weight [vocab_size, hidden_size]
-    #[allow(dead_code)]
     audio_embedding: Tensor,     // model.ar_audio_embedding.word_embeddings.weight [1025, hidden_size]
     bert_proj: Option<(Tensor, Tensor)>, // (weight, bias) for BERT features [512, 1024], [512]
     hubert_proj: Option<(Tensor, Tensor)>, // (weight, bias) for Hubert features [512, 768], [512]
     mrte: Option<MRTE>,          // MRTE module for advanced cross-attention fusion
     transformer: TransformerGPTSoVITS,
     ar_predict_layer: Tensor,    // output projection [vocab_size, hidden_size]
+    text_pos_alpha: f32,         // Learned alpha for text positional encoding
+    audio_pos_alpha: f32,        // Learned alpha for audio positional encoding
     device: Device,
     dtype: DType,
     vocab_size: usize,
@@ -176,6 +177,20 @@ impl GPTModel {
         let transformer = TransformerGPTSoVITS::new(config, &state_dict, device)?;
 
         // Load output projection: [vocab_size, hidden_size]
+        // Load positional encoding alpha parameters
+        let text_pos_alpha = if let Ok(t) = state_dict.get("model.ar_text_position.alpha") {
+            let v: Vec<f32> = t.to_dtype(DType::F32)?.to_vec1()?;
+            v[0]
+        } else {
+            1.0
+        };
+        let audio_pos_alpha = if let Ok(t) = state_dict.get("model.ar_audio_position.alpha") {
+            let v: Vec<f32> = t.to_dtype(DType::F32)?.to_vec1()?;
+            v[0]
+        } else {
+            1.0
+        };
+
         let ar_predict_layer = state_dict.get("model.ar_predict_layer.weight")?
             .to_device(device)?
             .to_dtype(DType::F32)?;
@@ -188,6 +203,8 @@ impl GPTModel {
             mrte,
             transformer,
             ar_predict_layer,
+            text_pos_alpha,
+            audio_pos_alpha,
             device: device.clone(),
             dtype: DType::F32,
             vocab_size,
@@ -327,9 +344,10 @@ impl GPTModel {
                     bert.clone()
                 };
 
-                // Project from 1024 to 512
+                // Project from 1024 to 512 (Candle requires same dims for batched matmul)
                 if bert_reshaped.dims().last().copied() == Some(1024) {
-                    let projected = bert_reshaped.matmul(&proj_w.t()?)?;
+                    let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
+                    let projected = bert_reshaped.matmul(&proj_w_3d)?;
                     let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
                     Some(projected)
                 } else {
@@ -353,7 +371,8 @@ impl GPTModel {
                         hubert.clone()
                     };
 
-                    let projected = hubert_reshaped.matmul(&proj_w.t()?)?;
+                    let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
+                    let projected = hubert_reshaped.matmul(&proj_w_3d)?;
                     let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
                     Some(projected)
                 } else {
@@ -501,7 +520,9 @@ impl GPTModel {
 
                 // Ensure last dim is 1024 for projection
                 if bert_reshaped.dims().last().copied() == Some(1024) {
-                    let projected = bert_reshaped.matmul(&proj_w.t()?)?;
+                    // Candle requires same dims for batched matmul: [1, seq, 1024] @ [1, 1024, 512]
+                    let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
+                    let projected = bert_reshaped.matmul(&proj_w_3d)?;
                     let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
                     Some(projected)
                 } else {
@@ -527,8 +548,9 @@ impl GPTModel {
                         hubert.clone()
                     };
 
-                    // Project to hidden size
-                    let projected = hubert_reshaped.matmul(&proj_w.t()?)?;
+                    // Project to hidden size (Candle requires same dims for batched matmul)
+                    let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
+                    let projected = hubert_reshaped.matmul(&proj_w_3d)?;
                     let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
                     Some(projected)
                 } else {
@@ -666,12 +688,318 @@ impl GPTModel {
         Ok(generated_tokens)
     }
 
-    /// Get model device
-    pub fn device(&self) -> &Device {
-        &self.device
+    /// Generate semantic tokens matching Python's infer_panel behavior.
+    ///
+    /// This method uses prompt audio tokens as the audio context, matching
+    /// Python's Text2SemanticLightningModule.model.infer_panel().
+    ///
+    /// # Arguments
+    /// * `phoneme_ids` - Input phoneme sequence
+    /// * `prompt_tokens` - Prompt audio token IDs (from reference audio)
+    /// * `bert_features` - Optional BERT features [batch, 1024, seq_len] or [batch, seq_len, 1024]
+    /// * `top_k` - Top-k sampling parameter
+    /// * `top_p` - Top-p (nucleus) sampling parameter
+    /// * `temperature` - Sampling temperature
+    ///
+    /// # Returns
+    /// Vector of generated semantic token IDs
+    pub fn generate_with_prompts(
+        &self,
+        phoneme_ids: &[usize],
+        prompt_tokens: &[usize],
+        bert_features: Option<&Tensor>,
+        top_k: usize,
+        top_p: f32,
+        temperature: f32,
+    ) -> Result<Vec<usize>> {
+        if phoneme_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Convert phoneme IDs to tensor [1, text_seq]
+        let text_ids: Vec<i64> = phoneme_ids.iter().map(|&x| x as i64).collect();
+        let text_tensor = Tensor::new(text_ids.as_slice(), &self.device)?.unsqueeze(0)?;
+
+        // Convert prompt tokens to tensor [1, prompt_seq]
+        let prompt_ids: Vec<i64> = prompt_tokens.iter().map(|&x| x as i64).collect();
+        let prompt_tensor = Tensor::new(prompt_ids.as_slice(), &self.device)?.unsqueeze(0)?;
+
+        let text_seq = phoneme_ids.len();
+        let prompt_seq = prompt_tokens.len();
+
+        // Step 1: Embed text tokens [1, text_seq, 512]
+        let x_emb = self.lookup_tokens(&self.text_embedding, &text_tensor, text_seq)?;
+
+        // Step 2: Project and add BERT features
+        let x_emb = if let (Some(bert), Some((proj_w, proj_b))) = (bert_features, &self.bert_proj) {
+            let bert_dims = bert.dims();
+            let bert_reshaped = if bert_dims.len() == 3 && bert_dims[1] == 1024 {
+                bert.transpose(1, 2)?  // [batch, 1024, seq] -> [batch, seq, 1024]
+            } else {
+                bert.clone()
+            };
+            if bert_reshaped.dims().last().copied() == Some(1024) {
+                let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
+                let projected = bert_reshaped.matmul(&proj_w_3d)?;
+                let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
+                x_emb.broadcast_add(&projected)?
+            } else {
+                x_emb
+            }
+        } else {
+            x_emb
+        };
+
+        // Step 3: Add text positional encoding
+        let x_emb = self.add_sine_positional(&x_emb, "text")?;
+
+        // Step 4: Embed prompt audio tokens [1, prompt_seq, 512]
+        let y_emb = self.lookup_tokens(&self.audio_embedding, &prompt_tensor, prompt_seq)?;
+
+        // Step 5: Add audio positional encoding
+        let y_pos = self.add_sine_positional(&y_emb, "audio")?;
+
+        // Step 6: Concatenate text + audio along sequence dimension
+        let mut xy_pos = Tensor::cat(&[&x_emb, &y_pos], 1)?;
+
+        let mut generated_tokens = Vec::new();
+        let max_new_tokens = 500;
+        let audio_vocab_size = self.ar_predict_layer.dims()[0];
+
+        // Step 7: Autoregressive generation
+        for _step in 0..max_new_tokens {
+            let total_seq = xy_pos.dims()[1];
+
+            // Create hybrid attention mask matching Python's behavior:
+            // - Text positions (0..text_seq): full bidirectional attention
+            // - Audio positions (text_seq..total_seq): attend to all text + causal audio
+            // True = masked (blocked), False = visible
+            let mask = self.create_hybrid_mask(text_seq, total_seq)?;
+
+            // Forward pass through transformer with custom mask
+            let hidden = self.transformer.forward_from_embedding_kv(
+                &xy_pos,
+                Some(&mask),
+                &mut crate::utils::KvCacheManager::new(self.num_layers),
+            )?;
+
+            // Project last position to vocab
+            let last_hidden = hidden.narrow(1, total_seq - 1, 1)?.squeeze(0)?; // [1, hidden]
+            let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?; // [vocab]
+
+            // Sample next token
+            let next_token = Self::sample_token(&logits, top_k, top_p, temperature)?;
+
+            // Check for EOS (but allow at least 10 tokens like Python)
+            if _step >= 10 && next_token >= audio_vocab_size - 1 {
+                break;
+            }
+
+            generated_tokens.push(next_token);
+
+            // Embed new token and append
+            let new_ids = Tensor::new(&[next_token as i64], &self.device)?.unsqueeze(0)?;
+            let new_emb = self.lookup_tokens(&self.audio_embedding, &new_ids, 1)?;
+            // Add positional encoding for the new position
+            let new_pos = self.add_sine_positional_at(&new_emb, total_seq)?;
+            xy_pos = Tensor::cat(&[&xy_pos, &new_pos], 1)?;
+        }
+
+        Ok(generated_tokens)
     }
 
-    /// Get model dtype
+    /// Create hybrid attention mask matching Python's infer_panel:
+    /// - Text positions: full bidirectional attention (no masking)
+    /// - Audio positions: attend to all text + causal among audio
+    fn create_hybrid_mask(&self, text_seq: usize, total_seq: usize) -> Result<Tensor> {
+        let mut mask = vec![0.0f32; total_seq * total_seq]; // 0 = visible, 1 = masked
+
+        for i in text_seq..total_seq {  // Only for audio positions
+            for j in text_seq..total_seq {
+                if j > i {
+                    // Audio position i cannot attend to future audio position j
+                    mask[i * total_seq + j] = 1.0;
+                }
+            }
+        }
+        // Text positions (0..text_seq) have no masking - full bidirectional
+        // Audio positions can see all text positions (0..text_seq) - no masking
+
+        Ok(Tensor::from_vec(mask, (total_seq, total_seq), &self.device)?)
+    }
+
+    /// Lookup token embeddings for a tensor of token IDs
+    fn lookup_tokens(&self, embedding: &Tensor, ids: &Tensor, _seq: usize) -> Result<Tensor> {
+        // embedding: [vocab, hidden], ids: [batch, seq]
+        // Use gather or index_select
+        let flat_ids = ids.flatten_all()?;
+        let mut embeddings = Vec::new();
+        let id_vec: Vec<i64> = flat_ids.to_vec1()?;
+        for &id in &id_vec {
+            embeddings.push(embedding.get(id as usize)?);
+        }
+        let batch = ids.dims()[0];
+        let seq = ids.dims()[1];
+        let hidden = embedding.dims()[1];
+        let stacked = Tensor::stack(&embeddings, 0)?;
+        stacked.reshape((batch, seq, hidden)).map_err(|e| crate::Error::InferenceError(e.to_string()))
+    }
+
+    /// Add sinusoidal positional encoding with learned alpha scaling
+    fn add_sine_positional(&self, x: &Tensor, kind: &str) -> Result<Tensor> {
+        self.add_sine_positional_with_alpha(x, 0, kind)
+    }
+
+    /// Add sinusoidal positional encoding starting at a specific position offset
+    fn add_sine_positional_at(&self, x: &Tensor, start_pos: usize) -> Result<Tensor> {
+        // New tokens during generation are audio tokens
+        self.add_sine_positional_with_alpha(x, start_pos, "audio")
+    }
+
+    /// Add sinusoidal positional encoding with explicit alpha
+    fn add_sine_positional_with_alpha(&self, x: &Tensor, start_pos: usize, kind: &str) -> Result<Tensor> {
+        let dims = x.dims();
+        let seq = dims[1];
+        let hidden = dims[2];
+
+        let alpha = match kind {
+            "text" => self.text_pos_alpha,
+            _ => self.audio_pos_alpha,
+        };
+
+        // Generate sinusoidal positional encoding
+        let half_dim = hidden / 2;
+        let div_term: Vec<f64> = (0..half_dim)
+            .map(|i| (-((i as f64) * 2.0) * (10000.0f64.ln()) / (hidden as f64)).exp())
+            .collect();
+
+        let mut pe = vec![0.0f32; seq * hidden];
+        for t in 0..seq {
+            let pos = (start_pos + t) as f64;
+            for i in 0..half_dim {
+                let val = pos * div_term[i];
+                pe[t * hidden + 2 * i] = val.sin() as f32;
+                pe[t * hidden + 2 * i + 1] = val.cos() as f32;
+            }
+        }
+
+        // output = x + alpha * pe
+        let pe_tensor = Tensor::from_vec(pe, (1, seq, hidden), &self.device)?;
+        let scaled_pe = pe_tensor.broadcast_mul(&Tensor::full(alpha, x.dims(), &self.device)?)?;
+        Ok(x.broadcast_add(&scaled_pe)?)
+    }
+
+    // ========================
+    // Public helper methods for debugging
+    // ========================
+
+    /// Lookup text token embeddings for a tensor of token IDs.
+    /// Public wrapper around the private lookup_tokens for text embeddings.
+    pub fn lookup_text_tokens(&self, ids: &Tensor, seq: usize) -> Result<Tensor> {
+        self.lookup_tokens(&self.text_embedding, ids, seq)
+    }
+
+    /// Lookup audio token embeddings for a tensor of token IDs.
+    /// Public wrapper around the private lookup_tokens for audio embeddings.
+    pub fn lookup_audio_tokens(&self, ids: &Tensor, seq: usize) -> Result<Tensor> {
+        self.lookup_tokens(&self.audio_embedding, ids, seq)
+    }
+
+    /// Add sinusoidal positional encoding with learned alpha scaling.
+    /// Public wrapper around the private add_sine_positional.
+    pub fn add_sine_positional_pub(&self, x: &Tensor, kind: &str) -> Result<Tensor> {
+        self.add_sine_positional(x, kind)
+    }
+
+    /// Get a reference to the BERT projection (weight, bias) if available.
+    pub fn bert_proj_ref(&self) -> Option<&(Tensor, Tensor)> {
+        self.bert_proj.as_ref()
+    }
+
+    /// Compute the output of the first transformer layer for debugging.
+    ///
+    /// This method reproduces the exact same computation as the beginning of
+    /// `generate_with_prompts` up through the first transformer layer, allowing
+    /// comparison with Python reference implementations.
+    ///
+    /// # Arguments
+    /// * `phoneme_ids` - Input phoneme sequence
+    /// * `bert_features` - Optional BERT features [batch, 1024, seq_len] or [batch, seq_len, 1024]
+    /// * `prompt_tokens` - Prompt audio token IDs (from reference audio)
+    ///
+    /// # Returns
+    /// Flattened hidden state after the first transformer layer as Vec<f32>
+    pub fn debug_layer0_output(
+        &self,
+        phoneme_ids: &[usize],
+        bert_features: Option<&Tensor>,
+        prompt_tokens: &[usize],
+    ) -> Result<Vec<f32>> {
+        if phoneme_ids.is_empty() {
+            return Err(crate::Error::InferenceError(
+                "phoneme_ids cannot be empty".to_string(),
+            ));
+        }
+
+        // Convert phoneme IDs to tensor [1, text_seq]
+        let text_ids: Vec<i64> = phoneme_ids.iter().map(|&x| x as i64).collect();
+        let text_tensor = Tensor::new(text_ids.as_slice(), &self.device)?.unsqueeze(0)?;
+
+        // Convert prompt tokens to tensor [1, prompt_seq]
+        let prompt_ids: Vec<i64> = prompt_tokens.iter().map(|&x| x as i64).collect();
+        let prompt_tensor = Tensor::new(prompt_ids.as_slice(), &self.device)?.unsqueeze(0)?;
+
+        let text_seq = phoneme_ids.len();
+        let prompt_seq = prompt_tokens.len();
+
+        // Step 1: Embed text tokens [1, text_seq, 512]
+        let x_emb = self.lookup_tokens(&self.text_embedding, &text_tensor, text_seq)?;
+
+        // Step 2: Project and add BERT features
+        let x_emb = if let (Some(bert), Some((proj_w, proj_b))) = (bert_features, &self.bert_proj) {
+            let bert_dims = bert.dims();
+            let bert_reshaped = if bert_dims.len() == 3 && bert_dims[1] == 1024 {
+                bert.transpose(1, 2)?  // [batch, 1024, seq] -> [batch, seq, 1024]
+            } else {
+                bert.clone()
+            };
+            if bert_reshaped.dims().last().copied() == Some(1024) {
+                let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
+                let projected = bert_reshaped.matmul(&proj_w_3d)?;
+                let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
+                x_emb.broadcast_add(&projected)?
+            } else {
+                x_emb
+            }
+        } else {
+            x_emb
+        };
+
+        // Step 3: Add text positional encoding
+        let x_emb = self.add_sine_positional(&x_emb, "text")?;
+
+        // Step 4: Embed prompt audio tokens [1, prompt_seq, 512]
+        let y_emb = self.lookup_tokens(&self.audio_embedding, &prompt_tensor, prompt_seq)?;
+
+        // Step 5: Add audio positional encoding
+        let y_pos = self.add_sine_positional(&y_emb, "audio")?;
+
+        // Step 6: Concatenate text + audio along sequence dimension
+        let xy_pos = Tensor::cat(&[&x_emb, &y_pos], 1)?;
+
+        // Step 7: Create hybrid attention mask
+        let total_seq = text_seq + prompt_seq;
+        let mask = self.create_hybrid_mask(text_seq, total_seq)?;
+
+        // Step 8: Run through the first transformer layer only
+        let hidden = self.transformer.forward_first_layer(&xy_pos, &mask)?;
+
+        // Flatten and return as Vec<f32>
+        let flat = hidden.flatten_all()?;
+        flat.to_vec1().map_err(|e| crate::Error::InferenceError(e.to_string()))
+    }
+
+    /// Get model device
     pub fn dtype(&self) -> DType {
         self.dtype
     }
