@@ -999,6 +999,29 @@ impl GPTModel {
         flat.to_vec1().map_err(|e| crate::Error::InferenceError(e.to_string()))
     }
 
+    /// Get a reference to the ar_predict_layer for debugging
+    pub fn ar_predict_layer_ref(&self) -> Result<&Tensor> {
+        Ok(&self.ar_predict_layer)
+    }
+
+    /// Run the full transformer (all 24 layers) on the input embeddings
+    /// and return the hidden state. This is used for debugging layer-by-layer
+    /// numerical accuracy. Uses causal mask internally.
+    pub fn run_full_transformer(&self, xy_pos: &Tensor) -> Result<Tensor> {
+        self.transformer.forward_all_layers(xy_pos)
+    }
+
+    /// Run all transformer layers with a provided attention mask.
+    pub fn run_transformer_with_mask(&self, xy_pos: &Tensor, mask: &Tensor) -> Result<Tensor> {
+        self.transformer.forward_all_layers_with_mask(xy_pos, mask)
+    }
+
+    /// Run first transformer layer and return debug intermediates:
+    /// (attn_out, norm1_out, linear1_out, relu_out, final_out)
+    pub fn debug_layer0_intermediates(&self, xy_pos: &Tensor, mask: &Tensor) -> Result<(Tensor, Tensor, Tensor, Tensor, Tensor)> {
+        self.transformer.forward_first_layer_debug(xy_pos, mask)
+    }
+
     /// Get model device
     pub fn dtype(&self) -> DType {
         self.dtype

@@ -202,6 +202,14 @@ impl FeedForward {
         let activated = hidden.clamp(0.0, f32::MAX)?;
         Ok(self.linear2.forward(&activated)?)
     }
+
+    pub fn linear1_forward(&self, x: &Tensor) -> Result<Tensor> {
+        self.linear1.forward(x)
+    }
+
+    pub fn linear2_forward(&self, x: &Tensor) -> Result<Tensor> {
+        self.linear2.forward(x)
+    }
 }
 
 /// Transformer block
@@ -253,6 +261,23 @@ impl TransformerBlock {
         let x = x.add(&ff_output)?;
         // Normalize after FFN residual
         Ok(self.ffn_norm.forward(&x)?)
+    }
+
+    /// Forward with debug intermediates: returns (attn_out, norm1_out, linear1_out, relu_out, final_out)
+    pub fn forward_debug(
+        &self,
+        x: &Tensor,
+        mask: Option<&Tensor>,
+    ) -> Result<(Tensor, Tensor, Tensor, Tensor, Tensor)> {
+        let attn_output = self.attention.forward(x, mask)?;
+        let x_residual = x.add(&attn_output)?;
+        let norm1_out = self.attn_norm.forward(&x_residual)?;
+        let linear1_out = self.feed_forward.linear1_forward(&norm1_out)?;
+        let relu_out = linear1_out.relu()?;
+        let ffn_out = self.feed_forward.linear2_forward(&relu_out)?;
+        let x_mlp = norm1_out.add(&ffn_out)?;
+        let final_out = self.ffn_norm.forward(&x_mlp)?;
+        Ok((attn_output, norm1_out, linear1_out, relu_out, final_out))
     }
 }
 
@@ -698,6 +723,38 @@ impl TransformerGPTSoVITS {
         }
         x = self.layers[0].forward(&x, Some(mask))?;
         Ok(x)
+    }
+
+    /// Forward through all transformer layers with provided mask
+    pub fn forward_all_layers_with_mask(&self, embeddings: &Tensor, mask: &Tensor) -> Result<Tensor> {
+        let mut x = embeddings.clone();
+        for layer in &self.layers {
+            x = layer.forward(&x, Some(mask))?;
+        }
+        Ok(x)
+    }
+
+    /// Forward through all transformer layers with causal mask
+    pub fn forward_all_layers(&self, embeddings: &Tensor) -> Result<Tensor> {
+        let (_, seq_len, _) = embeddings.dims3()?;
+        let causal_mask = Self::create_causal_mask(seq_len, &self.device)?;
+        self.forward_all_layers_with_mask(embeddings, &causal_mask)
+    }
+
+    /// Forward through first layer, returning all intermediates for debugging
+    pub fn forward_first_layer_debug(
+        &self,
+        embeddings: &Tensor,
+        mask: &Tensor,
+    ) -> Result<(Tensor, Tensor, Tensor, Tensor, Tensor)> {
+        // (attn_out, norm1_out, linear1_out, relu_out, final_out)
+        if self.layers.is_empty() {
+            return Err(crate::Error::InferenceError(
+                "No transformer layers available".to_string(),
+            ));
+        }
+        let block = &self.layers[0];
+        block.forward_debug(embeddings, Some(mask))
     }
 
     /// Get hidden size
