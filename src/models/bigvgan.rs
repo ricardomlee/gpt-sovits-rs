@@ -40,66 +40,108 @@ struct ResidualBlock {
     activations: Vec<Activation>,
 }
 
-/// Snake activation function: x + alpha * sin^2(beta * x)
-struct SnakeParams {
+/// Snake activation: x + 1/(alpha + eps) * sin^2(x * alpha)
+/// alpha is stored as log(alpha), so we apply exp() first
+struct Snake {
+    alpha: Tensor,
+}
+
+impl Snake {
+    fn new(alpha: Tensor) -> Self {
+        Self { alpha }
+    }
+
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let eps = 1e-9f32;
+        let x_dims = x.dims();
+
+        // Exp alpha for log-scale
+        let alpha_exp = self.alpha.exp()?;
+
+        // Reshape alpha to [1, channels, 1]
+        let alpha_reshaped = if x_dims.len() == 3 {
+            let channels = x_dims[1];
+            if self.alpha.dims().len() == 1 && self.alpha.dims()[0] == channels {
+                alpha_exp.reshape((1, channels, 1))?
+            } else if self.alpha.dims().len() == 1 {
+                alpha_exp.narrow(0, 0, 1)?.reshape((1, 1, 1))?
+            } else {
+                alpha_exp.clone()
+            }
+        } else {
+            alpha_exp.narrow(0, 0, 1)?.reshape((1, 1, 1))?
+        };
+
+        // sin(x * alpha)
+        let x_alpha = x.broadcast_mul(&alpha_reshaped)?;
+        let sin_x_alpha = x_alpha.sin()?;
+        let sin_squared = sin_x_alpha.broadcast_mul(&sin_x_alpha)?;
+
+        // 1 / (alpha + eps)
+        let eps_tensor = Tensor::full(eps, alpha_reshaped.dims(), &alpha_reshaped.device())?;
+        let inv_alpha = alpha_reshaped.add(&eps_tensor)?.recip()?;
+
+        // x + 1/(alpha+eps) * sin^2(x*alpha)
+        let correction = sin_squared.broadcast_mul(&inv_alpha)?;
+        Ok(x.broadcast_add(&correction)?)
+    }
+}
+
+/// SnakeBeta activation: x + 1/(beta + eps) * sin^2(x * alpha)
+/// alpha controls frequency, beta controls magnitude; both stored as log-scale
+struct SnakeBeta {
     alpha: Tensor,
     beta: Tensor,
 }
 
-impl SnakeParams {
+impl SnakeBeta {
     fn new(alpha: Tensor, beta: Tensor) -> Self {
         Self { alpha, beta }
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        // Snake(x) = x + alpha * sin^2(beta * x)
+        let eps = 1e-9f32;
         let x_dims = x.dims();
-        let alpha_dims = self.alpha.dims();
-        let _beta_dims = self.beta.dims();
 
-        // Reshape alpha/beta to match input dimensions
-        // Input is [batch, channels, time]
-        // alpha/beta can be [channels] or scalar-like
+        // Exp for log-scale
+        let alpha_exp = self.alpha.exp()?;
+        let beta_exp = self.beta.exp()?;
+
+        // Reshape to [1, channels, 1]
         let (alpha_reshaped, beta_reshaped) = if x_dims.len() == 3 {
-            let _batch = x_dims[0];
             let channels = x_dims[1];
-            let _time = x_dims[2];
-
-            if alpha_dims.len() == 1 && alpha_dims[0] == channels {
-                // alpha matches input channels, reshape to [1, channels, 1]
-                (self.alpha.reshape((1, channels, 1))?,
-                 self.beta.reshape((1, channels, 1))?)
-            } else if alpha_dims.len() == 1 && alpha_dims[0] != channels {
-                // alpha has different channels than input - use scalar (first element)
-                // This handles the case where conv_post output is [1, 1, time] but alpha is [24]
-                let alpha_scalar = self.alpha.narrow(0, 0, 1)?;
-                let beta_scalar = self.beta.narrow(0, 0, 1)?;
-                (alpha_scalar.reshape((1, 1, 1))?,
-                 beta_scalar.reshape((1, 1, 1))?)
+            if self.alpha.dims().len() == 1 && self.alpha.dims()[0] == channels {
+                (alpha_exp.reshape((1, channels, 1))?, beta_exp.reshape((1, channels, 1))?)
+            } else if self.alpha.dims().len() == 1 {
+                (alpha_exp.narrow(0, 0, 1)?.reshape((1, 1, 1))?,
+                 beta_exp.narrow(0, 0, 1)?.reshape((1, 1, 1))?)
             } else {
-                // alpha is already correct shape
-                (self.alpha.clone(), self.beta.clone())
+                (alpha_exp.clone(), beta_exp.clone())
             }
         } else {
-            // For other shapes, use scalar
-            let alpha_scalar = self.alpha.narrow(0, 0, 1)?;
-            let beta_scalar = self.beta.narrow(0, 0, 1)?;
-            (alpha_scalar.reshape((1, 1, 1))?,
-             beta_scalar.reshape((1, 1, 1))?)
+            (alpha_exp.narrow(0, 0, 1)?.reshape((1, 1, 1))?,
+             beta_exp.narrow(0, 0, 1)?.reshape((1, 1, 1))?)
         };
 
-        let beta_x = x.broadcast_mul(&beta_reshaped)?;
-        let sin_beta_x = beta_x.sin()?;
-        let sin_squared = sin_beta_x.broadcast_mul(&sin_beta_x)?;
-        let alpha_sin_squared = sin_squared.broadcast_mul(&alpha_reshaped)?;
-        Ok(x.broadcast_add(&alpha_sin_squared)?)
+        // sin(x * alpha)
+        let x_alpha = x.broadcast_mul(&alpha_reshaped)?;
+        let sin_x_alpha = x_alpha.sin()?;
+        let sin_squared = sin_x_alpha.broadcast_mul(&sin_x_alpha)?;
+
+        // 1 / (beta + eps)
+        let eps_tensor = Tensor::full(eps, beta_reshaped.dims(), &beta_reshaped.device())?;
+        let inv_beta = beta_reshaped.add(&eps_tensor)?.recip()?;
+
+        // x + 1/(beta+eps) * sin^2(x*alpha)
+        let correction = sin_squared.broadcast_mul(&inv_beta)?;
+        Ok(x.broadcast_add(&correction)?)
     }
 }
 
 /// Activation module with downsampler
 struct Activation {
     downsample: Option<Downsample>,
-    snake: SnakeParams,
+    snake: SnakeBeta,
 }
 
 /// Downsampler for multi-period enhancement
@@ -132,7 +174,7 @@ impl Downsample {
 struct PostActivation {
     downsample: Option<Downsample>,
     upsample: Option<UpsampleFilter>,
-    snake: SnakeParams,
+    snake: SnakeBeta,
 }
 
 /// Upsample filter for post-activation
@@ -240,7 +282,7 @@ impl ResidualBlock {
                     } else {
                         None
                     },
-                    snake: SnakeParams::new(alpha.clone(), beta.clone()),
+                    snake: SnakeBeta::new(alpha.clone(), beta.clone()),
                 });
             }
 
@@ -423,7 +465,7 @@ impl BigVGAN {
             } else {
                 None
             },
-            snake: SnakeParams::new(alpha, beta),
+            snake: SnakeBeta::new(alpha, beta),
         })
     }
 

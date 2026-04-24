@@ -4,6 +4,15 @@ use candle_core::{Device, DType, Tensor};
 use crate::Result;
 use crate::utils::{StateDict, Conv1d, Conv1dWeightNorm};
 
+/// LeakyReLU activation: max(x, 0) + slope * min(x, 0)
+pub fn leaky_relu(x: &Tensor, slope: f32) -> Result<Tensor> {
+    let zeros = Tensor::zeros_like(x)?;
+    let positive = x.maximum(&zeros)?;
+    let negative = x.minimum(&zeros)?;
+    let slope_t = Tensor::full(slope, x.dims(), x.device())?;
+    Ok(positive.add(&negative.broadcast_mul(&slope_t)?)?)
+}
+
 /// Residual Block Type 1 (for HiFi-GAN decoder)
 #[derive(Debug, Clone)]
 pub struct ResBlock1 {
@@ -70,9 +79,9 @@ impl ResBlock1 {
         let mut x_out = x.clone();
 
         for i in 0..self.convs1.len() {
-            let xt = x.relu()?;
-            let mut xt = self.convs1[i].forward(&xt)?;
-            xt = xt.relu()?;
+            let xt = leaky_relu(&x, 0.1)?;
+            let xt = self.convs1[i].forward(&xt)?;
+            let xt = leaky_relu(&xt, 0.1)?;
             let xt = self.convs2[i].forward(&xt)?;
             x_out = x_out.add(&xt)?;
         }
