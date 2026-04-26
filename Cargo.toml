@@ -108,6 +108,30 @@ opt-level = 3
 inherits = "release"
 lto = false
 
+[[example]]
+name = "test_resblock0"
+path = "examples/test_resblock0.rs"
+
+[[example]]
+name = "test_cpu_vs_cuda_conv1d"
+path = "examples/test_cpu_vs_cuda_conv1d.rs"
+
+[[example]]
+name = "test_conv_pre_weights"
+path = "examples/test_conv_pre_weights.rs"
+
+[[example]]
+name = "test_decoder_debug"
+path = "examples/test_decoder_debug.rs"
+
+[[example]]
+name = "test_encq_path"
+path = "examples/test_encq_path.rs"
+
+[[example]]
+name = "debug_decoder_input"
+path = "examples/debug_decoder_input.rs"
+
 [[bench]]
 name = "inference_bench"
 harness = false

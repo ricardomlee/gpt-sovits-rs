@@ -86,7 +86,7 @@ impl ResBlock1 {
         let mut x_out = x.clone();
 
         for i in 0..self.convs1.len() {
-            let xt = leaky_relu(&x, 0.1)?;
+            let xt = leaky_relu(&x_out, 0.1)?;
             let xt = self.convs1[i].forward(&xt)?;
             let xt = leaky_relu(&xt, 0.1)?;
             let xt = self.convs2[i].forward(&xt)?;
@@ -245,7 +245,8 @@ impl Decoder {
         let _ = x.device().synchronize();
 
         // x: [batch, channels, time]
-        let mut x = self.conv_pre.forward(x)?;
+        let mut x = self.leaky_relu(x, 0.1)?;
+        let mut x = self.conv_pre.forward(&x)?;
 
         // Add condition if provided
         if let Some(cond) = &self.cond {
@@ -305,7 +306,8 @@ impl Decoder {
 
     /// Generate waveform and save intermediate outputs for debugging
     pub fn forward_debug(&self, x: &Tensor, g: Option<&Tensor>) -> Result<Vec<f32>> {
-        let mut x = self.conv_pre.forward(x)?;
+        let mut x = self.leaky_relu(x, 0.1)?;
+        let mut x = self.conv_pre.forward(&x)?;
         self.save_tensor("debug_conv_pre", &x)?;
 
         if let Some(cond) = &self.cond {

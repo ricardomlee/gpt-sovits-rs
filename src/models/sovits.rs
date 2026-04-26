@@ -248,8 +248,8 @@ impl SoVITSModel {
         )?;
 
         // Sample from N(m, exp(logs)) to get latent z_p (matching Python: noise_scale=0.5)
+        // enc_p.forward() already clamps logs to [-5.0, 2.0], no additional clamping needed
         let noise = self.sample_noise(&m_p)?;
-        let logs_p = logs_p.clamp(-4.0, 4.0)?;
         let logs_exp = logs_p.exp()?;
         let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(&Tensor::full(noise_scale, m_p.dims(), &self.device)?)?)?;
 
@@ -314,8 +314,8 @@ impl SoVITSModel {
             &quantized_up, &y_lengths, &text, &text_lengths, &ge, 1.0,
         )?;
 
+        // enc_p.forward() already clamps logs to [-5.0, 2.0]
         let noise = self.sample_noise(&m_p)?;
-        let logs_p = logs_p.clamp(-4.0, 4.0)?;
         let logs_exp = logs_p.exp()?;
         let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(&Tensor::full(noise_scale, m_p.dims(), &self.device)?)?)?;
 
@@ -373,6 +373,11 @@ impl SoVITSModel {
         &self.decoder
     }
 
+    /// Get enc_q
+    pub fn enc_q(&self) -> &EncQ {
+        &self.enc_q
+    }
+
     /// Run pipeline and save all intermediates for debugging
     pub fn debug_pipeline(
         &self,
@@ -423,10 +428,9 @@ impl SoVITSModel {
         self.save_tensor("sovits_debug_encp_m", &m_p)?;
         self.save_tensor("sovits_debug_encp_logs", &logs_p)?;
 
-        // Sampling
+        // Sampling - enc_p.forward() already clamps logs to [-5.0, 2.0]
         let noise = self.sample_noise(&m_p)?;
-        let logs_p_clamped = logs_p.clamp(-4.0, 4.0)?;
-        let logs_exp = logs_p_clamped.exp()?;
+        let logs_exp = logs_p.exp()?;
         let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(&Tensor::full(noise_scale, m_p.dims(), &self.device)?)?)?;
         self.save_tensor("sovits_debug_zp", &z_p)?;
 
