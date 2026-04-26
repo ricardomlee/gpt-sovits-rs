@@ -49,6 +49,12 @@ python_*.npz
 python_intermediates.npz
 decoder_comparison.npz
 
+# Decoder debug intermediates
+debug_*.txt
+sovits_*.txt
+sovits_*.wav
+out_*.wav
+
 # Python cache (for scripts)
 __pycache__/
 *.py[cod]
