@@ -55,24 +55,31 @@ impl ResBlock1 {
             .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
             .transpose()?;
 
-        let weight_v_shape = weight_v.dims();
-        let kernel_size = if weight_v_shape.len() >= 3 {
-            weight_v_shape[2]
-        } else {
-            1
-        };
-
-        // Resblock uses groups of 3 convs with dilations [1, 3, 5]
-        // Extract the convolution index from the prefix (e.g., "dec.resblocks.0.convs1.2" -> index 2)
+        // Kernel sizes cycle [3, 7, 11] across resblocks (rb_idx % 3).
+        // Dilations are [1, 3, 5] within each resblock.
+        // Extract resblock index and conv index from prefix
         let parts: Vec<&str> = prefix.split('.').collect();
+        let rb_idx = parts.get(2)
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0);
         let conv_idx = parts.last()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(0);
+
+        let kernel_sizes = [3, 7, 11];
+        let ks = kernel_sizes[rb_idx % 3];
         let dilations = [1, 3, 5];
         let dilation = dilations.get(conv_idx).copied().unwrap_or(1);
-        let padding = (kernel_size * dilation - dilation) / 2;
 
-        Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, dilation)?)
+        // convs1: padding = dilation * (kernel_size - 1) / 2, uses dilation
+        // convs2: padding = (kernel_size - 1) / 2, dilation is ALWAYS 1
+        let (padding, actual_dilation) = if prefix.contains(".convs2.") {
+            ((ks - 1) / 2, 1)
+        } else {
+            (dilation * (ks - 1) / 2, dilation)
+        };
+
+        Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, actual_dilation)?)
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -267,6 +274,7 @@ impl Decoder {
                 for j in resblock_start..resblock_end {
                     let block = &self.resblocks[j];
                     let xs = block.forward(&x)?;
+                    eprintln!("[DEC] resblock{} input={:?} output={:?}", j, x.dims(), xs.dims());
                     xs_acc = Some(match xs_acc {
                         Some(acc) => acc.add(&xs)?,
                         None => xs,

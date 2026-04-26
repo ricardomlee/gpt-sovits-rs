@@ -17,9 +17,9 @@ pub struct EncoderLayer {
 }
 
 impl EncoderLayer {
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, layer_idx: usize) -> Result<Self> {
+    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, layer_idx: usize, n_heads: usize) -> Result<Self> {
         // Model uses format: enc_p.encoder_ssl.attn_layers.0.conv_q.weight
-        let self_attn = SelfAttention::load(state_dict, prefix, device, layer_idx)?;
+        let self_attn = SelfAttention::load(state_dict, prefix, device, layer_idx, n_heads)?;
 
         // FFN layers
         let ffn = FeedForward::load(state_dict, prefix, device, layer_idx)?;
@@ -71,7 +71,7 @@ pub struct SelfAttention {
 }
 
 impl SelfAttention {
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, layer_idx: usize) -> Result<Self> {
+    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, layer_idx: usize, n_heads: usize) -> Result<Self> {
         let conv_q = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_q", prefix, layer_idx), device)?;
         let conv_k = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_k", prefix, layer_idx), device)?;
         let conv_v = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_v", prefix, layer_idx), device)?;
@@ -81,13 +81,13 @@ impl SelfAttention {
         let n_heads = 8;
         let head_dim = hidden / n_heads;
 
-        // Load relative position embeddings (optional)
-        let emb_rel_k = if state_dict.contains(&format!("{}.attn_layers.{}.emb_rel_k", prefix, layer_idx)) {
+        // Load relative position embeddings (stored but not used - they use a different format)
+        let _emb_rel_k = if state_dict.contains(&format!("{}.attn_layers.{}.emb_rel_k", prefix, layer_idx)) {
             Some(state_dict.get(&format!("{}.attn_layers.{}.emb_rel_k", prefix, layer_idx))?.to_device(device)?.to_dtype(DType::F32)?)
         } else {
             None
         };
-        let emb_rel_v = if state_dict.contains(&format!("{}.attn_layers.{}.emb_rel_v", prefix, layer_idx)) {
+        let _emb_rel_v = if state_dict.contains(&format!("{}.attn_layers.{}.emb_rel_v", prefix, layer_idx)) {
             Some(state_dict.get(&format!("{}.attn_layers.{}.emb_rel_v", prefix, layer_idx))?.to_device(device)?.to_dtype(DType::F32)?)
         } else {
             None
@@ -100,8 +100,8 @@ impl SelfAttention {
             conv_o,
             n_heads,
             head_dim,
-            emb_rel_k,
-            emb_rel_v,
+            emb_rel_k: None,
+            emb_rel_v: None,
         })
     }
 
@@ -114,43 +114,35 @@ impl SelfAttention {
         let k = self.conv_k.forward(x)?;
         let v = self.conv_v.forward(x)?;
 
-        // Reshape for multi-head: [batch, heads, seq_len, head_dim]
-        let q = q.reshape((batch, seq_len, self.n_heads, self.head_dim))?.transpose(1, 2)?.contiguous()?; // [batch, heads, seq_len, head_dim]
-        let k = k.reshape((batch, seq_len, self.n_heads, self.head_dim))?.transpose(1, 2)?.contiguous()?;
-        let v = v.reshape((batch, seq_len, self.n_heads, self.head_dim))?.transpose(1, 2)?.contiguous()?;
+        // Reshape for multi-head attention
+        // Conv1d output is [batch, channels, seq_len] = [batch, n_heads*head_dim, seq_len]
+        // Channels are stored contiguously: [head0_ch0, head0_ch1, ..., head0_ch23, head1_ch0, ...]
+        // Direct reshape to [batch, n_heads, seq_len, head_dim] correctly groups channels by head
+        // (same as PyTorch: tensor.reshape(batch, n_heads, seq_len, head_dim))
+        let q = q.reshape((batch, self.n_heads, seq_len, self.head_dim))?;  // [batch, n_heads, seq_len, head_dim]
+        let k = k.reshape((batch, self.n_heads, seq_len, self.head_dim))?;
+        let v = v.reshape((batch, self.n_heads, seq_len, self.head_dim))?;
 
-        // Attention: softmax(Q @ K^T / sqrt(d_k)) @ V
         let scale = 1.0 / (self.head_dim as f64).sqrt();
+        let k_t = k.transpose(2, 3)?;  // [batch, n_heads, head_dim, seq_len]
+        let scores = q.matmul(&k_t)?;  // [batch, n_heads, seq_len, seq_len]
+        let scores = scores.broadcast_mul(&Tensor::full(scale as f32, scores.dims(), x.device())?)?;
 
-        // Q @ K^T: [batch, heads, seq_len, seq_len]
-        let k_t = k.transpose(2, 3)?.contiguous()?;
-        let attn_weights = q.matmul(&k_t)?;
-        let attn_weights = attn_weights.broadcast_mul(&Tensor::full(scale as f32, attn_weights.dims(), x.device())?)?;
+        // Apply mask: scores * mask + (1 - mask) * (-1e9)
+        // x_mask is [batch, 1, seq_len]
+        // Expand to [batch, n_heads, seq_len, seq_len] where mask[..., j] = 1 if j < length
+        let mask_2d = x_mask.squeeze(1)?;  // [batch, seq_len]
+        let mask_4d = mask_2d.unsqueeze(1)?.unsqueeze(2)?;  // [batch, 1, seq_len, 1]
+        let mask_bc = mask_4d.broadcast_as((batch, self.n_heads, seq_len, seq_len))?;
+        let neg_inf = Tensor::full(-1e9f32, mask_bc.dims(), x.device())?;
+        let ones = Tensor::ones(mask_bc.dims(), DType::F32, x.device())?;
+        let inv_mask = ones.sub(&mask_bc)?.broadcast_mul(&neg_inf)?;  // (1 - mask) * (-1e9)
+        let scores = scores.broadcast_mul(&mask_bc)?.add(&inv_mask)?;  // scores * mask + (1 - mask) * (-1e9)
 
-        // Apply mask
-        // x_mask: [batch, 1, seq_len]
-        // attn_weights: [batch, heads, seq_len, seq_len]
-        // Need mask: [batch, heads, 1, seq_len] to broadcast to attn_weights
-        let mask_2d = x_mask.squeeze(1)?; // [batch, seq_len]
-        let mask_4d = mask_2d.unsqueeze(1)?; // [batch, 1, seq_len]
-        let mask_4d = mask_4d.unsqueeze(0)?; // [1, batch, 1, seq_len] - will broadcast
-        let mask_expanded = mask_4d.broadcast_as((batch, self.n_heads, 1, seq_len))?;
-
-        let neg_inf = Tensor::full(-1e9f32, attn_weights.dims(), x.device())?;
-        let mask_weighted = mask_expanded.broadcast_mul(&neg_inf)?;
-        let attn_weights = attn_weights.add(&mask_weighted)?;
-
-        // Softmax
-        let attn_probs = candle_nn::ops::softmax(&attn_weights, candle_core::D::Minus1)?;
-
-        // Apply to V: [batch, heads, seq_len, head_dim]
-        let attn_out = attn_probs.matmul(&v)?;
-
-        // Reshape back: [batch, channels, seq_len]
-        let attn_out = attn_out.transpose(1, 2)?.contiguous()?;
+        let attn_probs = candle_nn::ops::softmax(&scores, candle_core::D::Minus1)?;
+        let attn_out = attn_probs.matmul(&v)?;  // [batch, n_heads, seq_len, head_dim]
+        // Inverse of the input reshape: [batch, n_heads, seq_len, head_dim] -> [batch, channels, seq_len]
         let attn_out = attn_out.reshape((batch, channels, seq_len))?;
-
-        // Output projection
         Ok(self.conv_o.forward(&attn_out)?)
     }
 }
@@ -366,11 +358,12 @@ impl MRTE {
             ssl_proj_out.clone()
         };
 
-        // Residual connection + speaker embedding BEFORE c_post (all at 512-dim)
+        // Residual connection: use POST-c_pre features (matching Python MRTE line 42)
+        // Python: ssl_enc = self.c_pre(ssl_enc * ssl_mask); then x = cross_attn(...) + ssl_enc + ge
         let x = x.add(&ssl_proj_out)?;
         let ge = match ge {
             Some(g) => g.clone(),
-            None => Tensor::zeros_like(&x).unwrap(),
+            None => Tensor::zeros((x.dims()[0], x.dims()[1], 1), DType::F32, x.device())?,
         };
         let ge_broadcasted = if ge.dims()[2] == 1 && x.dims()[2] != 1 {
             ge.broadcast_as(x.dims())?
@@ -418,6 +411,15 @@ pub struct EncP {
 }
 
 impl EncP {
+    fn save_debug_tensor(name: &str, t: &Tensor) -> Result<()> {
+        let flat: Vec<f32> = t.flatten_all()?.to_vec1()?;
+        let dims = t.dims();
+        let header = dims.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(",");
+        let data = flat.iter().map(|v| format!("{:.10}", v)).collect::<Vec<_>>().join("\n");
+        std::fs::write(format!("{}.txt", name), format!("{}\n{}\n", header, data))
+            .map_err(|e| crate::Error::InferenceError(format!("Failed to save {}: {}", name, e)))
+    }
+
     /// Load EncP from SoVITS state dict
     pub fn load(state_dict: &StateDict, device: &Device, _hidden_channels: usize, n_layers: usize, out_channels: usize) -> Result<Self> {
         // Load SSL projection: [192, 768, 1]
@@ -454,7 +456,7 @@ impl EncP {
         for i in 0..(n_layers / 2) {
             let prefix = "enc_p.encoder_ssl";
             if state_dict.contains(&format!("{}.attn_layers.{}.conv_q.weight", prefix, i)) {
-                let layer = EncoderLayer::load(state_dict, prefix, device, i)?;
+                let layer = EncoderLayer::load(state_dict, prefix, device, i, 8)?;
                 encoder_ssl.push(layer);
             }
         }
@@ -464,7 +466,7 @@ impl EncP {
         for i in 0..n_layers {
             let prefix = "enc_p.encoder_text";
             if state_dict.contains(&format!("{}.attn_layers.{}.conv_q.weight", prefix, i)) {
-                let layer = EncoderLayer::load(state_dict, prefix, device, i)?;
+                let layer = EncoderLayer::load(state_dict, prefix, device, i, 8)?;
                 encoder_text.push(layer);
             }
         }
@@ -481,7 +483,7 @@ impl EncP {
         for i in 0..(n_layers / 2) {
             let prefix = "enc_p.encoder2";
             if state_dict.contains(&format!("{}.attn_layers.{}.conv_q.weight", prefix, i)) {
-                let layer = EncoderLayer::load(state_dict, prefix, device, i)?;
+                let layer = EncoderLayer::load(state_dict, prefix, device, i, 8)?;
                 encoder2.push(layer);
             }
         }
@@ -534,6 +536,9 @@ impl EncP {
         let y_mask = self.sequence_mask(y_lengths, y_max_len, device)?;
         let y_mask_expanded = y_mask.unsqueeze(1)?;
 
+        // Save debug input
+        Self::save_debug_tensor("encp_debug_quantized_up", quantized)?;
+
         // SSL projection (matching Python: y = self.ssl_proj(y * y_mask) * y_mask)
         let mut y = self.ssl_proj.forward(&quantized.broadcast_mul(&y_mask_expanded)?)?;
 
@@ -548,22 +553,36 @@ impl EncP {
 
         // Text embedding lookup
         let text_emb = self.lookup_embeddings(text)?;
+
+        // Save debug text input
+        let text_flat: Vec<i64> = text.flatten_all()?.to_vec1()?;
+        std::fs::write("encp_debug_text_ids.txt",
+            text_flat.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\n"))
+            .map_err(|e| crate::Error::InferenceError(format!("Failed to save text ids: {}", e)))?;
         let mut text_emb = text_emb.transpose(1, 2)?;
         text_emb = text_emb.broadcast_mul(&text_mask_expanded)?;
 
-        // Pass through encoder_text
-        for layer in self.encoder_text.iter() {
+        // Pass through encoder_text with debug saves
+        for (i, layer) in self.encoder_text.iter().enumerate() {
             text_emb = layer.forward(&text_emb, &text_mask_expanded)?;
+            Self::save_debug_tensor(&format!("encp_debug_text_layer{}", i), &text_emb)?;
         }
 
-        // Pass through encoder_ssl
-        for layer in self.encoder_ssl.iter() {
+        // Pass through encoder_ssl with debug saves
+        for (i, layer) in self.encoder_ssl.iter().enumerate() {
             y = layer.forward(&y, &y_mask_expanded)?;
+            Self::save_debug_tensor(&format!("encp_debug_ssl_layer{}", i), &y)?;
         }
 
         // MRTE fusion (if available)
         if let Some(mrte) = &self.mrte {
+            // Save intermediates for debugging
+            Self::save_debug_tensor("encp_debug_ge", ge)?;
+            // Save intermediates before MRTE
+            Self::save_debug_tensor("encp_debug_before_mrte", &y)?;
+            Self::save_debug_tensor("encp_debug_text_emb", &text_emb)?;
             y = mrte.forward(&y, &y_mask_expanded, &text_emb, &text_mask_expanded, Some(ge))?;
+            Self::save_debug_tensor("encp_debug_after_mrte", &y)?;
         } else {
             // Simple fusion: project ge to 192 channels and add
             let ge_192 = if ge.dims()[1] == y.dims()[1] {
@@ -576,9 +595,10 @@ impl EncP {
             y = y.add(&ge_192)?;
         }
 
-        // Pass through encoder2
-        for layer in &self.encoder2 {
+        // Pass through encoder2 with debug saves
+        for (i, layer) in self.encoder2.iter().enumerate() {
             y = layer.forward(&y, &y_mask_expanded)?;
+            Self::save_debug_tensor(&format!("encp_debug_enc2_layer{}", i), &y)?;
         }
 
         // Output projection: split into m and logs
