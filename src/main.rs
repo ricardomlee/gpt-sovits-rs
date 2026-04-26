@@ -104,7 +104,7 @@ fn main() {
     if args.http {
         #[cfg(feature = "http-api")]
         {
-            run_http_server(args.port);
+            http_api::run(args.port);
         }
         #[cfg(not(feature = "http-api"))]
         {
@@ -268,7 +268,7 @@ fn inspect_model(path: &PathBuf) {
 
 /// HTTP API Server using Axum
 #[cfg(feature = "http-api")]
-fn run_http_server(port: u16) {
+mod http_api {
     use axum::{
         extract::State,
         http::StatusCode,
@@ -279,10 +279,11 @@ fn run_http_server(port: u16) {
     use std::sync::Arc;
     use tokio::sync::Mutex;
     use tower_http::trace::TraceLayer;
-    use gpt_sovits_rs::AudioBuffer;
+    use gpt_sovits_rs::{AudioBuffer, Config, InferenceOptions, Language, Pipeline};
+    use tracing::{info, error};
 
     #[derive(Clone)]
-    struct AppState {
+    pub struct AppState {
         pipeline: Arc<Mutex<Pipeline>>,
         config: Arc<Config>,
     }
@@ -331,127 +332,128 @@ fn run_http_server(port: u16) {
         message: String,
     }
 
-    // Create state
-    let config = Config::builder().build();
-    let pipeline = match Pipeline::new(config.clone()) {
-        Ok(p) => Arc::new(Mutex::new(p)),
-        Err(e) => {
-            error!("Failed to initialize pipeline: {}", e);
-            return;
-        }
-    };
+    pub async fn health_handler() -> &'static str {
+        "OK"
+    }
 
-    let state = AppState {
-        pipeline,
-        config: Arc::new(config),
-    };
+    pub async fn tts_handler(
+        State(state): State<AppState>,
+        Json(req): Json<TtsRequest>,
+    ) -> Result<Json<TtsResponse>, StatusCode> {
+        let mut pipeline = state.pipeline.lock().await;
 
-    // Build router
-    let app = Router::new()
-        .route("/tts", post(tts_handler))
-        .route("/change_refer", post(change_refer_handler))
-        .route("/control", post(control_handler))
-        .route("/health", get(health_handler))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
+        let language = req.text_language
+            .as_deref()
+            .and_then(|s| match s {
+                "zh" | "ZH" | "chinese" | "Chinese" => Some(Language::Chinese),
+                "en" | "EN" | "english" | "English" => Some(Language::English),
+                "ja" | "JA" | "japanese" | "Japanese" => Some(Language::Japanese),
+                _ => None,
+            })
+            .unwrap_or(Language::Chinese);
 
-    let addr = format!("0.0.0.0:{}", port);
-    info!("Starting HTTP server on {}", addr);
-    println!("HTTP server started at http://localhost:{}", port);
-    println!();
-    println!("Endpoints:");
-    println!("  GET  /health     - Health check");
-    println!("  POST /tts        - TTS inference");
-    println!("  POST /change_refer - Change reference audio");
-    println!("  POST /control    - Server control (reload, unload)");
-    println!();
-    println!("Example:");
-    println!("  curl -X POST http://localhost:9880/tts \\");
-    println!("    -H 'Content-Type: application/json' \\");
-    println!("    -d '{{\"text\": \"你好世界\", \"text_language\": \"zh\"}}'");
+        let options = InferenceOptions::builder()
+            .top_k(req.top_k.unwrap_or(15))
+            .top_p(req.top_p.unwrap_or(0.95))
+            .temperature(req.temperature.unwrap_or(0.8))
+            .speed(req.speed.unwrap_or(1.0))
+            .language(language)
+            .build();
 
-    // Run server
-    tokio::runtime::Runtime::new().unwrap().block_on(async {
-        let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-        axum::serve(listener, app).await.unwrap();
-    });
-}
+        let refer_path = req.refer_wav_path.as_deref().unwrap_or("ref.wav");
+        let prompt_text = req.prompt_text.as_deref().unwrap_or("");
 
-#[cfg(feature = "http-api")]
-async fn health_handler() -> &'static str {
-    "OK"
-}
-
-#[cfg(feature = "http-api")]
-async fn tts_handler(
-    State(state): State<AppState>,
-    Json(req): Json<TtsRequest>,
-) -> Result<Json<TtsResponse>, StatusCode> {
-    let mut pipeline = state.pipeline.lock().await;
-
-    let language = req.text_language
-        .as_deref()
-        .and_then(|s| Language::from_str(s))
-        .unwrap_or(Language::Chinese);
-
-    let options = InferenceOptions::builder()
-        .top_k(req.top_k.unwrap_or(15))
-        .top_p(req.top_p.unwrap_or(0.95))
-        .temperature(req.temperature.unwrap_or(0.8))
-        .speed(req.speed.unwrap_or(1.0))
-        .language(language)
-        .build();
-
-    let refer_path = req.refer_wav_path.as_deref().unwrap_or("ref.wav");
-    let prompt_text = req.prompt_text.as_deref().unwrap_or("");
-
-    match pipeline.inference(&req.text, refer_path, prompt_text, &options) {
-        Ok(_audio) => Ok(Json(TtsResponse {
-            success: true,
-            message: "TTS inference successful".to_string(),
-            audio_path: Some("output.wav".to_string()),
-        })),
-        Err(e) => {
-            error!("TTS inference failed: {}", e);
-            Ok(Json(TtsResponse {
-                success: false,
-                message: format!("Inference failed: {}", e),
-                audio_path: None,
-            }))
+        match pipeline.inference(&req.text, refer_path, prompt_text, &options) {
+            Ok(_audio) => Ok(Json(TtsResponse {
+                success: true,
+                message: "TTS inference successful".to_string(),
+                audio_path: Some("output.wav".to_string()),
+            })),
+            Err(e) => {
+                error!("TTS inference failed: {}", e);
+                Ok(Json(TtsResponse {
+                    success: false,
+                    message: format!("Inference failed: {}", e),
+                    audio_path: None,
+                }))
+            }
         }
     }
-}
 
-#[cfg(feature = "http-api")]
-async fn change_refer_handler(
-    State(_state): State<AppState>,
-    Json(req): Json<ChangeReferRequest>,
-) -> Json<ChangeReferResponse> {
-    // Note: In a production implementation, this would update the reference audio
-    // For now, we just acknowledge the request
-    Json(ChangeReferResponse {
-        success: true,
-        message: format!("Reference updated: {} ({})", req.refer_wav_path, req.prompt_text),
-    })
-}
+    pub async fn change_refer_handler(
+        State(_state): State<AppState>,
+        Json(req): Json<ChangeReferRequest>,
+    ) -> Json<ChangeReferResponse> {
+        Json(ChangeReferResponse {
+            success: true,
+            message: format!("Reference updated: {} ({})", req.refer_wav_path, req.prompt_text),
+        })
+    }
 
-#[cfg(feature = "http-api")]
-async fn control_handler(
-    State(_state): State<AppState>,
-    Json(req): Json<ControlRequest>,
-) -> Json<ControlResponse> {
-    match req.command.as_str() {
-        "reload" => Json(ControlResponse {
-            success: true,
-            message: "Reload command received".to_string(),
-        }),
-        "unload" => Json(ControlResponse {
-            success: true,
-            message: "Unload command received".to_string(),
-        }),
-        _ => Json(ControlResponse {
-            success: false,
-            message: format!("Unknown command: {}", req.command),
-        }),
+    pub async fn control_handler(
+        State(_state): State<AppState>,
+        Json(req): Json<ControlRequest>,
+    ) -> Json<ControlResponse> {
+        match req.command.as_str() {
+            "reload" => Json(ControlResponse {
+                success: true,
+                message: "Reload command received".to_string(),
+            }),
+            "unload" => Json(ControlResponse {
+                success: true,
+                message: "Unload command received".to_string(),
+            }),
+            _ => Json(ControlResponse {
+                success: false,
+                message: format!("Unknown command: {}", req.command),
+            }),
+        }
+    }
+
+    pub fn run(port: u16) {
+        // Create state
+        let config = Config::builder().build();
+        let pipeline = match Pipeline::new(config.clone()) {
+            Ok(p) => Arc::new(Mutex::new(p)),
+            Err(e) => {
+                error!("Failed to initialize pipeline: {}", e);
+                return;
+            }
+        };
+
+        let state = AppState {
+            pipeline,
+            config: Arc::new(config),
+        };
+
+        // Build router
+        let app = Router::new()
+            .route("/tts", post(tts_handler))
+            .route("/change_refer", post(change_refer_handler))
+            .route("/control", post(control_handler))
+            .route("/health", get(health_handler))
+            .layer(TraceLayer::new_for_http())
+            .with_state(state);
+
+        let addr = format!("0.0.0.0:{}", port);
+        info!("Starting HTTP server on {}", addr);
+        println!("HTTP server started at http://localhost:{}", port);
+        println!();
+        println!("Endpoints:");
+        println!("  GET  /health     - Health check");
+        println!("  POST /tts        - TTS inference");
+        println!("  POST /change_refer - Change reference audio");
+        println!("  POST /control    - Server control (reload, unload)");
+        println!();
+        println!("Example:");
+        println!("  curl -X POST http://localhost:9880/tts \\");
+        println!("    -H 'Content-Type: application/json' \\");
+        println!("    -d '{{\"text\": \"你好世界\", \"text_language\": \"zh\"}}'");
+
+        // Run server
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+            axum::serve(listener, app).await.unwrap();
+        });
     }
 }
