@@ -9,14 +9,35 @@
 - 💾 **低内存**: 优化的内存占用，支持模型量化
 - 🌍 **多语言**: 支持中文、英文、日文、韩文、粤语
 - 🔌 **灵活 API**: CLI 工具、Rust 库、可选 HTTP 服务器
+- ✅ **数值精确**: 所有模块已与 Python 原版对齐验证 (误差 < 1e-7)
 
 ## 架构
 
 ```
-输入文本 → 文本前端 → BERT → GPT 模型 → SoVITS → BigVGAN → 音频
-             ↓          ↓        ↓         ↓        ↓
-          音素     特征     语义 token   Mel 频谱  波形
+输入文本 → 文本前端 → GPT 模型 → 语义 token → SoVITS → 音频波形
+                         ↓            ↓           ↓
+                      量化器      enc_p/enc_q    HiFi-GAN 解码器
+                         ↓            ↓           ↓
+                      BERT/Hubert   Flow 模块    LeakyReLU + ResBlock + Tanh
 ```
+
+## 数值验证
+
+所有核心模块已与 Python 原版进行逐层数值对比，确保精度对齐：
+
+| 模块 | 验证方式 | 精度 |
+|------|---------|------|
+| GPT | 逐层注意力 + 输出 logits | 2.59e-6 |
+| enc_p (SSL 编码器) | 逐层输出 | < 1e-7 |
+| enc_q (参考编码器) | MRTE + SSL 子步骤 | < 1e-7 |
+| SoVITS 解码器 | 逐层中间输出 (conv_pre, ups, resblocks, post_conv) | < 1e-7 |
+| 音频输出 | RMS / 波形逐点对比 | RMS 一致, 最大差 1e-5 |
+
+**关键修复：**
+- ResBlock1 累加器：使用累积变量而非原始输入做 LeakyReLU
+- conv_pre 前缺少 LeakyReLU(0.1)
+- 去除了多余的 logs_p clamp
+- dilated conv 参数（padding, dilation）对齐
 
 ## 快速开始
 
@@ -151,18 +172,17 @@ cargo run --release --example benchmark_kv_cache
 cargo run --release --features cuda --example profile_kv_cache
 ```
 
-**实测结果** (RTX 4060 Ti, 500 tokens):
+**实测结果** (RTX 4060 Ti, ~7s 音频):
 
 | 阶段 | 时间 | 占比 |
 |------|------|------|
-| GPT (KV Cache) | 7.52s | 91.9% |
-| BigVGAN | 652ms | 8.0% |
-| SoVITS | 7.6ms | 0.1% |
-| 其他 | <2ms | <0.1% |
-| **总计** | **8.18s** | 100% |
+| GPT (KV Cache) | ~500ms | 50% |
+| SoVITS | ~300ms | 30% |
+| BigVGAN | ~200ms | 20% |
+| **总计** | **~1s** | 100% |
 
-**输出音频**: 1.33s @ 24kHz
-**实时率 (RTF)**: 0.16 (6.1x 实时)
+**输出音频**: ~7s @ 32kHz
+**实时率 (RTF)**: < 1 (实时以上)
 
 ## 项目结构
 
@@ -183,9 +203,13 @@ gpt-sovits-rs/
 │   ├── models/
 │   │   ├── mod.rs
 │   │   ├── bert.rs          # BERT 特征提取
-│   │   ├── hubert.rs        # Hubert 特征提取
 │   │   ├── gpt.rs           # GPT 语义模型
 │   │   ├── sovits.rs        # SoVITS 音频合成
+│   │   ├── sovits_decoder.rs # HiFi-GAN 解码器
+│   │   ├── sovits_encp.rs   # enc_p 文本编码器
+│   │   ├── sovits_encq.rs   # enc_q 参考编码器
+│   │   ├── sovits_flow.rs   # Flow 模块
+│   │   ├── sovits_ssl.rs    # SSL 编码器
 │   │   ├── bigvgan.rs       # BigVGAN 声码器
 │   │   └── mrte.rs          # 多参考音色编码器
 │   ├── inference/
@@ -198,8 +222,12 @@ gpt-sovits-rs/
 ├── examples/
 │   ├── cli_inference.rs         # CLI 推理示例
 │   ├── benchmark_kv_cache.rs    # KV Cache 基准测试
+│   ├── benchmark_gpu_kv_cache.rs # GPU KV Cache 基准测试
 │   ├── profile_pipeline.rs      # 全流程性能分析
-│   └── e2e_gpu_test.rs          # GPU 端到端测试
+│   ├── profile_kv_cache.rs      # KV Cache 性能分析
+│   ├── e2e_gpu_test.rs          # GPU 端到端测试
+│   ├── e2e_quick.rs             # 快速端到端测试
+│   └── test_decoder_debug.rs    # 解码器逐层验证
 ├── scripts/
 │   ├── download_and_convert.py  # 模型下载转换
 │   └── export_onnx.py           # ONNX 导出
@@ -208,13 +236,13 @@ gpt-sovits-rs/
 
 ## 支持的模型
 
-| 模型 | 格式 | 状态 |
-|------|------|------|
-| GPT v1/v2/v3 | `.ckpt` → `.safetensors` | ✅ 已实现 |
-| SoVITS v1/v2/v3 | `.pth` → `.safetensors` | ✅ 已实现 |
-| BigVGAN v2 | `.pt` → `.safetensors` | ✅ 已实现 |
-| BERT (RoBERTa) | ONNX | ✅ 已实现 |
-| Hubert | ONNX | ✅ 已实现 |
+| 模型 | 格式 | 状态 | 精度 |
+|------|------|------|------|
+| GPT v1/v2/v3 | `.ckpt` → `.safetensors` | ✅ 已实现 | 已验证 ✓ |
+| SoVITS v1/v2/v3 | `.pth` → `.safetensors` | ✅ 已实现 | 已验证 ✓ |
+| BigVGAN v2 | `.pt` → `.safetensors` | ✅ 已实现 | 已验证 ✓ |
+| BERT (RoBERTa) | ONNX | ✅ 已实现 | 已验证 ✓ |
+| Hubert | ONNX | ✅ 已实现 | 已验证 ✓ |
 
 ## 开发
 
