@@ -22,23 +22,12 @@ ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=${CUDA_HOME}/bin:${PATH}
 ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
 
-# Copy manifests first for layer caching
-COPY Cargo.toml Cargo.lock ./
-COPY examples/ examples/
+# Copy entire project (benches/examples excluded by .dockerignore)
+COPY . .
 
-# Create dummy src to build deps cache
-RUN mkdir src && echo "fn main() {}" > src/main.rs \
-    && echo "pub fn dummy() {}" > src/lib.rs
-
-# Build dependencies only (cached layer)
-RUN cargo build --release --features http-api,cuda \
-    && rm -rf src
-
-# Copy actual source and build
-COPY src/ src/
-RUN touch src/main.rs src/lib.rs \
-    && cargo build --release --features http-api,cuda \
-    && cp target/release/gpt-sovits /app/gpt-sovits
+# Build binary
+RUN cargo build --release --features http-api,cuda && \
+    cp target/release/gpt-sovits /app/gpt-sovits
 
 # ============================================================
 # Runtime stage — minimal CUDA runtime
@@ -54,10 +43,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 ca-certificates fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/gpt-sovits /app/gpt-sovits
+COPY --from=builder /app/gpt-sovits /usr/local/bin/gpt-sovits
 
-# Models directory (mount with -v or --mount)
 RUN mkdir -p /app/models
 
-ENTRYPOINT ["/app/gpt-sovits"]
+WORKDIR /app
+
+ENTRYPOINT ["gpt-sovits"]
 CMD ["--help"]
