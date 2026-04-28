@@ -366,7 +366,7 @@ mod http_api {
         let pipeline = Arc::clone(&state.pipeline);
 
         let result = tokio::task::spawn_blocking(move || {
-            let mut pipeline = pipeline.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
+            let mut pipeline = pipeline.lock().map_err(|e| format!("Pipeline lock poisoned (a previous inference panicked): {}", e))?;
             pipeline
                 .inference(&text, &refer_path, &prompt_text, &options)
                 .map_err(|e| format!("Inference failed: {}", e))
