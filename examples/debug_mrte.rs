@@ -195,9 +195,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|l| l.trim().parse().unwrap())
         .collect();
     let text_max_len = text_tokens.len();
-    let text_mask_data: Vec<f32> = (0..text_max_len as i64)
-        .map(|j| if j < text_max_len as i64 { 1.0 } else { 0.0 })
-        .collect();
+    let text_mask_data: Vec<f32> = vec![1.0; text_max_len];
     let text_mask =
         Tensor::from_vec(text_mask_data, (1, text_max_len), &device)?.to_dtype(DType::F32)?;
     let text_mask_exp = text_mask.unsqueeze(1)?;
