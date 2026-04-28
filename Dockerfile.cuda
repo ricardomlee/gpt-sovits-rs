@@ -1,0 +1,62 @@
+# syntax=docker/dockerfile:1
+
+# ============================================================
+# Builder stage — CUDA toolkit + Rust toolchain
+# ============================================================
+FROM nvidia/cuda:12.6.0-devel-ubuntu22.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /app
+
+# Install Rust and build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl build-essential pkg-config libssl-dev ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.80 \
+    && ln -s /root/.cargo/bin/cargo /usr/local/bin/cargo \
+    && ln -s /root/.cargo/bin/rustc /usr/local/bin/rustc
+
+# CUDA environment
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=${CUDA_HOME}/bin:${PATH}
+ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
+
+# Copy manifests first for layer caching
+COPY Cargo.toml Cargo.lock ./
+
+# Create dummy src to build deps cache
+RUN mkdir src && echo "fn main() {}" > src/main.rs \
+    && echo "pub fn dummy() {}" > src/lib.rs
+
+# Build dependencies only (cached layer)
+RUN cargo build --release --features http-api,cuda \
+    && rm -rf src
+
+# Copy actual source and build
+COPY src/ src/
+RUN touch src/main.rs src/lib.rs \
+    && cargo build --release --features http-api,cuda \
+    && cp target/release/gpt-sovits /app/gpt-sovits
+
+# ============================================================
+# Runtime stage — minimal CUDA runtime
+# ============================================================
+FROM nvidia/cuda:12.6.0-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /app
+
+# Install minimal runtime deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libssl3 ca-certificates fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /app/gpt-sovits /app/gpt-sovits
+
+# Models directory (mount with -v or --mount)
+RUN mkdir -p /app/models
+
+ENTRYPOINT ["/app/gpt-sovits"]
+CMD ["--help"]
