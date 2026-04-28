@@ -13,7 +13,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl build-essential pkg-config libssl-dev ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.86.0 \
     && ln -s /root/.cargo/bin/cargo /usr/local/bin/cargo \
     && ln -s /root/.cargo/bin/rustc /usr/local/bin/rustc
 
@@ -22,11 +22,11 @@ ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=${CUDA_HOME}/bin:${PATH}
 ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
 
-# Copy entire project (benches/examples excluded by .dockerignore)
+# Copy entire project (.dockerignore excludes target/, .git/, models/, etc.)
 COPY . .
 
 # Build binary
-RUN cargo build --release --features http-api,cuda && \
+RUN cargo build --release --locked --features http-api,cuda && \
     cp target/release/gpt-sovits /app/gpt-sovits
 
 # ============================================================

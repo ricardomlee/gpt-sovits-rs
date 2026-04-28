@@ -104,7 +104,15 @@ fn main() {
     if args.http {
         #[cfg(feature = "http-api")]
         {
-            http_api::run(args.port);
+            if let Err(e) = http_api::run(
+                args.port,
+                args.gpt_model.as_deref(),
+                args.sovits_model.as_deref(),
+                args.bigvgan_model.as_deref(),
+            ) {
+                error!("HTTP server error: {}", e);
+                std::process::exit(1);
+            }
         }
         #[cfg(not(feature = "http-api"))]
         {
@@ -276,10 +284,9 @@ mod http_api {
         Json, Router,
     };
     use serde::{Deserialize, Serialize};
-    use std::sync::Arc;
-    use tokio::sync::Mutex;
+    use std::sync::{Arc, Mutex};
     use tower_http::trace::TraceLayer;
-    use gpt_sovits_rs::{AudioBuffer, Config, InferenceOptions, Language, Pipeline};
+    use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
     use tracing::{info, error};
 
     #[derive(Clone)]
@@ -340,16 +347,9 @@ mod http_api {
         State(state): State<AppState>,
         Json(req): Json<TtsRequest>,
     ) -> Result<Json<TtsResponse>, StatusCode> {
-        let mut pipeline = state.pipeline.lock().await;
-
         let language = req.text_language
             .as_deref()
-            .and_then(|s| match s {
-                "zh" | "ZH" | "chinese" | "Chinese" => Some(Language::Chinese),
-                "en" | "EN" | "english" | "English" => Some(Language::English),
-                "ja" | "JA" | "japanese" | "Japanese" => Some(Language::Japanese),
-                _ => None,
-            })
+            .and_then(Language::from_str)
             .unwrap_or(Language::Chinese);
 
         let options = InferenceOptions::builder()
@@ -360,10 +360,24 @@ mod http_api {
             .language(language)
             .build();
 
-        let refer_path = req.refer_wav_path.as_deref().unwrap_or("ref.wav");
-        let prompt_text = req.prompt_text.as_deref().unwrap_or("");
+        let text = req.text.clone();
+        let refer_path = req.refer_wav_path.unwrap_or_else(|| "ref.wav".to_string());
+        let prompt_text = req.prompt_text.unwrap_or_default();
+        let pipeline = Arc::clone(&state.pipeline);
 
-        match pipeline.inference(&req.text, refer_path, prompt_text, &options) {
+        let result = tokio::task::spawn_blocking(move || {
+            let mut pipeline = pipeline.lock().map_err(|e| format!("Lock poisoned: {}", e))?;
+            pipeline
+                .inference(&text, &refer_path, &prompt_text, &options)
+                .map_err(|e| format!("Inference failed: {}", e))
+        })
+        .await
+        .map_err(|e| {
+            error!("spawn_blocking join error: {}", e);
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+
+        match result {
             Ok(_audio) => Ok(Json(TtsResponse {
                 success: true,
                 message: "TTS inference successful".to_string(),
@@ -373,7 +387,7 @@ mod http_api {
                 error!("TTS inference failed: {}", e);
                 Ok(Json(TtsResponse {
                     success: false,
-                    message: format!("Inference failed: {}", e),
+                    message: e,
                     audio_path: None,
                 }))
             }
@@ -410,19 +424,37 @@ mod http_api {
         }
     }
 
-    pub fn run(port: u16) {
-        // Create state
+    pub fn run(
+        port: u16,
+        gpt_model: Option<&std::path::Path>,
+        sovits_model: Option<&std::path::Path>,
+        bigvgan_model: Option<&std::path::Path>,
+    ) -> Result<(), String> {
         let config = Config::builder().build();
-        let pipeline = match Pipeline::new(config.clone()) {
-            Ok(p) => Arc::new(Mutex::new(p)),
-            Err(e) => {
-                error!("Failed to initialize pipeline: {}", e);
-                return;
-            }
-        };
+        let mut pipeline = Pipeline::new(config.clone())
+            .map_err(|e| format!("Failed to initialize pipeline: {}", e))?;
+
+        if let Some(path) = gpt_model {
+            info!("Loading GPT model from {:?}", path);
+            pipeline
+                .load_gpt(path)
+                .map_err(|e| format!("Failed to load GPT model: {}", e))?;
+        }
+        if let Some(path) = sovits_model {
+            info!("Loading SoVITS model from {:?}", path);
+            pipeline
+                .load_sovits(path)
+                .map_err(|e| format!("Failed to load SoVITS model: {}", e))?;
+        }
+        if let Some(path) = bigvgan_model {
+            info!("Loading BigVGAN model from {:?}", path);
+            pipeline
+                .load_bigvgan(path)
+                .map_err(|e| format!("Failed to load BigVGAN model: {}", e))?;
+        }
 
         let state = AppState {
-            pipeline,
+            pipeline: Arc::new(Mutex::new(pipeline)),
             config: Arc::new(config),
         };
 
@@ -451,9 +483,16 @@ mod http_api {
         println!("    -d '{{\"text\": \"你好世界\", \"text_language\": \"zh\"}}'");
 
         // Run server
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-            axum::serve(listener, app).await.unwrap();
-        });
+        tokio::runtime::Runtime::new()
+            .map_err(|e| format!("Failed to create Tokio runtime: {}", e))?
+            .block_on(async {
+                let listener = tokio::net::TcpListener::bind(&addr)
+                    .await
+                    .map_err(|e| format!("Failed to bind to {}: {}", addr, e))?;
+                axum::serve(listener, app)
+                    .await
+                    .map_err(|e| format!("Server error: {}", e))?;
+                Ok::<(), String>(())
+            })
     }
 }

@@ -3,7 +3,7 @@
 # ============================================================
 # Stage 1: Builder
 # ============================================================
-FROM rust:slim AS builder
+FROM rust:1.86-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
@@ -12,11 +12,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Copy entire project (benches/examples excluded by .dockerignore)
+# Copy entire project (.dockerignore excludes target/, .git/, models/, etc.)
 COPY . .
 
 # Build binary
-RUN cargo build --release --features http-api && \
+RUN cargo build --release --locked --features http-api && \
     cp target/release/gpt-sovits /app/gpt-sovits
 
 # ============================================================
