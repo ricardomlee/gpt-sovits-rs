@@ -1,0 +1,33 @@
+# Build artifacts
+target/
+
+# Version control
+.git/
+.gitignore
+
+# Large model files (mount at runtime)
+models/
+*.safetensors
+*.bin
+*.pt
+*.onnx
+*.wav
+*.mp3
+
+# Dev/editor files
+.env
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# CI/CD
+.github/
+
+# Docs
+docs/
+*.md
+
+# Benchmarks and examples (not needed for the binary)
+benches/
+examples/

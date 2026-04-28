@@ -3,7 +3,7 @@
 # ============================================================
 # Stage 1: Builder
 # ============================================================
-FROM rust:1.80-slim-bookworm AS builder
+FROM rust:1.86-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
@@ -12,21 +12,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# Build dependencies first (layer caching)
-COPY Cargo.toml Cargo.lock ./
+# Copy entire project (.dockerignore excludes target/, .git/, models/, etc.)
+COPY . .
 
-# Create dummy src to build deps cache
-RUN mkdir src && echo "fn main() {}" > src/main.rs \
-    && echo "pub fn dummy() {}" > src/lib.rs
-
-# Build dependencies only (cached layer)
-RUN cargo build --release --features http-api && \
-    rm -rf src
-
-# Copy actual source and build
-COPY src/ src/
-RUN touch src/main.rs src/lib.rs && \
-    cargo build --release --features http-api && \
+# Build binary
+RUN cargo build --release --locked --features http-api && \
     cp target/release/gpt-sovits /app/gpt-sovits
 
 # ============================================================
