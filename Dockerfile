@@ -14,7 +14,6 @@ WORKDIR /app
 
 # Build dependencies first (layer caching)
 COPY Cargo.toml Cargo.lock ./
-COPY examples/ examples/
 
 # Create dummy src to build deps cache
 RUN mkdir src && echo "fn main() {}" > src/main.rs \

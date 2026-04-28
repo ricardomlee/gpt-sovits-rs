@@ -34,7 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )?;
 
         // lrelu + convs1
-        let xt = leaky_relu(&x_rb, 0.1);
+        let xt = leaky_relu(&x_rb, 0.1)?;
         let xt = xt.conv1d(&w_c1, pad1, 1, dilation, 1)?;
         let xt = if let Some(b) = &b_c1 {
             xt.broadcast_add(&b.reshape((1, b.dims()[0], 1))?)?
@@ -43,7 +43,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
 
         // lrelu + convs2
-        let xt = leaky_relu(&xt, 0.1);
+        let xt = leaky_relu(&xt, 0.1)?;
         let xt = xt.conv1d(&w_c2, pad2, 1, 1, 1)?;
         let xt = if let Some(b) = &b_c2 {
             xt.broadcast_add(&b.reshape((1, b.dims()[0], 1))?)?
@@ -117,14 +117,13 @@ fn tensor_std(t: &Tensor) -> Result<f32, Box<dyn std::error::Error>> {
     Ok(var.sqrt())
 }
 
-fn leaky_relu(x: &Tensor, slope: f32) -> Tensor {
-    let zeros = Tensor::zeros_like(x).unwrap();
-    let positive = x.maximum(&zeros).unwrap();
-    let negative = x.minimum(&zeros).unwrap();
-    let slope_t = Tensor::full(slope, x.dims(), x.device()).unwrap();
-    positive
-        .add(&negative.broadcast_mul(&slope_t).unwrap())
-        .unwrap()
+fn leaky_relu(x: &Tensor, slope: f32) -> Result<Tensor, Box<dyn std::error::Error>> {
+    let zeros = Tensor::zeros_like(x)?;
+    let positive = x.maximum(&zeros)?;
+    let negative = x.minimum(&zeros)?;
+    let slope_t = Tensor::full(slope, x.dims(), x.device())?;
+    let scaled_negative = negative.broadcast_mul(&slope_t)?;
+    Ok(positive.add(&scaled_negative)?)
 }
 
 fn save_tensor(name: &str, t: &Tensor) -> Result<(), Box<dyn std::error::Error>> {

@@ -13,7 +13,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl build-essential pkg-config libssl-dev ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.80 \
     && ln -s /root/.cargo/bin/cargo /usr/local/bin/cargo \
     && ln -s /root/.cargo/bin/rustc /usr/local/bin/rustc
 
@@ -24,7 +24,6 @@ ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
 
 # Copy manifests first for layer caching
 COPY Cargo.toml Cargo.lock ./
-COPY examples/ examples/
 
 # Create dummy src to build deps cache
 RUN mkdir src && echo "fn main() {}" > src/main.rs \
