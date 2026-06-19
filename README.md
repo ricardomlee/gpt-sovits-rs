@@ -1,18 +1,32 @@
-# GPT-SoVITS Rust Implementation
+# GPT-SoVITS-RS
 
-高性能 GPT-SoVITS 语音合成推理引擎的 Rust 实现。
+**高性能 GPT-SoVITS 推理引擎** — 用 Rust 从零重写，专注推理性能与轻量化部署。
+
+原版 [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 侧重训练、微调和测试；本项目聚焦**推理侧**，目标是生产环境下的最快 TTS 推理和最小部署体积。
+
+## 与原版对比
+
+| | GPT-SoVITS (Python) | GPT-SoVITS-RS (本项目) |
+|---|---|---|
+| **定位** | 训练 + 微调 + 推理 | **纯推理引擎** |
+| **部署** | Python 环境 + 多个依赖包 | **单一二进制文件** (~15MB) |
+| **GPU 支持** | PyTorch CUDA | **Candle CUDA** (更轻量) |
+| **启动时间** | 数秒 (Python + 模型加载) | **亚秒级** |
+| **内存占用** | 高 (PyTorch runtime) | **低** (无 runtime 开销) |
+| **API** | Gradio Web UI | **CLI / Rust 库 / HTTP (WAV 流)** |
+| **推理加速** | 无 | **KV Cache (18x CPU 加速)** |
+| **容器化** | 复杂 (Python 环境) | **多阶段 Docker (最小镜像)** |
 
 ## 特性
 
-- 🚀 **高性能**: 纯 Rust 实现，支持 CUDA GPU 加速，KV Cache 优化 (18x CPU 加速)
-- 📦 **易于部署**: 单一二进制文件，无需 Python 环境，Docker 支持
-- 💾 **低内存**: 优化的内存占用
+- 🚀 **极致推理性能**: 纯 Rust + Candle ML 框架，KV Cache 优化 (CPU 18x / GPU 1.65x 加速)
+- 📦 **零依赖部署**: 编译为单一静态二进制，无需 Python/PyTorch 环境
+- 🐳 **生产级容器**: 多阶段构建，CPU/CUDA 双镜像
+- 🔌 **多种接入方式**: CLI 工具、Rust 库 API、HTTP 服务器 (直接返回 WAV 音频流)
+- ✅ **数值精确**: 所有模块已与 Python 原版逐层对齐验证 (误差 < 1e-7)
 - 🌍 **多语言**: 支持中文、英文、日文、韩文、粤语
-- 🔌 **灵活 API**: CLI 工具、Rust 库、HTTP 服务器 (返回 WAV 音频流)
-- ✅ **数值精确**: 所有模块已与 Python 原版对齐验证 (误差 < 1e-7)
-- 🎯 **重复惩罚**: GPT 采样支持 repetition penalty，减少生成重复
-- 🔤 **完整 G2P**: 中文拼音到声母/韵母的完整映射，匹配 Python v2 符号表 (732 符号)
-- 🧠 **语义 Tokenizer**: 从参考音频提取语义 token，提升音色还原度
+- 🎯 **推理增强**: Repetition penalty 减少生成重复，语义 Tokenizer 提升音色还原
+- 🔤 **完整 G2P**: 中文拼音完整映射，匹配 Python v2 符号表 (732 符号)
 
 ## 架构
 
