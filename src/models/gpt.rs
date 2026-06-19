@@ -741,7 +741,24 @@ impl GPTModel {
                 let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
                 let projected = bert_reshaped.matmul(&proj_w_3d)?;
                 let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
-                x_emb.broadcast_add(&projected)?
+                // Align BERT sequence length to text sequence length
+                let bert_seq = projected.dims()[1];
+                let text_seq = x_emb.dims()[1];
+                let aligned = if bert_seq > text_seq {
+                    projected.narrow(1, 0, text_seq)?
+                } else if bert_seq < text_seq {
+                    let last = projected.narrow(1, bert_seq - 1, 1)?;
+                    let mut frames = vec![projected];
+                    for _ in 0..(text_seq - bert_seq) {
+                        frames.push(last.clone());
+                    }
+                    Tensor::cat(&frames, 1)?
+                } else {
+                    projected
+                };
+                let scale = 0.5f32;
+                let scaled = aligned.broadcast_mul(&Tensor::full(scale, aligned.dims(), &self.device)?)?;
+                x_emb.broadcast_add(&scaled)?
             } else {
                 x_emb
             }
@@ -964,7 +981,24 @@ impl GPTModel {
                 let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
                 let projected = bert_reshaped.matmul(&proj_w_3d)?;
                 let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
-                x_emb.broadcast_add(&projected)?
+                // Align BERT sequence length to text sequence length
+                let bert_seq = projected.dims()[1];
+                let text_seq = x_emb.dims()[1];
+                let aligned = if bert_seq > text_seq {
+                    projected.narrow(1, 0, text_seq)?
+                } else if bert_seq < text_seq {
+                    let last = projected.narrow(1, bert_seq - 1, 1)?;
+                    let mut frames = vec![projected];
+                    for _ in 0..(text_seq - bert_seq) {
+                        frames.push(last.clone());
+                    }
+                    Tensor::cat(&frames, 1)?
+                } else {
+                    projected
+                };
+                let scale = 0.5f32;
+                let scaled = aligned.broadcast_mul(&Tensor::full(scale, aligned.dims(), &self.device)?)?;
+                x_emb.broadcast_add(&scaled)?
             } else {
                 x_emb
             }

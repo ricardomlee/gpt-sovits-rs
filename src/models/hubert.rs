@@ -69,14 +69,16 @@ impl HubertModel {
         let input_array = (vec![1i64, seq_len as i64], audio_data);
 
         let inputs = inputs! {
-            "source" => Value::from_array(input_array)?,
+            "input_values" => Value::from_array(input_array)?,
         };
 
         let outputs = self.session.run(inputs)
             .map_err(|e| crate::Error::InferenceError(format!("ONNX run error: {}", e)))?;
 
-        let output_value = outputs.get("output")
+        let output_value = outputs.get("last_hidden_state")
+            .or_else(|| outputs.get("output"))
             .or_else(|| outputs.get("features"))
+            .or_else(|| outputs.get("hidden_states"))
             .ok_or_else(|| crate::Error::InferenceError("No output from Hubert".to_string()))?;
 
         let (shape, data) = output_value.try_extract_tensor::<f32>()
@@ -102,14 +104,16 @@ impl HubertModel {
         let input_array = (vec![1i64, seq_len as i64], samples.to_vec());
 
         let inputs = inputs! {
-            "source" => Value::from_array(input_array)?,
+            "input_values" => Value::from_array(input_array)?,
         };
 
         let outputs = self.session.run(inputs)
             .map_err(|e| crate::Error::InferenceError(format!("ONNX run error: {}", e)))?;
 
-        let output_value = outputs.get("output")
+        let output_value = outputs.get("last_hidden_state")
+            .or_else(|| outputs.get("output"))
             .or_else(|| outputs.get("features"))
+            .or_else(|| outputs.get("hidden_states"))
             .ok_or_else(|| crate::Error::InferenceError("No output from Hubert".to_string()))?;
 
         let (shape, data) = output_value.try_extract_tensor::<f32>()

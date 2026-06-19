@@ -246,10 +246,11 @@ impl Pipeline {
         // Step 1: Process text through frontend to get phoneme IDs
         let phoneme_ids = self.text_frontend.process(text, options.language)?;
 
-        // Step 2: Extract Hubert features from reference audio (used for both prompt tokens and MRTE fusion)
+        // Step 2: Extract Hubert features from reference audio
         let hubert_features = if let Some(hubert) = &mut self.hubert_model {
             match hubert.extract(reference_audio.as_ref()) {
                 Ok(features) => {
+                    let features = features.to_device(&self.device).unwrap_or(features);
                     tracing::info!("Extracted Hubert features: {:?}", features.dims());
                     Some(features)
                 }
@@ -266,6 +267,7 @@ impl Pipeline {
         let bert_features = if let Some(bert) = &mut self.bert_model {
             match bert.extract(text) {
                 Ok(features) => {
+                    let features = features.to_device(&self.device).unwrap_or(features);
                     tracing::info!("Extracted BERT features: {:?}", features.dims());
                     Some(features)
                 }

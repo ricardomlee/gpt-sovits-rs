@@ -31,6 +31,14 @@ struct Args {
     #[arg(long)]
     bigvgan_model: Option<PathBuf>,
 
+    /// Path to BERT ONNX model file (optional, improves quality)
+    #[arg(long)]
+    bert_model: Option<PathBuf>,
+
+    /// Path to Hubert ONNX model file (optional, improves quality)
+    #[arg(long)]
+    hubert_model: Option<PathBuf>,
+
     /// Reference audio path
     #[arg(long)]
     reference_audio: Option<PathBuf>,
@@ -213,6 +221,34 @@ fn main() {
         }
     } else {
         info!("BigVGAN model not specified, using fallback synthesis");
+    }
+
+    // Load BERT model (optional, significantly improves quality)
+    if let Some(ref bert_path) = args.bert_model {
+        info!("Loading BERT model...");
+        if let Err(e) = pipeline.load_bert(bert_path) {
+            error!("Failed to load BERT model: {}", e);
+        }
+    } else {
+        info!("BERT model not specified, skipping (quality may be reduced)");
+    }
+
+    // Load Hubert model (optional, needed for semantic token extraction)
+    if let Some(ref hubert_path) = args.hubert_model {
+        info!("Loading Hubert model...");
+        if let Err(e) = pipeline.load_hubert(hubert_path) {
+            error!("Failed to load Hubert model: {}", e);
+        }
+    } else {
+        info!("Hubert model not specified, skipping (quality may be reduced)");
+    }
+
+    // Load semantic tokenizer (optional, uses SoVITS weights for prompt token extraction)
+    if args.hubert_model.is_some() {
+        info!("Loading semantic tokenizer from SoVITS weights...");
+        if let Err(e) = pipeline.load_semantic_tokenizer(&sovits_model) {
+            error!("Failed to load semantic tokenizer: {}", e);
+        }
     }
 
     // Parse language
