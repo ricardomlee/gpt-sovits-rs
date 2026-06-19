@@ -128,6 +128,34 @@ impl AudioBuffer {
         Ok(())
     }
 
+    /// Encode as WAV bytes (in-memory, no file I/O)
+    pub fn to_wav_bytes(&self) -> Result<Vec<u8>> {
+        let spec = WavSpec {
+            channels: self.channels,
+            sample_rate: self.sample_rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+
+        let mut cursor = std::io::Cursor::new(Vec::new());
+        let mut writer = hound::WavWriter::new(&mut cursor, spec)
+            .map_err(|e| Error::AudioError(e.to_string()))?;
+
+        for &sample in &self.samples {
+            let amplitude = i16::MAX as f32;
+            let sample_i16 = (sample * amplitude).clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+            writer
+                .write_sample(sample_i16)
+                .map_err(|e| Error::AudioError(e.to_string()))?;
+        }
+
+        writer
+            .finalize()
+            .map_err(|e| Error::AudioError(e.to_string()))?;
+
+        Ok(cursor.into_inner())
+    }
+
     /// Load from WAV file
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let mut reader = hound::WavReader::open(path.as_ref())

@@ -278,8 +278,10 @@ fn inspect_model(path: &PathBuf) {
 #[cfg(feature = "http-api")]
 mod http_api {
     use axum::{
+        body::Body,
         extract::State,
-        http::StatusCode,
+        http::{header, StatusCode},
+        response::Response,
         routing::{get, post},
         Json, Router,
     };
@@ -292,6 +294,7 @@ mod http_api {
     #[derive(Clone)]
     pub struct AppState {
         pipeline: Arc<Mutex<Pipeline>>,
+        #[allow(dead_code)]
         config: Arc<Config>,
     }
 
@@ -301,6 +304,7 @@ mod http_api {
         text_language: Option<String>,
         refer_wav_path: Option<String>,
         prompt_text: Option<String>,
+        #[allow(dead_code)]
         prompt_language: Option<String>,
         top_k: Option<usize>,
         top_p: Option<f32>,
@@ -308,17 +312,11 @@ mod http_api {
         speed: Option<f32>,
     }
 
-    #[derive(Serialize)]
-    struct TtsResponse {
-        success: bool,
-        message: String,
-        audio_path: Option<String>,
-    }
-
     #[derive(Deserialize)]
     struct ChangeReferRequest {
         refer_wav_path: String,
         prompt_text: String,
+        #[allow(dead_code)]
         prompt_language: Option<String>,
     }
 
@@ -339,14 +337,14 @@ mod http_api {
         message: String,
     }
 
-    pub async fn health_handler() -> &'static str {
+    async fn health_handler() -> &'static str {
         "OK"
     }
 
-    pub async fn tts_handler(
+    async fn tts_handler(
         State(state): State<AppState>,
         Json(req): Json<TtsRequest>,
-    ) -> Result<Json<TtsResponse>, StatusCode> {
+    ) -> Result<Response<Body>, StatusCode> {
         let language = req.text_language
             .as_deref()
             .and_then(Language::from_str)
@@ -378,23 +376,35 @@ mod http_api {
         })?;
 
         match result {
-            Ok(_audio) => Ok(Json(TtsResponse {
-                success: true,
-                message: "TTS inference successful".to_string(),
-                audio_path: Some("output.wav".to_string()),
-            })),
+            Ok(audio) => {
+                let wav_bytes = audio.to_wav_bytes().map_err(|e| {
+                    error!("Failed to encode WAV: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?;
+
+                Ok(Response::builder()
+                    .status(StatusCode::OK)
+                    .header(header::CONTENT_TYPE, "audio/wav")
+                    .header(header::CONTENT_DISPOSITION, "attachment; filename=\"tts_output.wav\"")
+                    .body(Body::from(wav_bytes))
+                    .unwrap())
+            }
             Err(e) => {
                 error!("TTS inference failed: {}", e);
-                Ok(Json(TtsResponse {
-                    success: false,
-                    message: e,
-                    audio_path: None,
-                }))
+                let error_json = serde_json::json!({
+                    "success": false,
+                    "message": e,
+                });
+                Ok(Response::builder()
+                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(error_json.to_string()))
+                    .unwrap())
             }
         }
     }
 
-    pub async fn change_refer_handler(
+    async fn change_refer_handler(
         State(_state): State<AppState>,
         Json(req): Json<ChangeReferRequest>,
     ) -> Json<ChangeReferResponse> {
@@ -404,7 +414,7 @@ mod http_api {
         })
     }
 
-    pub async fn control_handler(
+    async fn control_handler(
         State(_state): State<AppState>,
         Json(req): Json<ControlRequest>,
     ) -> Json<ControlResponse> {

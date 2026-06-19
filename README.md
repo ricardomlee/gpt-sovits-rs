@@ -4,21 +4,26 @@
 
 ## 特性
 
-- 🚀 **高性能**: 纯 Rust 实现，支持 CUDA GPU 加速
-- 📦 **易于部署**: 单一二进制文件，无需 Python 环境
-- 💾 **低内存**: 优化的内存占用，支持模型量化
+- 🚀 **高性能**: 纯 Rust 实现，支持 CUDA GPU 加速，KV Cache 优化 (18x CPU 加速)
+- 📦 **易于部署**: 单一二进制文件，无需 Python 环境，Docker 支持
+- 💾 **低内存**: 优化的内存占用
 - 🌍 **多语言**: 支持中文、英文、日文、韩文、粤语
-- 🔌 **灵活 API**: CLI 工具、Rust 库、可选 HTTP 服务器
+- 🔌 **灵活 API**: CLI 工具、Rust 库、HTTP 服务器 (返回 WAV 音频流)
 - ✅ **数值精确**: 所有模块已与 Python 原版对齐验证 (误差 < 1e-7)
+- 🎯 **重复惩罚**: GPT 采样支持 repetition penalty，减少生成重复
+- 🔤 **完整 G2P**: 中文拼音到声母/韵母的完整映射，匹配 Python v2 符号表 (732 符号)
+- 🧠 **语义 Tokenizer**: 从参考音频提取语义 token，提升音色还原度
 
 ## 架构
 
 ```
-输入文本 → 文本前端 → GPT 模型 → 语义 token → SoVITS → 音频波形
-                         ↓            ↓           ↓
-                      量化器      enc_p/enc_q    HiFi-GAN 解码器
-                         ↓            ↓           ↓
-                      BERT/Hubert   Flow 模块    LeakyReLU + ResBlock + Tanh
+输入文本 → G2P (中文拼音/英文) → BERT (ONNX) → GPT (KV Cache + Repetition Penalty)
+                                          ↓                    ↓
+                                    Hubert (ONNX)        语义 Tokenizer
+                                          ↓                    ↓
+                                  Semantic Tokens → SoVITS → BigVGAN → WAV
+                                                         ↓
+                                            enc_p/enc_q + Flow + Decoder
 ```
 
 ## 数值验证
@@ -61,10 +66,17 @@ cargo build --release --features cuda
 
 ### 准备模型
 
-从 [HuggingFace](https://huggingface.co/lj1995/GPT-SoVITS) 下载预训练模型：
+从 [HuggingFace](https://huggingface.co/lj1995/GPT-SoVITS) 下载预训练模型，转换为 safetensors 格式后放入 `models/` 目录：
 
-```bash
-python scripts/download_and_convert.py --output-dir models
+```
+models/
+├── gpt-model.safetensors      # GPT 模型 (~148MB)
+├── sovits-model.safetensors   # SoVITS 模型 (~101MB)
+├── bigvgan.safetensors        # BigVGAN 声码器 (~430MB)
+├── prompt_tokens.npy          # 预提取的 prompt tokens
+└── onnx/
+    ├── bert.onnx + .data      # BERT 特征模型
+    └── hubert.onnx + .data    # Hubert 音频特征模型
 ```
 
 ### 运行推理
@@ -83,9 +95,13 @@ cargo run --release -- \
 ## Rust API 使用
 
 ```rust
-use gpt_sovits_rs::{Pipeline, Config, InferenceOptions};
+use gpt_sovits_rs::{Pipeline, Config, InferenceOptions, Language};
 
-let config = Config::default();
+let config = Config::builder()
+    .with_device("cuda")
+    .with_half_precision(false)
+    .build();
+
 let mut pipeline = Pipeline::new(config)?;
 
 // 加载模型
@@ -94,22 +110,26 @@ pipeline.load_sovits("models/sovits-model.safetensors")?;
 pipeline.load_bigvgan("models/bigvgan.safetensors")?;
 
 // 运行推理
-let options = InferenceOptions {
-    top_k: 5,
-    top_p: 0.95,
-    temperature: 0.8,
-    ..Default::default()
-};
+let options = InferenceOptions::builder()
+    .top_k(15)
+    .top_p(0.95)
+    .temperature(0.8)
+    .speed(1.0)
+    .language(Language::Chinese)
+    .build();
 
 let audio = pipeline.inference(
     "你好，这是测试文本",
     "ref.wav",
     "参考文本",
-    &options
+    &options,
 )?;
 
-// 保存音频
+// 保存到文件
 audio.save("output.wav")?;
+
+// 或获取 WAV 字节流 (适用于 HTTP API)
+let wav_bytes: Vec<u8> = audio.to_wav_bytes()?;
 ```
 
 ## 命令行选项
@@ -131,6 +151,59 @@ Options:
       --output <PATH>          输出 WAV 文件路径
   -h, --help                   打印帮助
   -V, --version                打印版本
+```
+
+### HTTP API 模式
+
+启动 HTTP 服务器，直接返回 WAV 音频流：
+
+```bash
+cargo run --release --features "cuda,http-api" -- \
+    --http --port 9880 \
+    --gpt-model models/gpt-model.safetensors \
+    --sovits-model models/sovits-model.safetensors \
+    --bigvgan-model models/bigvgan.safetensors
+```
+
+**请求示例**：
+
+```bash
+# TTS 推理 → 直接返回 WAV 文件
+curl -X POST http://localhost:9880/tts \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "你好世界", "text_language": "zh", "refer_wav_path": "ref.wav", "prompt_text": "参考文本"}' \
+  --output tts_output.wav
+
+# 健康检查
+curl http://localhost:9880/health
+
+# 切换参考音频
+curl -X POST http://localhost:9880/change_refer \
+  -H 'Content-Type: application/json' \
+  -d '{"refer_wav_path": "new_ref.wav", "prompt_text": "新参考文本"}'
+```
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/health` | GET | 健康检查 |
+| `/tts` | POST | TTS 推理，返回 `audio/wav` |
+| `/change_refer` | POST | 切换参考音频 |
+| `/control` | POST | 服务控制 (reload/unload) |
+
+### Docker 部署
+
+```bash
+# CPU 版本
+docker build -t gpt-sovits-rs .
+
+# CUDA GPU 版本
+docker build -f Dockerfile.cuda -t gpt-sovits-rs:cuda .
+
+# 运行
+docker run --gpus all -p 9880:9880 gpt-sovits-rs:cuda \
+    --http --gpt-model /app/models/gpt-model.safetensors \
+    --sovits-model /app/models/sovits-model.safetensors \
+    --bigvgan-model /app/models/bigvgan.safetensors
 ```
 
 ## 性能基准测试
@@ -189,49 +262,54 @@ cargo run --release --features cuda --example profile_kv_cache
 ```
 gpt-sovits-rs/
 ├── Cargo.toml
+├── Dockerfile                 # CPU 多阶段构建
+├── Dockerfile.cuda            # CUDA GPU 多阶段构建
+├── .github/workflows/ci.yml   # CI: check + test + Docker
 ├── src/
-│   ├── main.rs              # CLI 入口
-│   ├── lib.rs               # 库入口
+│   ├── main.rs                # CLI + HTTP API 入口
+│   ├── lib.rs                 # 库入口
 │   ├── config/
-│   │   └── mod.rs           # 配置管理
+│   │   └── mod.rs             # 配置管理 (设备/精度/版本)
 │   ├── text_frontend/
-│   │   ├── mod.rs           # 文本处理
-│   │   ├── normalizer.rs    # 文本规范化
-│   │   ├── lang_detect.rs   # 语言检测
-│   │   ├── g2p.rs           # Grapheme-to-phoneme
-│   │   └── symbols.rs       # 音素符号表
+│   │   ├── mod.rs             # 文本处理
+│   │   ├── normalizer.rs      # 文本规范化
+│   │   ├── lang_detect.rs     # 语言检测
+│   │   ├── g2p.rs             # G2P (中文拼音完整映射)
+│   │   ├── symbols.rs         # 732 符号表 (v2, JSON 加载)
+│   │   └── symbols_v2.json    # GPT-SoVITS v2 符号表数据
 │   ├── models/
 │   │   ├── mod.rs
-│   │   ├── bert.rs          # BERT 特征提取
-│   │   ├── gpt.rs           # GPT 语义模型
-│   │   ├── sovits.rs        # SoVITS 音频合成
-│   │   ├── sovits_decoder.rs # HiFi-GAN 解码器
-│   │   ├── sovits_encp.rs   # enc_p 文本编码器
-│   │   ├── sovits_encq.rs   # enc_q 参考编码器
-│   │   ├── sovits_flow.rs   # Flow 模块
-│   │   ├── sovits_ssl.rs    # SSL 编码器
-│   │   ├── bigvgan.rs       # BigVGAN 声码器
-│   │   └── mrte.rs          # 多参考音色编码器
+│   │   ├── bert.rs            # BERT ONNX 特征提取
+│   │   ├── hubert.rs          # Hubert ONNX 特征提取
+│   │   ├── semantic_tokenizer.rs # 语义 token 提取
+│   │   ├── gpt.rs             # GPT 自回归生成 (KV Cache + 重复惩罚)
+│   │   ├── transformer.rs     # Multi-head attention + SwiGLU
+│   │   ├── sovits.rs          # SoVITS 主模型
+│   │   ├── sovits_decoder.rs  # HiFi-GAN 解码器
+│   │   ├── sovits_encp.rs     # enc_p 文本编码器
+│   │   ├── sovits_encq.rs     # enc_q 参考编码器
+│   │   ├── sovits_flow.rs     # Flow 模块 (残差耦合)
+│   │   ├── sovits_ref_enc.rs  # MelStyleEncoder
+│   │   ├── bigvgan.rs         # BigVGAN 声码器 (SnakeBeta + AMP)
+│   │   └── mrte.rs            # 多参考音色编码器
 │   ├── inference/
-│   │   └── mod.rs           # 推理流程
+│   │   └── mod.rs             # 推理管线编排
 │   └── utils/
 │       ├── mod.rs
-│       ├── audio.rs         # 音频 I/O
-│       ├── kv_cache.rs      # KV Cache 优化
-│       └── state_dict.rs    # 模型权重加载
+│       ├── audio.rs           # 音频 I/O (WAV 读写/内存编码)
+│       ├── audio_features.rs  # STFT/mel 频谱提取
+│       ├── kv_cache.rs        # KV Cache 优化
+│       └── weights.rs         # safetensors 权重加载
 ├── examples/
-│   ├── cli_inference.rs         # CLI 推理示例
-│   ├── benchmark_kv_cache.rs    # KV Cache 基准测试
-│   ├── benchmark_gpu_kv_cache.rs # GPU KV Cache 基准测试
-│   ├── profile_pipeline.rs      # 全流程性能分析
-│   ├── profile_kv_cache.rs      # KV Cache 性能分析
-│   ├── e2e_gpu_test.rs          # GPU 端到端测试
-│   ├── e2e_quick.rs             # 快速端到端测试
-│   └── test_decoder_debug.rs    # 解码器逐层验证
-├── scripts/
-│   ├── download_and_convert.py  # 模型下载转换
-│   └── export_onnx.py           # ONNX 导出
-└── models/                      # 模型文件 (gitignore)
+│   ├── benchmark_kv_cache.rs      # KV Cache 基准测试
+│   ├── benchmark_gpu_kv_cache.rs  # GPU KV Cache 基准测试
+│   ├── profile_pipeline.rs        # 全流程性能分析
+│   ├── verify_gpt.rs              # GPT 数值验证
+│   ├── check_phonemes.rs          # G2P 音素检查
+│   └── e2e_quick.rs               # 快速端到端测试
+├── tests/
+│   └── integration_tests.rs       # 集成测试 (45 tests)
+└── models/                        # 模型文件 (gitignore)
 ```
 
 ## 支持的模型
