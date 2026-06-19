@@ -9,20 +9,19 @@
 | | GPT-SoVITS (Python) | GPT-SoVITS-RS (本项目) |
 |---|---|---|
 | **定位** | 训练 + 微调 + 推理 | **纯推理引擎** |
-| **部署** | Python 环境 + 多个依赖包 | **单一二进制文件** (~15MB) |
-| **GPU 支持** | PyTorch CUDA | **Candle CUDA** (更轻量) |
-| **启动时间** | 数秒 (Python + 模型加载) | **亚秒级** |
-| **内存占用** | 高 (PyTorch runtime) | **低** (无 runtime 开销) |
+| **部署** | Python 环境 + PyTorch + 多个包 | **单一二进制文件** (~18MB) |
+| **GPU 支持** | PyTorch CUDA (~2GB runtime) | **Candle CUDA** (仅 CUDA 库) |
+| **内存占用** | 高 (PyTorch runtime + 模型) | **低** (无 Python/PyTorch 开销) |
 | **API** | Gradio Web UI | **CLI / Rust 库 / HTTP (WAV 流)** |
-| **推理加速** | 无 | **KV Cache (18x CPU 加速)** |
-| **容器化** | 复杂 (Python 环境) | **多阶段 Docker (最小镜像)** |
+| **推理加速** | 无 | **KV Cache (CPU 18x 加速)** |
+| **容器化** | 复杂 (Python + CUDA 环境) | **多阶段 Docker (最小镜像)** |
 
 ## 特性
 
-- 🚀 **极致推理性能**: 纯 Rust + Candle ML 框架，KV Cache 优化 (CPU 18x / GPU 1.65x 加速)
-- 📦 **零依赖部署**: 编译为单一静态二进制，无需 Python/PyTorch 环境
-- 🐳 **生产级容器**: 多阶段构建，CPU/CUDA 双镜像
-- 🔌 **多种接入方式**: CLI 工具、Rust 库 API、HTTP 服务器 (直接返回 WAV 音频流)
+- 🚀 **推理性能**: Rust + Candle ML 框架，KV Cache 优化 (CPU 场景 18x 加速)
+- 📦 **轻量部署**: 编译为单一二进制 (~18MB)，无需 Python/PyTorch 环境
+- 🐳 **容器化就绪**: 多阶段 Docker 构建，CPU/CUDA 双镜像
+- 🔌 **多种接入**: CLI 工具、Rust 库 API、HTTP 服务器 (直接返回 WAV 音频流)
 - ✅ **数值精确**: 所有模块已与 Python 原版逐层对齐验证 (误差 < 1e-7)
 - 🌍 **多语言**: 支持中文、英文、日文、韩文、粤语
 - 🎯 **推理增强**: Repetition penalty 减少生成重复，语义 Tokenizer 提升音色还原
@@ -190,19 +189,12 @@ curl -X POST http://localhost:9880/tts \
 
 # 健康检查
 curl http://localhost:9880/health
-
-# 切换参考音频
-curl -X POST http://localhost:9880/change_refer \
-  -H 'Content-Type: application/json' \
-  -d '{"refer_wav_path": "new_ref.wav", "prompt_text": "新参考文本"}'
 ```
 
 | 端点 | 方法 | 说明 |
 |------|------|------|
 | `/health` | GET | 健康检查 |
 | `/tts` | POST | TTS 推理，返回 `audio/wav` |
-| `/change_refer` | POST | 切换参考音频 |
-| `/control` | POST | 服务控制 (reload/unload) |
 
 ### Docker 部署
 

@@ -285,7 +285,7 @@ mod http_api {
         routing::{get, post},
         Json, Router,
     };
-    use serde::{Deserialize, Serialize};
+    use serde::Deserialize;
     use std::sync::{Arc, Mutex};
     use tower_http::trace::TraceLayer;
     use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
@@ -310,31 +310,6 @@ mod http_api {
         top_p: Option<f32>,
         temperature: Option<f32>,
         speed: Option<f32>,
-    }
-
-    #[derive(Deserialize)]
-    struct ChangeReferRequest {
-        refer_wav_path: String,
-        prompt_text: String,
-        #[allow(dead_code)]
-        prompt_language: Option<String>,
-    }
-
-    #[derive(Serialize)]
-    struct ChangeReferResponse {
-        success: bool,
-        message: String,
-    }
-
-    #[derive(Deserialize)]
-    struct ControlRequest {
-        command: String,
-    }
-
-    #[derive(Serialize)]
-    struct ControlResponse {
-        success: bool,
-        message: String,
     }
 
     async fn health_handler() -> &'static str {
@@ -404,36 +379,6 @@ mod http_api {
         }
     }
 
-    async fn change_refer_handler(
-        State(_state): State<AppState>,
-        Json(req): Json<ChangeReferRequest>,
-    ) -> Json<ChangeReferResponse> {
-        Json(ChangeReferResponse {
-            success: true,
-            message: format!("Reference updated: {} ({})", req.refer_wav_path, req.prompt_text),
-        })
-    }
-
-    async fn control_handler(
-        State(_state): State<AppState>,
-        Json(req): Json<ControlRequest>,
-    ) -> Json<ControlResponse> {
-        match req.command.as_str() {
-            "reload" => Json(ControlResponse {
-                success: true,
-                message: "Reload command received".to_string(),
-            }),
-            "unload" => Json(ControlResponse {
-                success: true,
-                message: "Unload command received".to_string(),
-            }),
-            _ => Json(ControlResponse {
-                success: false,
-                message: format!("Unknown command: {}", req.command),
-            }),
-        }
-    }
-
     pub fn run(
         port: u16,
         gpt_model: Option<&std::path::Path>,
@@ -471,8 +416,6 @@ mod http_api {
         // Build router
         let app = Router::new()
             .route("/tts", post(tts_handler))
-            .route("/change_refer", post(change_refer_handler))
-            .route("/control", post(control_handler))
             .route("/health", get(health_handler))
             .layer(TraceLayer::new_for_http())
             .with_state(state);
@@ -483,14 +426,13 @@ mod http_api {
         println!();
         println!("Endpoints:");
         println!("  GET  /health     - Health check");
-        println!("  POST /tts        - TTS inference");
-        println!("  POST /change_refer - Change reference audio");
-        println!("  POST /control    - Server control (reload, unload)");
+        println!("  POST /tts        - TTS inference (returns audio/wav)");
         println!();
         println!("Example:");
         println!("  curl -X POST http://localhost:9880/tts \\");
         println!("    -H 'Content-Type: application/json' \\");
-        println!("    -d '{{\"text\": \"你好世界\", \"text_language\": \"zh\"}}'");
+        println!("    -d '{{\"text\": \"你好世界\", \"text_language\": \"zh\", \"refer_wav_path\": \"ref.wav\", \"prompt_text\": \"参考文本\"}}' \\");
+        println!("    --output tts_output.wav");
 
         // Run server
         tokio::runtime::Runtime::new()

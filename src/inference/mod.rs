@@ -302,9 +302,9 @@ impl Pipeline {
             None
         };
 
-        // Step 5: Generate semantic tokens with GPT
+        // Step 5: Generate semantic tokens with GPT (KV cache enabled)
         let semantic_tokens = if let Some(ref prompts) = prompt_tokens {
-            // Use prompt tokens as audio context for speaker conditioning
+            // Use prompt tokens as audio context for speaker conditioning (KV cache built-in)
             gpt.generate_with_prompts(
                 &phoneme_ids,
                 prompts,
@@ -315,8 +315,8 @@ impl Pipeline {
                 options.repetition_penalty,
             )?
         } else {
-            // Fallback: no prompt tokens (old path)
-            gpt.generate_with_features(
+            // Fallback: no prompt tokens, use KV cache path
+            gpt.generate_with_features_kv_cache(
                 &phoneme_ids,
                 bert_features.as_ref(),
                 hubert_features.as_ref(),

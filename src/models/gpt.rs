@@ -759,35 +759,40 @@ impl GPTModel {
         let y_pos = self.add_sine_positional(&y_emb, "audio")?;
 
         // Step 6: Concatenate text + audio along sequence dimension
-        let mut xy_pos = Tensor::cat(&[&x_emb, &y_pos], 1)?;
+        let xy_pos = Tensor::cat(&[&x_emb, &y_pos], 1)?;
 
         let mut generated_tokens = Vec::new();
         let max_new_tokens = 500;
         let audio_vocab_size = self.ar_predict_layer.dims()[0];
 
-        // Step 7: Autoregressive generation
+        // Initialize KV cache once before the loop
+        let mut kv_cache = crate::utils::KvCacheManager::new(self.num_layers);
+
+        // Step 7: Autoregressive generation with KV cache
+        let mut current_emb = xy_pos; // full context on step 0, single token after
         for _step in 0..max_new_tokens {
-            let total_seq = xy_pos.dims()[1];
+            let total_seq = kv_cache.len() + current_emb.dims()[1];
 
-            // Create hybrid attention mask matching Python's behavior:
-            // - Text positions (0..text_seq): full bidirectional attention
-            // - Audio positions (text_seq..total_seq): attend to all text + causal audio
-            // True = masked (blocked), False = visible
-            let mask = self.create_hybrid_mask(text_seq, total_seq)?;
+            // Step 0: hybrid mask (text bidirectional + audio causal)
+            // Step 1+: causal mask (only new audio tokens, cache has context)
+            let mask = if _step == 0 {
+                self.create_hybrid_mask(text_seq, total_seq)?
+            } else {
+                TransformerGPTSoVITS::create_causal_mask(total_seq, &self.device)?
+            };
 
-            // Forward pass through transformer with custom mask
+            // Forward pass through transformer with KV cache
             let hidden = self.transformer.forward_from_embedding_kv(
-                &xy_pos,
+                &current_emb,
                 Some(&mask),
-                &mut crate::utils::KvCacheManager::new(self.num_layers),
+                &mut kv_cache,
             )?;
 
             // Project last position to vocab
-            let last_hidden = hidden.narrow(1, total_seq - 1, 1)?.squeeze(0)?; // [1, hidden]
-            let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?; // [vocab]
+            let last_hidden = hidden.narrow(1, hidden.dims()[1] - 1, 1)?.squeeze(0)?;
+            let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?;
 
             // For first 11 steps, mask out EOS logit (matching Python's `logits = logits[:, :-1]`)
-            // This prevents the model from predicting EOS too early
             let is_eos_masked = _step < 11;
             let effective_vocab_size = if is_eos_masked { audio_vocab_size - 1 } else { audio_vocab_size };
             let logits_for_sampling = if is_eos_masked {
@@ -807,12 +812,10 @@ impl GPTModel {
 
             generated_tokens.push(next_token);
 
-            // Embed new token and append
+            // Embed new token for next iteration (single token only)
             let new_ids = Tensor::new(&[next_token as i64], &self.device)?.unsqueeze(0)?;
             let new_emb = self.lookup_tokens(&self.audio_embedding, &new_ids, 1)?;
-            // Add positional encoding for the new position
-            let new_pos = self.add_sine_positional_at(&new_emb, total_seq)?;
-            xy_pos = Tensor::cat(&[&xy_pos, &new_pos], 1)?;
+            current_emb = self.add_sine_positional_at(&new_emb, total_seq)?;
         }
 
         tracing::info!("[GPT] Total generated tokens: {}", generated_tokens.len());

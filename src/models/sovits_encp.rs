@@ -413,15 +413,6 @@ pub struct EncP {
 }
 
 impl EncP {
-    fn save_debug_tensor(name: &str, t: &Tensor) -> Result<()> {
-        let flat: Vec<f32> = t.flatten_all()?.to_vec1()?;
-        let dims = t.dims();
-        let header = dims.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(",");
-        let data = flat.iter().map(|v| format!("{:.10}", v)).collect::<Vec<_>>().join("\n");
-        std::fs::write(format!("{}.txt", name), format!("{}\n{}\n", header, data))
-            .map_err(|e| crate::Error::InferenceError(format!("Failed to save {}: {}", name, e)))
-    }
-
     /// Load EncP from SoVITS state dict
     pub fn load(state_dict: &StateDict, device: &Device, _hidden_channels: usize, n_layers: usize, out_channels: usize) -> Result<Self> {
         // Load SSL projection: [192, 768, 1]
@@ -538,9 +529,6 @@ impl EncP {
         let y_mask = self.sequence_mask(y_lengths, y_max_len, device)?;
         let y_mask_expanded = y_mask.unsqueeze(1)?;
 
-        // Save debug input
-        Self::save_debug_tensor("encp_debug_quantized_up", quantized)?;
-
         // SSL projection (matching Python: y = self.ssl_proj(y * y_mask) * y_mask)
         let mut y = self.ssl_proj.forward(&quantized.broadcast_mul(&y_mask_expanded)?)?;
 
@@ -556,35 +544,22 @@ impl EncP {
         // Text embedding lookup
         let text_emb = self.lookup_embeddings(text)?;
 
-        // Save debug text input
-        let text_flat: Vec<i64> = text.flatten_all()?.to_vec1()?;
-        std::fs::write("encp_debug_text_ids.txt",
-            text_flat.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("\n"))
-            .map_err(|e| crate::Error::InferenceError(format!("Failed to save text ids: {}", e)))?;
         let mut text_emb = text_emb.transpose(1, 2)?;
         text_emb = text_emb.broadcast_mul(&text_mask_expanded)?;
 
-        // Pass through encoder_text with debug saves
-        for (i, layer) in self.encoder_text.iter().enumerate() {
+        // Pass through encoder_text
+        for layer in self.encoder_text.iter() {
             text_emb = layer.forward(&text_emb, &text_mask_expanded)?;
-            Self::save_debug_tensor(&format!("encp_debug_text_layer{}", i), &text_emb)?;
         }
 
-        // Pass through encoder_ssl with debug saves
-        for (i, layer) in self.encoder_ssl.iter().enumerate() {
+        // Pass through encoder_ssl
+        for layer in self.encoder_ssl.iter() {
             y = layer.forward(&y, &y_mask_expanded)?;
-            Self::save_debug_tensor(&format!("encp_debug_ssl_layer{}", i), &y)?;
         }
 
         // MRTE fusion (if available)
         if let Some(mrte) = &self.mrte {
-            // Save intermediates for debugging
-            Self::save_debug_tensor("encp_debug_ge", ge)?;
-            // Save intermediates before MRTE
-            Self::save_debug_tensor("encp_debug_before_mrte", &y)?;
-            Self::save_debug_tensor("encp_debug_text_emb", &text_emb)?;
             y = mrte.forward(&y, &y_mask_expanded, &text_emb, &text_mask_expanded, Some(ge))?;
-            Self::save_debug_tensor("encp_debug_after_mrte", &y)?;
         } else {
             // Simple fusion: project ge to 192 channels and add
             let ge_192 = if ge.dims()[1] == y.dims()[1] {
@@ -597,10 +572,9 @@ impl EncP {
             y = y.add(&ge_192)?;
         }
 
-        // Pass through encoder2 with debug saves
-        for (i, layer) in self.encoder2.iter().enumerate() {
+        // Pass through encoder2
+        for layer in self.encoder2.iter() {
             y = layer.forward(&y, &y_mask_expanded)?;
-            Self::save_debug_tensor(&format!("encp_debug_enc2_layer{}", i), &y)?;
         }
 
         // Output projection: split into m and logs

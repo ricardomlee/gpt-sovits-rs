@@ -76,3 +76,4 @@ decoder_*.txt
 # Python cache (for scripts)
 __pycache__/
 *.py[cod]
+.github/
