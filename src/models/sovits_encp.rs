@@ -59,6 +59,7 @@ impl EncoderLayer {
 
 /// Self-attention mechanism
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct SelfAttention {
     conv_q: candle_nn::Conv1d,
     conv_k: candle_nn::Conv1d,
@@ -71,7 +72,7 @@ pub struct SelfAttention {
 }
 
 impl SelfAttention {
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, layer_idx: usize, n_heads: usize) -> Result<Self> {
+    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, layer_idx: usize, _n_heads: usize) -> Result<Self> {
         let conv_q = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_q", prefix, layer_idx), device)?;
         let conv_k = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_k", prefix, layer_idx), device)?;
         let conv_v = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_v", prefix, layer_idx), device)?;
@@ -384,6 +385,7 @@ impl MRTE {
     }
 }
 
+#[allow(dead_code)]
 fn load_linear(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<candle_nn::Linear> {
     let weight = state_dict.get(&format!("{}.weight", prefix))?
         .to_device(device)?.to_dtype(DType::F32)?;

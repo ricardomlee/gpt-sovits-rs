@@ -42,10 +42,12 @@ struct ResidualBlock {
 
 /// Snake activation: x + 1/(alpha + eps) * sin^2(x * alpha)
 /// alpha is stored as log(alpha), so we apply exp() first
+#[allow(dead_code)]
 struct Snake {
     alpha: Tensor,
 }
 
+#[allow(dead_code)]
 impl Snake {
     fn new(alpha: Tensor) -> Self {
         Self { alpha }
@@ -173,15 +175,18 @@ impl Downsample {
 /// Post-activation module
 struct PostActivation {
     downsample: Option<Downsample>,
+    #[allow(dead_code)]
     upsample: Option<UpsampleFilter>,
     snake: SnakeBeta,
 }
 
 /// Upsample filter for post-activation
+#[allow(dead_code)]
 struct UpsampleFilter {
     filter: Tensor,
 }
 
+#[allow(dead_code)]
 impl UpsampleFilter {
     fn new(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Self> {
         let filter_data = state_dict

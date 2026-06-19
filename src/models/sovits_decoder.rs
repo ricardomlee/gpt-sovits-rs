@@ -105,6 +105,7 @@ pub struct Decoder {
     resblocks: Vec<ResBlock1>,
     conv_post: Conv1d,
     cond: Option<Conv1d>,
+    #[allow(dead_code)]
     gin_channels: usize,
 }
 
@@ -245,7 +246,7 @@ impl Decoder {
         let _ = x.device().synchronize();
 
         // x: [batch, channels, time]
-        let mut x = self.leaky_relu(x, 0.1)?;
+        let x = self.leaky_relu(x, 0.1)?;
         let mut x = self.conv_pre.forward(&x)?;
 
         // Add condition if provided
@@ -306,7 +307,7 @@ impl Decoder {
 
     /// Generate waveform and save intermediate outputs for debugging
     pub fn forward_debug(&self, x: &Tensor, g: Option<&Tensor>) -> Result<Vec<f32>> {
-        let mut x = self.leaky_relu(x, 0.1)?;
+        let x = self.leaky_relu(x, 0.1)?;
         let mut x = self.conv_pre.forward(&x)?;
         self.save_tensor("debug_conv_pre", &x)?;
 

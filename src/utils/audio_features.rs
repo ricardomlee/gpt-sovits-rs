@@ -18,6 +18,7 @@ pub struct SpectrogramExtractor {
     hop_length: usize,
     win_length: usize,
     n_mels: usize,
+    #[allow(dead_code)]
     sample_rate: u32,
     mel_basis: Vec<f32>,
     window: Vec<f32>,

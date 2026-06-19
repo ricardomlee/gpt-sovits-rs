@@ -55,6 +55,24 @@ sovits_*.txt
 sovits_*.wav
 out_*.wav
 
+# Python debug/comparison scripts
+check_*.py
+compare_*.py
+debug_*.py
+trace_*.py
+save_ssl0_*.py
+find_divergence.py
+decoder_compare.py
+sovits_audio_test.py
+verify_n_heads.py
+run_python_pipeline.py
+scripts/
+examples/verify_decoder.py
+
+# Additional debug intermediates
+encp_debug_*.txt
+decoder_*.txt
+
 # Python cache (for scripts)
 __pycache__/
 *.py[cod]

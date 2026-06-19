@@ -10,6 +10,7 @@ use crate::Result;
 use crate::utils::StateDict;
 
 /// Multi-Head Cross-Attention module
+#[allow(dead_code)]
 pub struct MultiHeadAttention {
     conv_q: Conv1d,
     conv_k: Conv1d,
@@ -149,6 +150,7 @@ impl MultiHeadAttention {
 }
 
 /// Layer Normalization for 1D sequences
+#[allow(dead_code)]
 pub struct LayerNorm {
     gamma: Tensor,
     beta: Tensor,

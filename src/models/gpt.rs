@@ -218,8 +218,26 @@ impl GPTModel {
         top_k: usize,
         top_p: f32,
         temperature: f32,
+        repetition_penalty: f32,
+        generated_tokens: &[usize],
     ) -> Result<usize> {
         let mut logits = logits.to_dtype(DType::F32)?;
+
+        // Apply repetition penalty to logits of previously generated tokens
+        if repetition_penalty != 1.0 && !generated_tokens.is_empty() {
+            let mut logits_vec: Vec<f32> = logits.to_vec1()?;
+            let device = logits.device();
+            for &token in generated_tokens {
+                if token < logits_vec.len() {
+                    if logits_vec[token] > 0.0 {
+                        logits_vec[token] /= repetition_penalty;
+                    } else {
+                        logits_vec[token] *= repetition_penalty;
+                    }
+                }
+            }
+            logits = Tensor::new(logits_vec.as_slice(), device)?;
+        }
 
         // Apply temperature
         if temperature != 1.0 && temperature > 0.0 {
@@ -290,8 +308,9 @@ impl GPTModel {
         top_k: usize,
         top_p: f32,
         temperature: f32,
+        repetition_penalty: f32,
     ) -> Result<Vec<usize>> {
-        self.generate_with_features(phoneme_ids, None, None, top_k, top_p, temperature)
+        self.generate_with_features(phoneme_ids, None, None, top_k, top_p, temperature, repetition_penalty)
     }
 
     /// Generate semantic tokens with BERT and Hubert features (with KV cache optimization)
@@ -317,6 +336,7 @@ impl GPTModel {
         top_k: usize,
         top_p: f32,
         temperature: f32,
+        repetition_penalty: f32,
     ) -> Result<Vec<usize>> {
         if phoneme_ids.is_empty() {
             return Ok(Vec::new());
@@ -454,7 +474,7 @@ impl GPTModel {
             let logits = logits.squeeze(0)?; // [vocab]
 
             // Sample next token
-            let next_token = Self::sample_token(&logits, top_k, top_p, temperature)?;
+            let next_token = Self::sample_token(&logits, top_k, top_p, temperature, repetition_penalty, &generated_tokens)?;
 
             // Check for end-of-sequence token
             let audio_vocab_size = self.ar_predict_layer.dims()[0];
@@ -492,6 +512,7 @@ impl GPTModel {
         top_k: usize,
         top_p: f32,
         temperature: f32,
+        repetition_penalty: f32,
     ) -> Result<Vec<usize>> {
         if phoneme_ids.is_empty() {
             return Ok(Vec::new());
@@ -572,31 +593,17 @@ impl GPTModel {
 
             // Fuse features using MRTE if available, otherwise fall back to simple addition
             let fused_emb = if let Some(ref mrte) = self.mrte {
-                // Use MRTE for advanced cross-attention fusion
-                // MRTE expects: [batch, channels, seq_len] format
                 if let (Some(bert), Some(hubert)) = (bert_proj_result.as_ref(), hubert_proj_result.as_ref()) {
-                    // Transpose embeddings: [1, seq, 512] -> [1, 512, seq]
                     let _token_emb_t = token_emb.transpose(1, 2)?;
-
-                    // Prepare BERT features as text encoding [1, 512, bert_seq]
                     let bert_t = bert.transpose(1, 2)?;
-
-                    // Prepare Hubert features as content encoding [1, 512, hubert_frames]
                     let hubert_t = hubert.transpose(1, 2)?;
-
-                    // Create masks
                     let ones_mask = Tensor::ones((1, 1, seq_len), DType::F32, &self.device)?;
-
-                    // MRTE forward: content (Hubert) attends to text (BERT)
                     match mrte.forward(&hubert_t, &ones_mask, &bert_t, &ones_mask, None) {
                         Ok(mrte_out) => {
-                            // MRTE output: [1, 512, hubert_frames]
-                            // Need to align to token_emb seq_len
                             let mrte_frames = mrte_out.dims()[2];
                             let mrte_aligned = if mrte_frames >= seq_len {
                                 mrte_out.narrow(2, 0, seq_len)?
                             } else {
-                                // Repeat last frame
                                 let last_frame = mrte_out.narrow(2, mrte_frames - 1, 1)?;
                                 let mut frames = vec![mrte_out.clone()];
                                 for _ in 0..(seq_len - mrte_frames) {
@@ -604,7 +611,6 @@ impl GPTModel {
                                 }
                                 Tensor::cat(&frames, 2).unwrap_or_else(|_| mrte_out.clone())
                             };
-                            // Transpose back: [1, 512, seq] -> [1, seq, 512]
                             mrte_aligned.transpose(1, 2).unwrap_or_else(|_| token_emb.clone())
                         }
                         Err(_) => token_emb.clone(),
@@ -613,10 +619,7 @@ impl GPTModel {
                     token_emb.clone()
                 }
             } else {
-                // Fallback: simple residual fusion with BERT and Hubert
                 let mut fused_emb = token_emb.clone();
-
-                // Fuse with BERT features if available
                 if let Some(ref bert_proj) = bert_proj_result {
                     if bert_proj.dims().len() >= 2 {
                         let bert_seq_len = bert_proj.dims()[1];
@@ -634,8 +637,6 @@ impl GPTModel {
                         }
                     }
                 }
-
-                // Fuse with Hubert features if available
                 if let Some(ref hubert_proj) = hubert_proj_result {
                     let hubert_frames = hubert_proj.dims()[1];
                     if hubert_frames > 0 {
@@ -656,21 +657,18 @@ impl GPTModel {
                         }
                     }
                 }
-
                 fused_emb
             };
 
             // Forward pass through transformer
             let hidden = self.transformer.forward_from_embedding(&fused_emb)?;
 
-            // Project to vocab: [1, seq_len, hidden] @ [vocab, hidden]^T -> [1, seq_len, vocab]
-            let last_hidden = hidden.narrow(1, seq_len - 1, 1)?; // [1, 1, hidden]
-            let last_hidden = last_hidden.squeeze(0)?; // [1, hidden]
-            let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?; // [1, vocab]
-            let logits = logits.squeeze(0)?; // [vocab]
+            // Project to vocab
+            let last_hidden = hidden.narrow(1, seq_len - 1, 1)?.squeeze(0)?;
+            let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?;
 
             // Sample next token
-            let next_token = Self::sample_token(&logits, top_k, top_p, temperature)?;
+            let next_token = Self::sample_token(&logits, top_k, top_p, temperature, repetition_penalty, &generated_tokens)?;
 
             // Check for end-of-sequence token
             let audio_vocab_size = self.ar_predict_layer.dims()[0];
@@ -711,6 +709,7 @@ impl GPTModel {
         top_k: usize,
         top_p: f32,
         temperature: f32,
+        repetition_penalty: f32,
     ) -> Result<Vec<usize>> {
         if phoneme_ids.is_empty() {
             return Ok(Vec::new());
@@ -787,11 +786,22 @@ impl GPTModel {
             let last_hidden = hidden.narrow(1, total_seq - 1, 1)?.squeeze(0)?; // [1, hidden]
             let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?; // [vocab]
 
-            // Sample next token
-            let next_token = Self::sample_token(&logits, top_k, top_p, temperature)?;
+            // For first 11 steps, mask out EOS logit (matching Python's `logits = logits[:, :-1]`)
+            // This prevents the model from predicting EOS too early
+            let is_eos_masked = _step < 11;
+            let effective_vocab_size = if is_eos_masked { audio_vocab_size - 1 } else { audio_vocab_size };
+            let logits_for_sampling = if is_eos_masked {
+                logits.narrow(0, 0, effective_vocab_size)?
+            } else {
+                logits.clone()
+            };
 
-            // Check for EOS (but allow at least 10 tokens like Python)
-            if _step >= 10 && next_token >= audio_vocab_size - 1 {
+            // Sample next token
+            let next_token = Self::sample_token(&logits_for_sampling, top_k, top_p, temperature, repetition_penalty, &generated_tokens)?;
+
+            // Check for EOS token
+            if next_token >= audio_vocab_size - 1 {
+                tracing::info!("[GPT] EOS detected at step {}", _step);
                 break;
             }
 
@@ -805,6 +815,7 @@ impl GPTModel {
             xy_pos = Tensor::cat(&[&xy_pos, &new_pos], 1)?;
         }
 
+        tracing::info!("[GPT] Total generated tokens: {}", generated_tokens.len());
         Ok(generated_tokens)
     }
 

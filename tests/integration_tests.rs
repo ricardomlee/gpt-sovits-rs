@@ -119,16 +119,26 @@ mod text_frontend_tests {
     fn test_symbol_table() {
         let table = SymbolTable::new();
 
-        assert!(table.len() > 0);
-        assert_eq!(table.pad_id(), 0);
-        assert_eq!(table.bos_id(), 1);
-        assert_eq!(table.eos_id(), 2);
+        // v2 symbol table has 732 symbols
+        assert_eq!(table.len(), 732);
+        assert!(!table.is_empty());
 
-        // Test encode/decode round trip
-        let ids = table.encode("a o e").unwrap();
-        assert!(ids.len() > 0);
-        assert_eq!(ids[0], table.bos_id());
-        assert_eq!(ids[ids.len() - 1], table.eos_id());
+        // Test encode: space-separated phonemes, no BOS/EOS wrapping
+        let ids = table.encode("n i3 h ao3").unwrap();
+        assert!(!ids.is_empty());
+
+        // Verify known symbol IDs match Python v2
+        assert_eq!(table.get_id("n"), Some(227));
+        assert_eq!(table.get_id("i3"), Some(168));
+
+        // Test decode round trip
+        let decoded = table.decode(&ids).unwrap();
+        assert!(!decoded.is_empty());
+
+        // Test get_symbol / get_id round trip
+        if let Some(id) = table.get_id("ao3") {
+            assert_eq!(table.get_symbol(id), Some("ao3"));
+        }
     }
 
     #[test]

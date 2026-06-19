@@ -134,11 +134,12 @@ impl ConfigBuilder {
                 // Auto-detect: prefer GPU if available
                 #[cfg(feature = "cuda")]
                 {
-                    // CUDA is available and enabled
-                    return Device::Cuda;
+                    Device::Cuda
                 }
-                // Default to CPU if CUDA not available
-                Device::Cpu
+                #[cfg(not(feature = "cuda"))]
+                {
+                    Device::Cpu
+                }
             }),
             half_precision: self.half_precision.unwrap_or(true),
             model_version: self.model_version.unwrap_or_default(),

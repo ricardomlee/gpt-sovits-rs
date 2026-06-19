@@ -111,6 +111,7 @@ fn run_profile() -> Result<(), Box<dyn std::error::Error>> {
         options.top_k,
         options.top_p,
         options.temperature,
+        1.35,
     )?;
     let gpt_time = gpt_start.elapsed();
     timings.push(TimingStats { name: "5. GPT (KV Cache)", duration_ms: gpt_time.as_secs_f64() * 1000.0 });

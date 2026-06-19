@@ -1,33 +1,33 @@
-# Build artifacts
+.git
 target/
-
-# Version control
-.git/
-.gitignore
-
-# Large model files (mount at runtime)
-models/
-*.safetensors
-*.bin
-*.pt
-*.onnx
-*.wav
-*.mp3
-
-# Dev/editor files
+__pycache__/
+*.pyc
+*.pyo
 .env
-.vscode/
-.idea/
-*.swp
-*.swo
 
-# CI/CD
-.github/
+# Debug intermediates
+*.txt
+check_*.py
+compare_*.py
+debug_*.py
+decoder_compare.py
+find_divergence.py
+run_python_pipeline.py
+save_ssl0_*.py
+sovits_*.py
+test_resblock0_dilation.py
+trace_*.py
+verify_n_heads.py
 
-# Docs
-docs/
-*.md
+# Scripts (not needed in Docker)
+scripts/
 
-# Benchmarks and examples (not needed for the binary)
-benches/
-examples/
+# Models (mount at runtime)
+models/
+*.ckpt
+*.pth
+*.pt
+*.safetensors
+
+# Generated audio
+*.wav

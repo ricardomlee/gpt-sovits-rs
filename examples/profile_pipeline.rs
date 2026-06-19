@@ -88,7 +88,7 @@ fn run_profile() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 2: Load reference audio
     let audio_start = Instant::now();
-    let ref_audio_buffer = gpt_sovits_rs::AudioBuffer::load(ref_audio)?;
+    let _ref_audio_buffer = gpt_sovits_rs::AudioBuffer::load(ref_audio)?;
     let audio_time = audio_start.elapsed();
     timings.push(TimingStats {
         name: "2. Reference Audio Loading",
@@ -134,6 +134,7 @@ fn run_profile() -> Result<(), Box<dyn std::error::Error>> {
         options.top_k,
         options.top_p,
         options.temperature,
+        1.35,
     )?;
     let gpt_time = gpt_start.elapsed();
     timings.push(TimingStats {

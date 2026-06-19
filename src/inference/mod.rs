@@ -4,7 +4,7 @@
 
 use candle_core::Device;
 use crate::config::Config;
-use crate::models::{BertModel, BigVGAN, GPTModel, HubertModel, SoVITSModel};
+use crate::models::{BertModel, BigVGAN, GPTModel, HubertModel, SemanticTokenizer, SoVITSModel};
 use crate::text_frontend::TextFrontend;
 use crate::utils::{AudioBuffer, SpectrogramExtractor};
 use crate::{Error, Language, Result};
@@ -19,6 +19,7 @@ pub struct InferenceOptions {
     pub speed: f32,
     pub language: Language,
     pub max_tokens: usize,
+    pub repetition_penalty: f32,
 }
 
 impl Default for InferenceOptions {
@@ -30,6 +31,7 @@ impl Default for InferenceOptions {
             speed: 1.0,
             language: Language::Chinese,
             max_tokens: 500,
+            repetition_penalty: 1.35,
         }
     }
 }
@@ -48,6 +50,7 @@ pub struct InferenceOptionsBuilder {
     speed: Option<f32>,
     language: Option<Language>,
     max_tokens: Option<usize>,
+    repetition_penalty: Option<f32>,
 }
 
 impl InferenceOptionsBuilder {
@@ -81,6 +84,11 @@ impl InferenceOptionsBuilder {
         self
     }
 
+    pub fn repetition_penalty(mut self, p: f32) -> Self {
+        self.repetition_penalty = Some(p);
+        self
+    }
+
     pub fn build(self) -> InferenceOptions {
         InferenceOptions {
             top_k: self.top_k.unwrap_or(15),
@@ -89,6 +97,7 @@ impl InferenceOptionsBuilder {
             speed: self.speed.unwrap_or(1.0),
             language: self.language.unwrap_or(Language::Chinese),
             max_tokens: self.max_tokens.unwrap_or(500),
+            repetition_penalty: self.repetition_penalty.unwrap_or(1.35),
         }
     }
 }
@@ -104,6 +113,7 @@ pub struct Pipeline {
     bert_model: Option<BertModel>,
     hubert_model: Option<HubertModel>,
     bigvgan_model: Option<BigVGAN>,
+    semantic_tokenizer: Option<SemanticTokenizer>,
 }
 
 impl Pipeline {
@@ -119,6 +129,7 @@ impl Pipeline {
             bert_model: None,
             hubert_model: None,
             bigvgan_model: None,
+            semantic_tokenizer: None,
         })
     }
 
@@ -190,6 +201,16 @@ impl Pipeline {
         Ok(())
     }
 
+    /// Load semantic tokenizer from SoVITS weights (for prompt token extraction)
+    pub fn load_semantic_tokenizer<P: AsRef<Path>>(&mut self, sovits_path: P) -> Result<()> {
+        let tokenizer = SemanticTokenizer::load_with_device(
+            sovits_path.as_ref().to_str().unwrap(),
+            &self.device,
+        )?;
+        self.semantic_tokenizer = Some(tokenizer);
+        Ok(())
+    }
+
     /// Load BigVGAN model
     pub fn load_bigvgan<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let model = BigVGAN::load_with_device(path.as_ref().to_str().unwrap(), &self.device)?;
@@ -225,7 +246,7 @@ impl Pipeline {
         // Step 1: Process text through frontend to get phoneme IDs
         let phoneme_ids = self.text_frontend.process(text, options.language)?;
 
-        // Step 2: Extract Hubert features from reference audio
+        // Step 2: Extract Hubert features from reference audio (used for both prompt tokens and MRTE fusion)
         let hubert_features = if let Some(hubert) = &mut self.hubert_model {
             match hubert.extract(reference_audio.as_ref()) {
                 Ok(features) => {
@@ -257,15 +278,54 @@ impl Pipeline {
             None
         };
 
-        // Step 4: Generate semantic tokens with GPT
-        let semantic_tokens = gpt.generate_with_features(
-            &phoneme_ids,
-            bert_features.as_ref(),
-            hubert_features.as_ref(),
-            options.top_k,
-            options.top_p,
-            options.temperature,
-        )?;
+        // Step 4: Extract prompt tokens from reference audio (reusing Hubert features)
+        let prompt_tokens = if let Some(tokenizer) = &self.semantic_tokenizer {
+            if let Some(ref hubert_feats) = hubert_features {
+                // Transpose hubert features: [1, T, 768] -> [1, 768, T]
+                let hubert_t = hubert_feats.transpose(1, 2)?;
+                // Move to same device as the rest of the pipeline
+                let hubert_t = hubert_t.to_device(&self.device)?;
+                match tokenizer.extract(&hubert_t) {
+                    Ok(tokens) => {
+                        tracing::info!("Extracted {} prompt tokens from reference audio", tokens.len());
+                        Some(tokens)
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to extract prompt tokens: {}", e);
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Step 5: Generate semantic tokens with GPT
+        let semantic_tokens = if let Some(ref prompts) = prompt_tokens {
+            // Use prompt tokens as audio context for speaker conditioning
+            gpt.generate_with_prompts(
+                &phoneme_ids,
+                prompts,
+                bert_features.as_ref(),
+                options.top_k,
+                options.top_p,
+                options.temperature,
+                options.repetition_penalty,
+            )?
+        } else {
+            // Fallback: no prompt tokens (old path)
+            gpt.generate_with_features(
+                &phoneme_ids,
+                bert_features.as_ref(),
+                hubert_features.as_ref(),
+                options.top_k,
+                options.top_p,
+                options.temperature,
+                options.repetition_penalty,
+            )?
+        };
 
         tracing::info!("Generated {} semantic tokens", semantic_tokens.len());
 
@@ -334,6 +394,7 @@ impl Pipeline {
             options.top_k,
             options.top_p,
             options.temperature,
+            options.repetition_penalty,
         )?;
 
         tracing::info!("Generated {} semantic tokens (with KV cache)", semantic_tokens.len());

@@ -75,6 +75,7 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
             options.top_k,
             options.top_p,
             options.temperature,
+            1.35,
         )?;
         let elapsed = start.elapsed();
         without_kv_times.push(elapsed.as_secs_f64());
@@ -99,6 +100,7 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
             options.top_k,
             options.top_p,
             options.temperature,
+            1.35,
         )?;
         let elapsed = start.elapsed();
         with_kv_times.push(elapsed.as_secs_f64());

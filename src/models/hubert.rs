@@ -66,7 +66,6 @@ impl HubertModel {
     pub fn extract<P: AsRef<Path>>(&mut self, audio_path: P) -> Result<Tensor> {
         let audio_data = self.load_audio(audio_path)?;
         let seq_len = audio_data.len();
-
         let input_array = (vec![1i64, seq_len as i64], audio_data);
 
         let inputs = inputs! {

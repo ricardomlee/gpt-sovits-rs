@@ -14,6 +14,7 @@ pub mod sovits_flow;
 pub mod sovits_decoder;
 pub mod sovits_ref_enc;
 pub mod transformer;
+pub mod semantic_tokenizer;
 
 pub use bert::BertModel;
 pub use bigvgan::BigVGAN;
@@ -23,6 +24,7 @@ pub use mrte::MRTE;
 pub use sovits::SoVITSModel;
 pub use sovits_encq::EncQ;
 pub use transformer::{Transformer, TransformerConfig, TransformerBlock, MultiHeadAttention};
+pub use semantic_tokenizer::SemanticTokenizer;
 
 use crate::Result;
 

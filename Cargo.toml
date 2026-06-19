@@ -132,6 +132,26 @@ path = "examples/test_encq_path.rs"
 name = "debug_decoder_input"
 path = "examples/debug_decoder_input.rs"
 
+[[example]]
+name = "benchmark_kv_cache"
+path = "examples/benchmark_kv_cache.rs"
+
+[[example]]
+name = "e2e_quick"
+path = "examples/e2e_quick.rs"
+
+[[example]]
+name = "verify_gpt"
+path = "examples/verify_gpt.rs"
+
+[[example]]
+name = "check_phonemes"
+path = "examples/check_phonemes.rs"
+
+[[example]]
+name = "sovits_audio_test"
+path = "examples/sovits_audio_test.rs"
+
 [[bench]]
 name = "inference_bench"
 harness = false

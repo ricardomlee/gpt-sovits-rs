@@ -43,6 +43,7 @@ pub struct SoVITSModel {
     // Configuration
     n_mels: usize,
     sampling_rate: u32,
+    #[allow(dead_code)]
     gin_channels: usize,
 }
 

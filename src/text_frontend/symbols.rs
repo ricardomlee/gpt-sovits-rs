@@ -1,79 +1,85 @@
 //! Phoneme Symbol Table
+//!
+//! Matches GPT-SoVITS v2 symbol table (732 symbols).
+//! Loaded from embedded JSON at compile time to guarantee exact match with Python.
 
 use crate::Result;
 use std::collections::HashMap;
+
+/// All v2 symbols as a JSON array, embedded at compile time.
+/// Generated from Python's `text.symbols_v2.symbols`.
+const SYMBOLS_JSON: &str = include_str!("symbols_v2.json");
 
 /// Symbol table for phoneme encoding/decoding
 #[derive(Debug)]
 pub struct SymbolTable {
     symbol_to_id: HashMap<String, usize>,
     id_to_symbol: Vec<String>,
-    pad_id: usize,
-    bos_id: usize,
-    eos_id: usize,
 }
 
 impl SymbolTable {
-    /// Create a new symbol table with default GPT-SoVITS symbols
+    /// Create a new symbol table matching GPT-SoVITS v2 symbols
     pub fn new() -> Self {
-        // Default phoneme symbols for GPT-SoVITS
-        // This is a simplified version - the full table has ~1000 symbols
-        let symbols: Vec<&str> = vec![
-            "_",           // padding
-            "^",           // beginning of sentence
-            "$",           // end of sentence
-            " ",           // word separator
-            // Chinese initials
-            "b", "p", "m", "f", "d", "t", "n", "l", "g", "k", "h",
-            "j", "q", "x", "zh", "ch", "sh", "r", "z", "c", "s",
-            // Chinese finals
-            "a", "o", "e", "i", "u", "v",
-            "ai", "ei", "ui", "ao", "ou", "iu", "ie", "ue", "er",
-            "an", "en", "in", "un", "vn",
-            "ang", "eng", "ing", "ong", "iong",
-            // English phonemes (simplified)
-            "æ", "ʌ", "ɑ", "ɔ", "ʊ", "u", "ɛ", "ɪ", "i", "ə",
-            "θ", "ð", "ʃ", "ʒ", "tʃ", "dʒ", "tr", "dr", "ts", "dz",
-            // Japanese
-            "a", "i", "u", "e", "o", "k", "s", "t", "n", "h",
-            "m", "y", "r", "w", "g", "z", "d", "b", "p", "N", "Q", "V",
-        ];
+        let symbols: Vec<String> = serde_json::from_str(SYMBOLS_JSON)
+            .expect("Failed to parse embedded symbols JSON");
 
         let symbol_to_id: HashMap<String, usize> = symbols
             .iter()
             .enumerate()
-            .map(|(i, &s)| (s.to_string(), i))
+            .map(|(i, s)| (s.clone(), i))
             .collect();
 
-        let id_to_symbol: Vec<String> = symbols.iter().map(|&s| s.to_string()).collect();
-
         Self {
-            pad_id: 0,
-            bos_id: 1,
-            eos_id: 2,
             symbol_to_id,
-            id_to_symbol,
+            id_to_symbol: symbols,
         }
     }
 
     /// Encode phoneme string to IDs
+    /// Input format: space-separated phonemes like "n i3 h ao3 sh ir4"
+    /// Spaces are skipped. Uses longest-match-first for multi-char symbols.
     pub fn encode(&self, phonemes: &str) -> Result<Vec<usize>> {
-        // Add BOS token
-        let mut ids = vec![self.bos_id];
+        let mut ids = Vec::new();
+        let chars: Vec<char> = phonemes.chars().collect();
+        let mut pos = 0;
 
-        // Simple tokenization - in production would need proper segmentation
-        for ch in phonemes.chars() {
-            let symbol = ch.to_string();
-            if let Some(&id) = self.symbol_to_id.get(&symbol) {
+        while pos < chars.len() {
+            // Skip spaces
+            if chars[pos] == ' ' {
+                pos += 1;
+                continue;
+            }
+
+            let mut matched = false;
+
+            // Try longest symbols first (sorted by length descending)
+            // We iterate through all symbols and pick the longest match
+            let remaining: String = chars[pos..].iter().collect();
+            let mut best_match: Option<(&str, usize)> = None;
+
+            for (symbol, &id) in &self.symbol_to_id {
+                if remaining.starts_with(symbol.as_str()) {
+                    if let Some((prev_sym, _)) = best_match {
+                        if symbol.len() > prev_sym.len() {
+                            best_match = Some((symbol, id));
+                        }
+                    } else {
+                        best_match = Some((symbol, id));
+                    }
+                }
+            }
+
+            if let Some((symbol, id)) = best_match {
                 ids.push(id);
-            } else {
-                // Unknown symbol - use pad
-                ids.push(self.pad_id);
+                pos += symbol.chars().count();
+                matched = true;
+            }
+
+            if !matched {
+                // Unknown symbol - skip
+                pos += 1;
             }
         }
-
-        // Add EOS token
-        ids.push(self.eos_id);
 
         Ok(ids)
     }
@@ -82,13 +88,8 @@ impl SymbolTable {
     pub fn decode(&self, ids: &[usize]) -> Result<String> {
         let phonemes: String = ids
             .iter()
-            .filter_map(|&id| {
-                if id == self.pad_id || id == self.bos_id || id == self.eos_id {
-                    None
-                } else {
-                    self.id_to_symbol.get(id).cloned()
-                }
-            })
+            .filter_map(|&id| self.id_to_symbol.get(id))
+            .cloned()
             .collect();
 
         Ok(phonemes)
@@ -102,21 +103,6 @@ impl SymbolTable {
     /// Check if symbol table is empty
     pub fn is_empty(&self) -> bool {
         self.id_to_symbol.is_empty()
-    }
-
-    /// Get padding token ID
-    pub fn pad_id(&self) -> usize {
-        self.pad_id
-    }
-
-    /// Get BOS token ID
-    pub fn bos_id(&self) -> usize {
-        self.bos_id
-    }
-
-    /// Get EOS token ID
-    pub fn eos_id(&self) -> usize {
-        self.eos_id
     }
 
     /// Get symbol by ID
@@ -141,16 +127,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_encode_decode() {
+    fn test_encode_chinese() {
         let table = SymbolTable::new();
-        let ids = table.encode("a o e").unwrap();
-        let decoded = table.decode(&ids).unwrap();
-        assert!(!decoded.is_empty());
+        // Test encoding space-separated initials+finals
+        let ids = table.encode("n i3 h ao3 sh ir4 j ie4").unwrap();
+        assert_eq!(ids.len(), 8);
+        // Verify specific IDs match Python v2
+        assert_eq!(table.get_id("n"), Some(227));
+        assert_eq!(table.get_id("i3"), Some(168));
+        assert_eq!(table.get_id("ao3"), Some(119));
+        assert_eq!(table.get_id("sh"), Some(251));
+        assert_eq!(table.get_id("ir4"), Some(214));
+        assert_eq!(table.get_id("j"), Some(221));
+        assert_eq!(table.get_id("ie4"), Some(194));
     }
 
     #[test]
     fn test_symbol_table_len() {
         let table = SymbolTable::new();
-        assert!(table.len() > 0);
+        assert_eq!(table.len(), 732);
     }
 }
