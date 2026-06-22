@@ -178,11 +178,11 @@ impl SoVITSModel {
     /// # Arguments
     /// * `semantic_tokens` - GPT-generated semantic token IDs
     /// * `text_tokens` - Phoneme IDs for target text
-    /// * `ref_audio_mel` - Optional reference audio STFT magnitude [1, 1025, time]
+    /// * `ref_audio_mel` - Optional reference STFT magnitude [1, 704, time] (first 704 of 1025 bins)
     /// * `noise_scale` - Sampling randomness (Python default: 0.5, higher = more variation)
     ///
     /// The pipeline ALWAYS uses enc_p (text-driven path) for synthesis.
-    /// When ref_audio_mel is provided, it is passed through enc_q to compute
+    /// When ref_audio_mel is provided, it is fed to ref_enc (MelStyleEncoder) to compute
     /// the speaker embedding (ge) via mean-pooling, which conditions enc_p.
     pub fn synthesize(
         &self,
@@ -207,9 +207,9 @@ impl SoVITSModel {
         let text = Tensor::from_vec(text_vec, (1, text_tokens.len()), &self.device)?;
 
         // Compute speaker embedding using ref_enc (MelStyleEncoder)
-        // Python: ge = self.ref_enc(refer * refer_mask, refer_mask)
+        // Python: ge = self.ref_enc(refer[:, :704] * refer_mask, refer_mask)
         let ge = if let Some(mel) = ref_audio_mel {
-            // Use the full mel spectrogram as input (1025 channels)
+            // Caller must pre-truncate to 704 bins: mel[:, :704, :]
             let mel_in = mel.clone();
 
             // Build refer_mask from time dimension (all valid since we have full audio)
@@ -249,7 +249,6 @@ impl SoVITSModel {
         )?;
 
         // Sample from N(m, exp(logs)) to get latent z_p (matching Python: noise_scale=0.5)
-        // enc_p.forward() already clamps logs to [-5.0, 2.0], no additional clamping needed
         let noise = self.sample_noise(&m_p)?;
         let logs_exp = logs_p.exp()?;
         let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(&Tensor::full(noise_scale, m_p.dims(), &self.device)?)?)?;
@@ -464,7 +463,7 @@ impl SoVITSModel {
                         let std_f = std as f64;
                         let min_f = min as f64;
                         let max_f = max as f64;
-                        println!("  {}: {:?} mean={:.4} std={:.4} min={:.4} max={:.4}",
+                        tracing::debug!("  {}: {:?} mean={:.4} std={:.4} min={:.4} max={:.4}",
                             name, dims, mean_f, std_f, min_f, max_f);
                     }
                 }

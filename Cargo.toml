@@ -57,6 +57,7 @@ ort = { version = "2.0.0-rc.12", features = ["cuda", "half"], optional = true }
 hound = "3.5"                    # WAV I/O
 symphonia = { version = "0.5", features = ["all"] }
 rustfft = "6.1"                  # FFT for mel spectrogram extraction
+soxr = "0.6"                     # libsoxr bindings — exact match to librosa's soxr_hq
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -153,6 +154,12 @@ path = "examples/check_phonemes.rs"
 name = "sovits_audio_test"
 path = "examples/sovits_audio_test.rs"
 
+[[example]]
+name = "compare_stages"
+path = "examples/compare_stages.rs"
+required-features = ["cuda", "onnx"]
+
 [[bench]]
 name = "inference_bench"
 harness = false
+

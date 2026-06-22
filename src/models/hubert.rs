@@ -139,43 +139,70 @@ impl HubertModel {
             .map_err(|e| crate::Error::AudioError(format!("Failed to open audio: {}", e)))?;
 
         let spec = reader.spec();
-        let samples: Vec<f32> = match spec.sample_format {
-            hound::SampleFormat::Int => {
-                reader.samples::<i16>()
+        tracing::debug!("HuBERT load_audio sr={}, channels={}, bits={}", spec.sample_rate, spec.channels, spec.bits_per_sample);
+
+        // Load as float32, mixing down to mono if needed
+        let all_samples: Vec<f32> = match spec.sample_format {
+            hound::SampleFormat::Int => match spec.bits_per_sample {
+                32 => reader.samples::<i32>()
+                    .filter_map(|s| s.ok())
+                    .map(|s| s as f32 / i32::MAX as f32)
+                    .collect(),
+                _ => reader.samples::<i16>()
                     .filter_map(|s| s.ok())
                     .map(|s| s as f32 / i16::MAX as f32)
-                    .collect()
-            }
-            hound::SampleFormat::Float => {
-                reader.samples::<f32>()
-                    .filter_map(|s| s.ok())
-                    .collect()
-            }
+                    .collect(),
+            },
+            hound::SampleFormat::Float => reader.samples::<f32>()
+                .filter_map(|s| s.ok())
+                .collect(),
+        };
+
+        // Mix down to mono by averaging channels
+        let channels = spec.channels as usize;
+        let samples: Vec<f32> = if channels > 1 {
+            all_samples.chunks_exact(channels)
+                .map(|ch| ch.iter().sum::<f32>() / channels as f32)
+                .collect()
+        } else {
+            all_samples
         };
 
         if spec.sample_rate != self.sampling_rate {
-            Ok(self.resample(&samples, spec.sample_rate, self.sampling_rate))
+            // Resample with sinc filter then add Python's 0.6s silence padding
+            let mut resampled = self.resample_sinc(&samples, spec.sample_rate, self.sampling_rate)?;
+            // Python: wav16k = np.concatenate([wav16k, np.zeros(int(sr * 0.6))])
+            let pad = (self.sampling_rate as f32 * 0.6) as usize;
+            resampled.resize(resampled.len() + pad, 0.0);
+            Ok(resampled)
         } else {
+            // Already at target rate — assume caller pre-processed (including silence if needed)
             Ok(samples)
         }
     }
 
+    /// Resample using libsoxr (HQ quality), matching librosa's default resampler exactly.
     #[cfg(feature = "onnx")]
-    fn resample(&self, samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
-        let ratio = from_rate as f64 / to_rate as f64;
-        let new_len = (samples.len() as f64 / ratio) as usize;
+    fn resample_sinc(&self, samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>> {
+        use soxr::{Soxr, format::Mono};
 
-        (0..new_len)
-            .map(|i| {
-                let pos = (i as f64 * ratio) as usize;
-                let frac = (i as f64 * ratio) - pos as f64;
-                if pos + 1 < samples.len() {
-                    (samples[pos] * (1.0 - frac as f32)) + (samples[pos + 1] * frac as f32)
-                } else {
-                    samples.get(pos).copied().unwrap_or(0.0)
-                }
-            })
-            .collect()
+        let ratio = to_rate as f64 / from_rate as f64;
+        let out_capacity = (samples.len() as f64 * ratio).ceil() as usize + 64;
+        let mut output = vec![0.0f32; out_capacity];
+
+        let mut resampler = Soxr::<Mono<f32>>::new(from_rate as f64, to_rate as f64)
+            .map_err(|e| crate::Error::AudioError(format!("soxr init: {}", e)))?;
+
+        let proc = resampler.process(samples, &mut output)
+            .map_err(|e| crate::Error::AudioError(format!("soxr process: {}", e)))?;
+
+        let mut tail = vec![0.0f32; out_capacity];
+        let tail_frames = resampler.drain(&mut tail)
+            .map_err(|e| crate::Error::AudioError(format!("soxr drain: {}", e)))?;
+
+        output.truncate(proc.output_frames);
+        output.extend_from_slice(&tail[..tail_frames]);
+        Ok(output)
     }
 
     pub fn device(&self) -> &str {

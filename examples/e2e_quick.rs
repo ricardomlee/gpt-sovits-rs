@@ -36,39 +36,50 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let input_text = "你好世界";
-    let ref_audio = "/home/ric/gpt-sovits/test_zh.wav";
+    let ref_audio = "/home/ric/gpt-sovits-rs/test_zh_py_wav16k.wav";  // Python's exact wav16k+silence
+    let ref_text = "先帝创业未半而中道崩殂";  // transcription of reference audio
 
     let options = InferenceOptions::builder()
         .top_k(15)
-        .top_p(0.95)
-        .temperature(0.8)
+        .top_p(1.0)
+        .temperature(1.0)
         .language(Language::Chinese)
         .max_tokens(200)
         .build();
 
     println!("\nInput: \"{}\"", input_text);
     println!("Reference: {}", ref_audio);
+    println!("Ref text: \"{}\"", ref_text);
     println!("Max GPT tokens: 200\n");
 
+    // Test both paths and compare
     let start = std::time::Instant::now();
-    let audio = pipeline.inference(input_text, ref_audio, "", &options)?;
-    let elapsed = start.elapsed();
+    let audio = pipeline.inference(input_text, ref_audio, ref_text, &options)?;
+    let t1 = start.elapsed();
+
+    let start2 = std::time::Instant::now();
+    let audio_kv = pipeline.inference_kv_cache(input_text, ref_audio, ref_text, &options)?;
+    let t2 = start2.elapsed();
 
     println!("\n=== Results ===");
-    println!("Generated {} samples ({:.2}s at {} Hz)",
-        audio.samples.len(), audio.duration(), audio.sample_rate);
-    println!("Total inference time: {:.2?}", elapsed);
+    println!("inference()         {:>4} tokens, {:.2}s audio, {:.2?} time",
+        audio.samples.len() / (audio.sample_rate as usize / 25),
+        audio.duration(), t1);
+    println!("inference_kv_cache() {:>4} tokens, {:.2}s audio, {:.2?} time",
+        audio_kv.samples.len() / (audio_kv.sample_rate as usize / 25),
+        audio_kv.duration(), t2);
 
-    let rms = (audio.samples.iter().map(|s| s * s).sum::<f32>() / audio.samples.len() as f32).sqrt();
-    let min_v = audio.samples.iter().cloned().fold(f32::INFINITY, f32::min);
-    let max_v = audio.samples.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let nz = audio.samples.iter().filter(|&&s| s.abs() > 1e-6).count();
-    println!("Audio - RMS: {:.6}, Min: {:.6}, Max: {:.6}", rms, min_v, max_v);
-    println!("Non-zero samples: {}/{} ({:.1}%)", nz, audio.samples.len(), nz as f64 * 100.0 / audio.samples.len() as f64);
+    let rms1 = (audio.samples.iter().map(|s| s * s).sum::<f32>() / audio.samples.len() as f32).sqrt();
+    let rms2 = (audio_kv.samples.iter().map(|s| s * s).sum::<f32>() / audio_kv.samples.len() as f32).sqrt();
+    println!("RMS: inference={:.4}, inference_kv_cache={:.4}", rms1, rms2);
 
     let output_path = "out_e2e_gpu_full.wav";
     save_wav(&audio, output_path)?;
-    println!("Saved to: {}", output_path);
+    println!("Saved inference() → {}", output_path);
+
+    let output_path_kv = "out_e2e_kv.wav";
+    save_wav(&audio_kv, output_path_kv)?;
+    println!("Saved inference_kv_cache() → {}", output_path_kv);
 
     println!("\n[OK] Full GPU pipeline works!");
     Ok(())

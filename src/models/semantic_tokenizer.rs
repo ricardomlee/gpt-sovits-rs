@@ -47,9 +47,10 @@ impl SemanticTokenizer {
             1  // 50hz mode
         };
 
-        let padding = weight_dims.get(2).map(|&k| k / 2).unwrap_or(0);
+        // Python: nn.Conv1d(ssl_dim, ssl_dim, 2, stride=2) uses default padding=0
+        let padding = 0;
 
-        eprintln!("[SemanticTokenizer] ssl_weight={:?}, codebook={:?}, stride={}",
+        tracing::debug!("[SemanticTokenizer] ssl_weight={:?}, codebook={:?}, stride={}",
             ssl_weight.dims(), codebook.dims(), stride);
 
         let config = Conv1dConfig {

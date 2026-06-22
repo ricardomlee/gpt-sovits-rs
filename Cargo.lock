@@ -1364,6 +1364,7 @@ dependencies = [
  "safetensors 0.4.5",
  "serde",
  "serde_json",
+ "soxr",
  "symphonia",
  "tempfile",
  "thiserror 2.0.18",
@@ -1827,6 +1828,15 @@ dependencies = [
  "libc",
  "plain",
  "redox_syscall 0.7.3",
+]
+
+[[package]]
+name = "libsoxr-sys"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7cffdc8b3b64759d2e95e3236fa6bf85fef226bf57023fa9273ec60edea8fbce"
+dependencies = [
+ "pkg-config",
 ]
 
 [[package]]
@@ -3060,6 +3070,17 @@ dependencies = [
  "byteorder",
  "libc",
  "winapi",
+]
+
+[[package]]
+name = "soxr"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d3ca6bc65602daad89c3217255ff89c4abbe489b9dd3e56c66aa16d1addac979"
+dependencies = [
+ "bitflags 2.11.0",
+ "bytemuck",
+ "libsoxr-sys",
 ]
 
 [[package]]

@@ -9,13 +9,13 @@ use crate::utils::{StateDict, Embedding, Linear, LayerNorm, KvCacheManager};
 /// Multi-head attention mechanism
 #[derive(Debug, Clone)]
 pub struct MultiHeadAttention {
-    wq: Linear,
-    wk: Linear,
-    wv: Linear,
-    wo: Linear,
-    n_heads: usize,
-    head_dim: usize,
-    scale: f64,
+    pub wq: Linear,
+    pub wk: Linear,
+    pub wv: Linear,
+    pub wo: Linear,
+    pub n_heads: usize,
+    pub head_dim: usize,
+    pub scale: f64,
 }
 
 impl MultiHeadAttention {
@@ -84,8 +84,10 @@ impl MultiHeadAttention {
         let attn_output = attn_probs.matmul(&v_contiguous)?;
 
         // Concatenate heads: [batch, seq_len, hidden_size]
+        // Must call contiguous() after transpose since reshape requires contiguous layout
         let attn_output = attn_output
             .transpose(1, 2)?
+            .contiguous()?
             .reshape((batch_size, seq_len, self.n_heads * self.head_dim))?;
 
         // Output projection
@@ -174,9 +176,10 @@ impl MultiHeadAttention {
         let v_contiguous = v.contiguous()?;
         let attn_output = attn_probs.matmul(&v_contiguous)?;
 
-        // Concatenate heads
+        // Concatenate heads (contiguous needed before reshape after transpose)
         let attn_output = attn_output
             .transpose(1, 2)?
+            .contiguous()?
             .reshape((batch_size, seq_len, self.n_heads * self.head_dim))?;
 
         // Output projection
@@ -215,10 +218,10 @@ impl FeedForward {
 /// Transformer block
 #[derive(Debug, Clone)]
 pub struct TransformerBlock {
-    attention: MultiHeadAttention,
-    feed_forward: FeedForward,
-    attn_norm: LayerNorm,
-    ffn_norm: LayerNorm,
+    pub attention: MultiHeadAttention,
+    pub feed_forward: FeedForward,
+    pub attn_norm: LayerNorm,
+    pub ffn_norm: LayerNorm,
 }
 
 impl TransformerBlock {
@@ -227,18 +230,11 @@ impl TransformerBlock {
     }
 
     pub fn forward(&self, x: &Tensor, mask: Option<&Tensor>) -> Result<Tensor> {
-        // Post-norm architecture (matching Python)
+        // Post-LN: x = norm1(x + attn(x)), x = norm2(x + ff(x)) — matches Python T2SBlock
         let attn_output = self.attention.forward(x, mask)?;
-        // Residual connection
-        let x = x.add(&attn_output)?;
-        // Normalize after residual
-        let x = self.attn_norm.forward(&x)?;
-
+        let x = self.attn_norm.forward(&x.add(&attn_output)?)?;
         let ff_output = self.feed_forward.forward(&x)?;
-        // Residual connection
-        let x = x.add(&ff_output)?;
-        // Normalize after FFN residual
-        Ok(self.ffn_norm.forward(&x)?)
+        Ok(self.ffn_norm.forward(&x.add(&ff_output)?)?)
     }
 
     /// Forward with KV cache for inference
@@ -249,18 +245,11 @@ impl TransformerBlock {
         cache: Option<&mut crate::utils::KvCache>,
         use_cache: bool,
     ) -> Result<Tensor> {
-        // Post-norm architecture (matching Python)
+        // Post-LN: x = norm1(x + attn(x)), x = norm2(x + ff(x))
         let attn_output = self.attention.forward_kv(x, mask, cache, use_cache)?;
-        // Residual connection
-        let x = x.add(&attn_output)?;
-        // Normalize after residual
-        let x = self.attn_norm.forward(&x)?;
-
+        let x = self.attn_norm.forward(&x.add(&attn_output)?)?;
         let ff_output = self.feed_forward.forward(&x)?;
-        // Residual connection
-        let x = x.add(&ff_output)?;
-        // Normalize after FFN residual
-        Ok(self.ffn_norm.forward(&x)?)
+        Ok(self.ffn_norm.forward(&x.add(&ff_output)?)?)
     }
 
     /// Forward with debug intermediates: returns (attn_out, norm1_out, linear1_out, relu_out, final_out)
@@ -269,15 +258,27 @@ impl TransformerBlock {
         x: &Tensor,
         mask: Option<&Tensor>,
     ) -> Result<(Tensor, Tensor, Tensor, Tensor, Tensor)> {
+        // Post-LN: attn on raw x, norm1 after residual
         let attn_output = self.attention.forward(x, mask)?;
-        let x_residual = x.add(&attn_output)?;
-        let norm1_out = self.attn_norm.forward(&x_residual)?;
+        let norm1_out = self.attn_norm.forward(&x.add(&attn_output)?)?;
         let linear1_out = self.feed_forward.linear1_forward(&norm1_out)?;
         let relu_out = linear1_out.relu()?;
         let ffn_out = self.feed_forward.linear2_forward(&relu_out)?;
-        let x_mlp = norm1_out.add(&ffn_out)?;
-        let final_out = self.ffn_norm.forward(&x_mlp)?;
+        let final_out = self.ffn_norm.forward(&norm1_out.add(&ffn_out)?)?;
         Ok((attn_output, norm1_out, linear1_out, relu_out, final_out))
+    }
+
+    /// Forward debug with Q,K,V projections and attention output exposed
+    pub fn forward_debug_qkv(&self, x: &Tensor, mask: Option<&Tensor>) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
+        // Post-LN: QKV on raw x
+        let q_raw = self.attention.wq.forward(x)?;
+        let k_raw = self.attention.wk.forward(x)?;
+        let v_raw = self.attention.wv.forward(x)?;
+        let attn_output = self.attention.forward(x, mask)?;
+        let x_after_attn = self.attn_norm.forward(&x.add(&attn_output)?)?;
+        let ffn_out = self.feed_forward.forward(&x_after_attn)?;
+        let final_out = self.ffn_norm.forward(&x_after_attn.add(&ffn_out)?)?;
+        Ok((q_raw, k_raw, v_raw, final_out))
     }
 }
 
@@ -548,9 +549,10 @@ mod tests {
 /// Transformer for GPT-SoVITS with fused QKV and SwiGLU
 #[derive(Debug, Clone)]
 pub struct TransformerGPTSoVITS {
+    #[allow(dead_code)]
     pub config: TransformerConfig,
     token_embedding: Embedding,
-    layers: Vec<TransformerBlock>,
+    pub layers: Vec<TransformerBlock>,
     device: Device,
 }
 
@@ -578,15 +580,16 @@ impl TransformerGPTSoVITS {
                 .to_dtype(DType::F32)?;
 
             // Split QKV weight into three parts: [hidden, hidden] each
+            // Must call .contiguous() after narrow() to avoid non-contiguous CUDA matmul bugs
             let hidden = config.hidden_size;
-            let q_weight = in_proj_weight.narrow(0, 0, hidden)?;
-            let k_weight = in_proj_weight.narrow(0, hidden, hidden)?;
-            let v_weight = in_proj_weight.narrow(0, hidden * 2, hidden)?;
+            let q_weight = in_proj_weight.narrow(0, 0, hidden)?.contiguous()?;
+            let k_weight = in_proj_weight.narrow(0, hidden, hidden)?.contiguous()?;
+            let v_weight = in_proj_weight.narrow(0, hidden * 2, hidden)?.contiguous()?;
 
             // Split QKV bias into three parts
-            let q_bias = in_proj_bias.narrow(0, 0, hidden)?;
-            let k_bias = in_proj_bias.narrow(0, hidden, hidden)?;
-            let v_bias = in_proj_bias.narrow(0, hidden * 2, hidden)?;
+            let q_bias = in_proj_bias.narrow(0, 0, hidden)?.contiguous()?;
+            let k_bias = in_proj_bias.narrow(0, hidden, hidden)?.contiguous()?;
+            let v_bias = in_proj_bias.narrow(0, hidden * 2, hidden)?.contiguous()?;
 
             // Create Linear weights manually
             let wq = Linear::new(q_weight, Some(q_bias));
@@ -696,18 +699,12 @@ impl TransformerGPTSoVITS {
     ) -> Result<Tensor> {
         let mut x = embeddings.clone();
 
-        // Use provided mask or create causal mask
-        let causal_mask = if let Some(m) = mask {
-            m.clone()
-        } else {
-            let (_, seq_len, _) = embeddings.dims3()?;
-            Self::create_causal_mask(seq_len, &self.device)?
-        };
-
-        // Apply transformer layers with KV cache
+        // Pass mask through as-is:
+        // - Some(mask): used for prefill with hybrid/causal mask
+        // - None: single-token decode — new token attends to ALL cached K/V (no masking needed)
         for (layer_idx, layer) in self.layers.iter().enumerate() {
             let cache = kv_cache_manager.get_or_create(layer_idx);
-            x = layer.forward_kv(&x, Some(&causal_mask), Some(cache), true)?;
+            x = layer.forward_kv(&x, mask, Some(cache), true)?;
         }
 
         Ok(x)

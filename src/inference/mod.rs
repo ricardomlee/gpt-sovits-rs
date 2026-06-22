@@ -140,10 +140,14 @@ impl Pipeline {
         Ok(())
     }
 
-    /// Load SoVITS model
+    /// Load SoVITS model (also initializes semantic tokenizer from same weights)
     pub fn load_sovits<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let model = SoVITSModel::load_with_device(path.as_ref().to_str().unwrap(), &self.device)?;
+        let path_str = path.as_ref().to_str().unwrap();
+        let model = SoVITSModel::load_with_device(path_str, &self.device)?;
         self.sovits_model = Some(model);
+        // Semantic tokenizer shares the same quantizer weights
+        let tokenizer = SemanticTokenizer::load_with_device(path_str, &self.device)?;
+        self.semantic_tokenizer = Some(tokenizer);
         Ok(())
     }
 
@@ -232,7 +236,7 @@ impl Pipeline {
         &mut self,
         text: &str,
         reference_audio: P,
-        _reference_text: &str,  // TODO: Use for prosody alignment in future
+        reference_text: &str,
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
         // Validate models are loaded
@@ -243,8 +247,20 @@ impl Pipeline {
             Error::ModelLoadError("SoVITS model not loaded".to_string())
         })?;
 
-        // Step 1: Process text through frontend to get phoneme IDs
-        let phoneme_ids = self.text_frontend.process(text, options.language)?;
+        // Step 1: Process target text → phoneme IDs + word2ph
+        let (target_phoneme_ids, target_word2ph) = self.text_frontend.process_with_word2ph(text, options.language)?;
+        tracing::debug!("target word2ph ({} entries): {:?}", target_word2ph.len(), &target_word2ph[..target_word2ph.len().min(15)]);
+
+        // Step 1b: Process reference text (if provided) → ref phoneme IDs + word2ph
+        let (ref_phoneme_ids, ref_word2ph) = if !reference_text.is_empty() {
+            self.text_frontend.process_with_word2ph(reference_text, options.language)?
+        } else {
+            (vec![], vec![])
+        };
+
+        // Concatenate: [ref_phonemes + target_phonemes]
+        let phoneme_ids: Vec<usize> = ref_phoneme_ids.iter().chain(target_phoneme_ids.iter()).cloned().collect();
+        tracing::debug!("phoneme_ids: ref={}, target={}, total={}", ref_phoneme_ids.len(), target_phoneme_ids.len(), phoneme_ids.len());
 
         // Step 2: Extract Hubert features from reference audio
         let hubert_features = if let Some(hubert) = &mut self.hubert_model {
@@ -263,18 +279,35 @@ impl Pipeline {
             None
         };
 
-        // Step 3: Extract BERT features from text
-        let bert_features = if let Some(bert) = &mut self.bert_model {
-            match bert.extract(text) {
-                Ok(features) => {
-                    let features = features.to_device(&self.device).unwrap_or(features);
-                    tracing::info!("Extracted BERT features: {:?}", features.dims());
-                    Some(features)
+        // Step 3: Extract and align BERT features
+        // If ref_text provided: align ref+target separately then concatenate (matches Python's bert = cat([bert1, bert2], 1))
+        let combined_bert = if let Some(bert) = &mut self.bert_model {
+            let has_ref = !ref_phoneme_ids.is_empty();
+            let target_bert = bert.extract(text).ok()
+                .and_then(|f| f.to_device(&self.device).ok().or(Some(f)));
+            let ref_bert = if has_ref {
+                bert.extract(reference_text).ok()
+                    .and_then(|f| f.to_device(&self.device).ok().or(Some(f)))
+            } else {
+                None
+            };
+            // Pre-align both to phone level using GPT's bert_proj and word2ph
+            let target_aligned = target_bert.as_ref().and_then(|tb| {
+                gpt.project_and_align_bert(tb, &target_word2ph, target_phoneme_ids.len()).ok()
+            });
+            let ref_aligned = if has_ref {
+                ref_bert.as_ref().and_then(|rb| {
+                    gpt.project_and_align_bert(rb, &ref_word2ph, ref_phoneme_ids.len()).ok()
+                })
+            } else {
+                None
+            };
+            match (ref_aligned, target_aligned) {
+                (Some(ra), Some(ta)) => {
+                    candle_core::Tensor::cat(&[&ra, &ta], 1).ok()
                 }
-                Err(e) => {
-                    tracing::warn!("Failed to extract BERT features: {}", e);
-                    None
-                }
+                (None, Some(ta)) => Some(ta),
+                _ => None,
             }
         } else {
             None
@@ -283,13 +316,11 @@ impl Pipeline {
         // Step 4: Extract prompt tokens from reference audio (reusing Hubert features)
         let prompt_tokens = if let Some(tokenizer) = &self.semantic_tokenizer {
             if let Some(ref hubert_feats) = hubert_features {
-                // Transpose hubert features: [1, T, 768] -> [1, 768, T]
                 let hubert_t = hubert_feats.transpose(1, 2)?;
-                // Move to same device as the rest of the pipeline
                 let hubert_t = hubert_t.to_device(&self.device)?;
                 match tokenizer.extract(&hubert_t) {
                     Ok(tokens) => {
-                        tracing::info!("Extracted {} prompt tokens from reference audio", tokens.len());
+                        tracing::debug!("Extracted {} prompt tokens", tokens.len());
                         Some(tokens)
                     }
                     Err(e) => {
@@ -306,34 +337,36 @@ impl Pipeline {
 
         // Step 5: Generate semantic tokens with GPT
         let semantic_tokens = if let Some(ref prompts) = prompt_tokens {
-            gpt.generate_with_prompts(
+            gpt.generate_with_prompts_aligned_bert(
                 &phoneme_ids,
                 prompts,
-                bert_features.as_ref(),
+                combined_bert.as_ref(),
                 options.top_k,
                 options.top_p,
                 options.temperature,
                 options.repetition_penalty,
+                options.max_tokens,
             )?
         } else {
             gpt.generate_with_features(
                 &phoneme_ids,
-                bert_features.as_ref(),
+                combined_bert.as_ref(),
                 hubert_features.as_ref(),
                 options.top_k,
                 options.top_p,
                 options.temperature,
                 options.repetition_penalty,
+                options.max_tokens,
             )?
         };
 
         tracing::info!("Generated {} semantic tokens", semantic_tokens.len());
 
-        // Step 5: Extract mel spectrogram from reference audio for speaker conditioning
+        // Step 6: Extract mel spectrogram from reference audio for speaker conditioning
         let ref_mel = self.extract_ref_mel(reference_audio.as_ref(), sovits)?;
 
-        // Step 6: Synthesize audio with SoVITS (directly outputs waveform)
-        let audio_samples = sovits.synthesize(&semantic_tokens, &phoneme_ids, ref_mel.as_ref(), 0.5)?;
+        // Step 7: Synthesize audio with SoVITS — use only TARGET phoneme IDs
+        let audio_samples = sovits.synthesize(&semantic_tokens, &target_phoneme_ids, ref_mel.as_ref(), 0.5)?;
 
         // Create audio buffer
         let audio = AudioBuffer::new(
@@ -347,15 +380,18 @@ impl Pipeline {
         Ok(audio)
     }
 
-    /// Run TTS inference with KV cache optimization
+    /// Run TTS inference with KV cache optimization.
+    ///
+    /// Functionally identical to `inference()` but uses a prefill+single-token-decode
+    /// strategy: the full text+prompt sequence is processed in one forward pass to fill
+    /// the KV cache, and each subsequent audio token only runs a single-token forward.
     pub fn inference_kv_cache<P: AsRef<Path>>(
         &mut self,
         text: &str,
         reference_audio: P,
-        _reference_text: &str,
+        reference_text: &str,
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
-        // Validate models are loaded
         let gpt = self.gpt_model.as_ref().ok_or_else(|| {
             Error::ModelLoadError("GPT model not loaded".to_string())
         })?;
@@ -363,56 +399,116 @@ impl Pipeline {
             Error::ModelLoadError("SoVITS model not loaded".to_string())
         })?;
 
-        // Step 1: Process text through frontend to get phoneme IDs
-        let phoneme_ids = self.text_frontend.process(text, options.language)?;
+        // Step 1: Process target text
+        let (target_phoneme_ids, target_word2ph) =
+            self.text_frontend.process_with_word2ph(text, options.language)?;
 
-        // Step 2: Extract Hubert features from reference audio
+        // Step 1b: Process reference text
+        let (ref_phoneme_ids, ref_word2ph) = if !reference_text.is_empty() {
+            self.text_frontend.process_with_word2ph(reference_text, options.language)?
+        } else {
+            (vec![], vec![])
+        };
+
+        // Concatenate [ref_phonemes + target_phonemes]
+        let phoneme_ids: Vec<usize> = ref_phoneme_ids
+            .iter()
+            .chain(target_phoneme_ids.iter())
+            .cloned()
+            .collect();
+        tracing::debug!("kv_cache phoneme_ids: ref={}, target={}, total={}",
+            ref_phoneme_ids.len(), target_phoneme_ids.len(), phoneme_ids.len());
+
+        // Step 2: Extract HuBERT features
         let hubert_features = if let Some(hubert) = &mut self.hubert_model {
             match hubert.extract(reference_audio.as_ref()) {
-                Ok(features) => Some(features),
-                Err(_) => None
+                Ok(f) => {
+                    let f = f.to_device(&self.device).unwrap_or(f);
+                    tracing::info!("HuBERT features: {:?}", f.dims());
+                    Some(f)
+                }
+                Err(e) => { tracing::warn!("HuBERT extraction failed: {}", e); None }
             }
         } else {
             None
         };
 
-        // Step 3: Extract BERT features from text
-        let bert_features = if let Some(bert) = &mut self.bert_model {
-            match bert.extract(text) {
-                Ok(features) => Some(features),
-                Err(_) => None
+        // Step 3: Extract and align BERT (ref + target separately, then cat)
+        let combined_bert = if let Some(bert) = &mut self.bert_model {
+            let has_ref = !ref_phoneme_ids.is_empty();
+            let target_bert = bert.extract(text).ok()
+                .and_then(|f| f.to_device(&self.device).ok().or(Some(f)));
+            let ref_bert = if has_ref {
+                bert.extract(reference_text).ok()
+                    .and_then(|f| f.to_device(&self.device).ok().or(Some(f)))
+            } else {
+                None
+            };
+            let target_aligned = target_bert.as_ref().and_then(|tb| {
+                gpt.project_and_align_bert(tb, &target_word2ph, target_phoneme_ids.len()).ok()
+            });
+            let ref_aligned = if has_ref {
+                ref_bert.as_ref().and_then(|rb| {
+                    gpt.project_and_align_bert(rb, &ref_word2ph, ref_phoneme_ids.len()).ok()
+                })
+            } else {
+                None
+            };
+            match (ref_aligned, target_aligned) {
+                (Some(ra), Some(ta)) => candle_core::Tensor::cat(&[&ra, &ta], 1).ok(),
+                (None, Some(ta)) => Some(ta),
+                _ => None,
             }
         } else {
             None
         };
 
-        // Step 4: Generate semantic tokens with GPT using KV cache
-        let semantic_tokens = gpt.generate_with_features_kv_cache(
-            &phoneme_ids,
-            bert_features.as_ref(),
-            hubert_features.as_ref(),
-            options.top_k,
-            options.top_p,
-            options.temperature,
-            options.repetition_penalty,
-        )?;
+        // Step 4: Extract VQ prompt tokens from HuBERT features
+        let prompt_tokens = if let Some(tokenizer) = &self.semantic_tokenizer {
+            if let Some(ref hf) = hubert_features {
+                let hf_t = hf.transpose(1, 2)?.to_device(&self.device)?;
+                tokenizer.extract(&hf_t).ok()
+                    .map(|t| { tracing::debug!("Prompt tokens: {}", t.len()); t })
+            } else { None }
+        } else { None };
 
-        tracing::info!("Generated {} semantic tokens (with KV cache)", semantic_tokens.len());
+        // Step 5: Generate with KV-cache prefill strategy
+        let semantic_tokens = if let Some(ref prompts) = prompt_tokens {
+            gpt.generate_with_prompts_aligned_bert_kv_cache(
+                &phoneme_ids,
+                prompts,
+                combined_bert.as_ref(),
+                options.top_k,
+                options.top_p,
+                options.temperature,
+                options.repetition_penalty,
+                options.max_tokens,
+            )?
+        } else {
+            // Fallback: no prompt tokens → use non-cached path
+            gpt.generate_with_features(
+                &phoneme_ids,
+                combined_bert.as_ref(),
+                hubert_features.as_ref(),
+                options.top_k,
+                options.top_p,
+                options.temperature,
+                options.repetition_penalty,
+                options.max_tokens,
+            )?
+        };
 
-        // Step 5: Extract mel spectrogram from reference audio for speaker conditioning
+        tracing::info!("Generated {} semantic tokens (kv_cache)", semantic_tokens.len());
+
+        // Step 6: Reference mel for speaker conditioning
         let ref_mel = self.extract_ref_mel(reference_audio.as_ref(), sovits)?;
 
-        // Step 6: Synthesize audio with SoVITS (directly outputs waveform)
-        let audio_samples = sovits.synthesize(&semantic_tokens, &phoneme_ids, ref_mel.as_ref(), 0.5)?;
+        // Step 7: SoVITS synthesis — target phonemes only
+        let audio_samples = sovits.synthesize(
+            &semantic_tokens, &target_phoneme_ids, ref_mel.as_ref(), 0.5
+        )?;
 
-        // Create audio buffer
-        let audio = AudioBuffer::new(
-            audio_samples,
-            sovits.sampling_rate(),
-            1,
-        );
-
-        Ok(audio)
+        Ok(AudioBuffer::new(audio_samples, sovits.sampling_rate(), 1))
     }
 
     /// Check if pipeline is ready for inference
@@ -462,32 +558,37 @@ impl Pipeline {
             samples
         };
 
-        // Resample to 24kHz if needed
+        // Resample to target sample rate (24kHz) using soxr HQ, matching librosa quality
         let target_sr = sovits.sampling_rate();
         let samples = if spec.sample_rate != target_sr {
+            use soxr::{Soxr, format::Mono};
             let ratio = target_sr as f64 / spec.sample_rate as f64;
-            let new_len = (samples.len() as f64 * ratio) as usize;
-            let mut resampled = vec![0.0f32; new_len];
-            for i in 0..new_len {
-                let src_idx = i as f64 / ratio;
-                let idx = src_idx.floor() as usize;
-                let frac = src_idx - idx as f64;
-                let v0 = samples.get(idx).copied().unwrap_or(0.0);
-                let v1 = samples.get(idx + 1).copied().unwrap_or(0.0);
-                resampled[i] = v0 + (v1 - v0) * frac as f32;
-            }
-            resampled
+            let out_capacity = (samples.len() as f64 * ratio).ceil() as usize + 64;
+            let mut output = vec![0.0f32; out_capacity];
+            let mut resampler = Soxr::<Mono<f32>>::new(spec.sample_rate as f64, target_sr as f64)
+                .map_err(|e| Error::AudioError(format!("soxr init: {}", e)))?;
+            let proc = resampler.process(&samples, &mut output)
+                .map_err(|e| Error::AudioError(format!("soxr process: {}", e)))?;
+            let mut tail = vec![0.0f32; out_capacity];
+            let tail_n = resampler.drain(&mut tail)
+                .map_err(|e| Error::AudioError(format!("soxr drain: {}", e)))?;
+            output.truncate(proc.output_frames);
+            output.extend_from_slice(&tail[..tail_n]);
+            output
         } else {
             samples
         };
 
         // Extract STFT magnitude spectrum matching Python's spectrogram_torch
-        // Model training uses n_fft=2048, hop=512 with center=False + reflect padding
+        // n_fft=2048, hop=640, win=2048, center=False + reflect padding
         let n_fft = 2048;
-        let hop_length = 512;
+        let hop_length = 640;
         let _n_mels = sovits.n_mels();
         let extractor = SpectrogramExtractor::new(target_sr, n_fft, hop_length, _n_mels);
         let stft_mag = extractor.extract_spectrogram_batched(&samples, device)?;
+
+        // Truncate to first 704 frequency bins (matching Python's y[:, :704])
+        let stft_mag = stft_mag.narrow(1, 0, 704)?;
 
         tracing::info!("Extracted reference STFT magnitude: {:?}", stft_mag.dims());
 

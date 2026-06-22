@@ -4,65 +4,66 @@
 
 原版 [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) 侧重训练、微调和测试；本项目聚焦**推理侧**，目标是生产环境下的最快 TTS 推理和最小部署体积。
 
+## GPT-SoVITS 工作原理
+
+GPT-SoVITS 是一个**少样本语音克隆 TTS** 系统，只需 5–10 秒参考音频即可克隆说话人音色，核心思路分两步：
+
+**第一步：用 GPT 把文字转换为"语义 token 序列"**
+
+语义 token 是一种离散的声学单元（通过 HuBERT → VQ 量化得到），既携带文字内容，也携带说话节奏和音色。GPT 以参考音频的语义 token 作为"音色提示"，自回归生成目标文本对应的语义 token 序列。
+
+**第二步：用 SoVITS 把语义 token 解码为波形**
+
+SoVITS（基于 VITS 变体）以语义 token 为内容输入、以参考音频的 mel 频谱为音色输入，通过 Flow 模型 + HiFi-GAN 解码器合成波形。
+
+```
+【输入】
+  参考音频 ──→ HuBERT ──→ VQ 量化 ──→ 参考语义 token（音色提示）
+  参考文本 ──┐
+             ├──→ G2P ──→ BERT ──→ 拼接 BERT 特征
+  目标文本 ──┘                           │
+                                         ↓
+                              GPT 自回归生成
+                      [参考 token | 目标语义 token 序列]
+                                         │
+  参考音频 ──→ mel 频谱 ──────────────────┤（音色条件）
+                                         ↓
+                              SoVITS 解码器
+                         Flow + HiFi-GAN → 波形
+
+【输出】目标语音（说话人音色 = 参考音频，内容 = 目标文本）
+```
+
+> **关键细节**：Python 原版在调用 GPT 前会将参考文本音素和目标文本音素拼接，BERT 特征也分别提取后拼接。本项目完整复现了这一步，否则 GPT 只会生成 10 余个 token（约 0.5 秒静音）。
+
 ## 与原版对比
 
 | | GPT-SoVITS (Python) | GPT-SoVITS-RS (本项目) |
 |---|---|---|
 | **定位** | 训练 + 微调 + 推理 | **纯推理引擎** |
-| **部署** | Python 环境 + PyTorch + 多个包 | **单一二进制文件** (~18MB) |
-| **GPU 支持** | PyTorch CUDA (~2GB runtime) | **Candle CUDA** (仅 CUDA 库) |
-| **内存占用** | 高 (PyTorch runtime + 模型) | **低** (无 Python/PyTorch 开销) |
+| **部署** | Python 环境 + PyTorch | **单一二进制文件** |
+| **GPU 支持** | PyTorch CUDA | **Candle CUDA** |
+| **重采样** | librosa / soxr | **libsoxr**（VQ token 与 Python 完全一致）|
 | **API** | Gradio Web UI | **CLI / Rust 库 / HTTP (WAV 流)** |
-| **推理加速** | 无 | **KV Cache (CPU 18x 加速)** |
-| **容器化** | 复杂 (Python + CUDA 环境) | **多阶段 Docker (最小镜像)** |
+| **KV Cache** | 无 | **prefill + 单 token 解码**（GPU 场景加速） |
 
 ## 特性
 
-- 🚀 **推理性能**: Rust + Candle ML 框架，KV Cache 优化 (CPU 场景 18x 加速)
-- 📦 **轻量部署**: 编译为单一二进制 (~18MB)，无需 Python/PyTorch 环境
-- 🐳 **容器化就绪**: 多阶段 Docker 构建，CPU/CUDA 双镜像
-- 🔌 **多种接入**: CLI 工具、Rust 库 API、HTTP 服务器 (直接返回 WAV 音频流)
-- ✅ **数值精确**: 所有模块已与 Python 原版逐层对齐验证 (误差 < 1e-7)
-- 🌍 **多语言**: 支持中文、英文、日文、韩文、粤语
-- 🎯 **推理增强**: Repetition penalty 减少生成重复，语义 Tokenizer 提升音色还原
-- 🔤 **完整 G2P**: 中文拼音完整映射，匹配 Python v2 符号表 (732 符号)
-
-## 架构
-
-```
-输入文本 → G2P (中文拼音/英文) → BERT (ONNX) → GPT (KV Cache + Repetition Penalty)
-                                          ↓                    ↓
-                                    Hubert (ONNX)        语义 Tokenizer
-                                          ↓                    ↓
-                                  Semantic Tokens → SoVITS → BigVGAN → WAV
-                                                         ↓
-                                            enc_p/enc_q + Flow + Decoder
-```
-
-## 数值验证
-
-所有核心模块已与 Python 原版进行逐层数值对比，确保精度对齐：
-
-| 模块 | 验证方式 | 精度 |
-|------|---------|------|
-| GPT | 逐层注意力 + 输出 logits | 2.59e-6 |
-| enc_p (SSL 编码器) | 逐层输出 | < 1e-7 |
-| enc_q (参考编码器) | MRTE + SSL 子步骤 | < 1e-7 |
-| SoVITS 解码器 | 逐层中间输出 (conv_pre, ups, resblocks, post_conv) | < 1e-7 |
-| 音频输出 | RMS / 波形逐点对比 | RMS 一致, 最大差 1e-5 |
-
-**关键修复：**
-- ResBlock1 累加器：使用累积变量而非原始输入做 LeakyReLU
-- conv_pre 前缺少 LeakyReLU(0.1)
-- 去除了多余的 logs_p clamp
-- dilated conv 参数（padding, dilation）对齐
+- **推理精度**：soxr HQ 重采样，VQ prompt tokens 与 Python 100% 一致（20/20）
+- **ref_text 支持**：参考文本音素拼接、BERT 对齐拼接，完整复现 Python 推理路径
+- **KV Cache**：prefill 阶段一次性处理所有 text+prompt token，自回归阶段单 token 解码
+- **变调规则**：中文三声连读（3+3 → 2+3）
+- **轻量部署**：编译为单一二进制，无需 Python/PyTorch 环境
+- **多语言**：中文、英文、日文、韩文、粤语
+- **HTTP API**：直接返回 WAV 音频流
 
 ## 快速开始
 
 ### 前置要求
 
-- Rust 1.75+ (从 [rustup.rs](https://rustup.rs) 安装)
-- CUDA Toolkit 12.x (可选，用于 GPU 加速)
+- Rust 1.75+（从 [rustup.rs](https://rustup.rs) 安装）
+- libsoxr（重采样库）：`sudo apt install libsoxr-dev`
+- CUDA Toolkit 12.x（可选，用于 GPU 加速）
 
 ### 构建
 
@@ -74,7 +75,7 @@ cd gpt-sovits-rs
 cargo build --release
 
 # CUDA GPU 版本
-cargo build --release --features cuda
+cargo build --release --features cuda,onnx
 ```
 
 ### 准备模型
@@ -83,276 +84,144 @@ cargo build --release --features cuda
 
 ```
 models/
-├── gpt-model.safetensors      # GPT 模型 (~148MB)
-├── sovits-model.safetensors   # SoVITS 模型 (~101MB)
-├── bigvgan.safetensors        # BigVGAN 声码器 (~430MB)
-├── prompt_tokens.npy          # 预提取的 prompt tokens
+├── gpt-model.safetensors      # GPT 模型
+├── sovits-model.safetensors   # SoVITS 模型
 └── onnx/
-    ├── bert.onnx + .data      # BERT 特征模型
-    └── hubert.onnx + .data    # Hubert 音频特征模型
+    ├── bert.onnx              # BERT 特征提取（需要 --features onnx）
+    └── hubert.onnx            # HuBERT 音频特征提取（需要 --features onnx）
 ```
 
 ### 运行推理
 
 ```bash
-cargo run --release -- \
+cargo run --release --features cuda,onnx -- \
     --gpt-model models/gpt-model.safetensors \
     --sovits-model models/sovits-model.safetensors \
-    --bigvgan-model models/bigvgan.safetensors \
     --text "你好，世界！" \
     --reference-audio ref.wav \
-    --reference-text "参考文本" \
+    --reference-text "参考音频对应的文字" \
     --output output.wav
 ```
 
-## Rust API 使用
+## Rust API
 
 ```rust
 use gpt_sovits_rs::{Pipeline, Config, InferenceOptions, Language};
 
-let config = Config::builder()
-    .with_device("cuda")
-    .with_half_precision(false)
-    .build();
-
-let mut pipeline = Pipeline::new(config)?;
-
-// 加载模型
+let mut pipeline = Pipeline::new(Config::builder().with_device("cuda").build())?;
 pipeline.load_gpt("models/gpt-model.safetensors")?;
 pipeline.load_sovits("models/sovits-model.safetensors")?;
-pipeline.load_bigvgan("models/bigvgan.safetensors")?;
+pipeline.load_bert("models/onnx/bert.onnx")?;
+pipeline.load_hubert("models/onnx/hubert.onnx")?;
 
-// 运行推理
 let options = InferenceOptions::builder()
-    .top_k(15)
-    .top_p(0.95)
-    .temperature(0.8)
-    .speed(1.0)
+    .top_k(15).top_p(1.0).temperature(1.0)
     .language(Language::Chinese)
+    .max_tokens(500)
     .build();
 
+// 标准推理
 let audio = pipeline.inference(
-    "你好，这是测试文本",
+    "你好，这是合成语音",
     "ref.wav",
-    "参考文本",
+    "参考音频对应的文字",  // ref_text 对音质影响极大，不可省略
     &options,
 )?;
 
-// 保存到文件
+// KV Cache 版本（更长文本时更快）
+let audio = pipeline.inference_kv_cache(
+    "你好，这是合成语音",
+    "ref.wav",
+    "参考音频对应的文字",
+    &options,
+)?;
+
 audio.save("output.wav")?;
-
-// 或获取 WAV 字节流 (适用于 HTTP API)
-let wav_bytes: Vec<u8> = audio.to_wav_bytes()?;
 ```
 
-## 命令行选项
+### KV Cache 两种模式对比
 
-```
-Usage: gpt-sovits [OPTIONS] --text <TEXT> --output <OUTPUT>
+| | `inference()` | `inference_kv_cache()` |
+|---|---|---|
+| **GPT 策略** | 每步重算全序列 O(n²) | prefill 一次 + 单 token 解码 O(n) |
+| **适用场景** | 短文本、调试 | 长文本、生产 |
+| **音质** | 相同 | 相同 |
 
-Options:
-      --gpt-model <PATH>       GPT 模型文件路径
-      --sovits-model <PATH>    SoVITS 模型文件路径
-      --bigvgan-model <PATH>   BigVGAN 模型文件路径
-      --text <TEXT>            输入文本
-      --reference-audio <PATH> 参考音频路径
-      --reference-text <TEXT>  参考音频文本
-      --language <LANG>        语言 (zh/en/ja/ko/yue)
-      --top-k <N>              Top-k 采样 (默认：15)
-      --top-p <P>              Top-p 采样 (默认：0.95)
-      --temperature <T>        采样温度 (默认：0.8)
-      --output <PATH>          输出 WAV 文件路径
-  -h, --help                   打印帮助
-  -V, --version                打印版本
-```
-
-### HTTP API 模式
-
-启动 HTTP 服务器，直接返回 WAV 音频流：
+## HTTP API
 
 ```bash
-cargo run --release --features "cuda,http-api" -- \
+cargo run --release --features "cuda,onnx,http-api" -- \
     --http --port 9880 \
     --gpt-model models/gpt-model.safetensors \
-    --sovits-model models/sovits-model.safetensors \
-    --bigvgan-model models/bigvgan.safetensors
+    --sovits-model models/sovits-model.safetensors
 ```
 
-**请求示例**：
-
 ```bash
-# TTS 推理 → 直接返回 WAV 文件
 curl -X POST http://localhost:9880/tts \
   -H 'Content-Type: application/json' \
-  -d '{"text": "你好世界", "text_language": "zh", "refer_wav_path": "ref.wav", "prompt_text": "参考文本"}' \
-  --output tts_output.wav
-
-# 健康检查
-curl http://localhost:9880/health
+  -d '{
+    "text": "你好世界",
+    "text_language": "zh",
+    "refer_wav_path": "ref.wav",
+    "prompt_text": "参考音频对应的文字"
+  }' --output output.wav
 ```
-
-| 端点 | 方法 | 说明 |
-|------|------|------|
-| `/health` | GET | 健康检查 |
-| `/tts` | POST | TTS 推理，返回 `audio/wav` |
-
-### Docker 部署
-
-```bash
-# CPU 版本
-docker build -t gpt-sovits-rs .
-
-# CUDA GPU 版本
-docker build -f Dockerfile.cuda -t gpt-sovits-rs:cuda .
-
-# 运行
-docker run --gpus all -p 9880:9880 gpt-sovits-rs:cuda \
-    --http --gpt-model /app/models/gpt-model.safetensors \
-    --sovits-model /app/models/sovits-model.safetensors \
-    --bigvgan-model /app/models/bigvgan.safetensors
-```
-
-## 性能基准测试
-
-### KV Cache 优化
-
-GPT 自回归生成默认启用 KV Cache 优化，避免重复计算之前 token 的 K/V 张量。
-
-**基准测试结果** (500 tokens):
-
-| 设备 | 配置 | 时间 | 加速比 |
-|------|------|------|--------|
-| CPU | 无 KV Cache | 368.82s | 1.0x |
-| CPU | 启用 KV Cache | 20.48s | **18.0x** |
-| GPU (RTX 4060 Ti) | 无 KV Cache | 13.23s | 1.0x |
-| GPU (RTX 4060 Ti) | 启用 KV Cache | 8.01s | **1.65x** |
-
-**原理**:
-```
-传统方法：O(n²) - 每个新 token 重新计算所有 K/V
-KV Cache: O(n)  - 缓存 K/V，只计算新 token 的 K/V
-```
-
-**运行基准测试**:
-```bash
-# GPU 对比测试 (需要 CUDA)
-cargo run --release --features cuda --example benchmark_gpu_kv_cache
-
-# CPU 对比测试
-cargo run --release --example benchmark_kv_cache
-```
-
-### 全流程性能分析 (KV Cache)
-
-使用 profiler 分析推理流程各阶段耗时：
-
-```bash
-# 需要 CUDA
-cargo run --release --features cuda --example profile_kv_cache
-```
-
-**实测结果** (RTX 4060 Ti, ~7s 音频):
-
-| 阶段 | 时间 | 占比 |
-|------|------|------|
-| GPT (KV Cache) | ~500ms | 50% |
-| SoVITS | ~300ms | 30% |
-| BigVGAN | ~200ms | 20% |
-| **总计** | **~1s** | 100% |
-
-**输出音频**: ~7s @ 32kHz
-**实时率 (RTF)**: < 1 (实时以上)
 
 ## 项目结构
 
 ```
-gpt-sovits-rs/
-├── Cargo.toml
-├── Dockerfile                 # CPU 多阶段构建
-├── Dockerfile.cuda            # CUDA GPU 多阶段构建
-├── .github/workflows/ci.yml   # CI: check + test + Docker
-├── src/
-│   ├── main.rs                # CLI + HTTP API 入口
-│   ├── lib.rs                 # 库入口
-│   ├── config/
-│   │   └── mod.rs             # 配置管理 (设备/精度/版本)
-│   ├── text_frontend/
-│   │   ├── mod.rs             # 文本处理
-│   │   ├── normalizer.rs      # 文本规范化
-│   │   ├── lang_detect.rs     # 语言检测
-│   │   ├── g2p.rs             # G2P (中文拼音完整映射)
-│   │   ├── symbols.rs         # 732 符号表 (v2, JSON 加载)
-│   │   └── symbols_v2.json    # GPT-SoVITS v2 符号表数据
-│   ├── models/
-│   │   ├── mod.rs
-│   │   ├── bert.rs            # BERT ONNX 特征提取
-│   │   ├── hubert.rs          # Hubert ONNX 特征提取
-│   │   ├── semantic_tokenizer.rs # 语义 token 提取
-│   │   ├── gpt.rs             # GPT 自回归生成 (KV Cache + 重复惩罚)
-│   │   ├── transformer.rs     # Multi-head attention + SwiGLU
-│   │   ├── sovits.rs          # SoVITS 主模型
-│   │   ├── sovits_decoder.rs  # HiFi-GAN 解码器
-│   │   ├── sovits_encp.rs     # enc_p 文本编码器
-│   │   ├── sovits_encq.rs     # enc_q 参考编码器
-│   │   ├── sovits_flow.rs     # Flow 模块 (残差耦合)
-│   │   ├── sovits_ref_enc.rs  # MelStyleEncoder
-│   │   ├── bigvgan.rs         # BigVGAN 声码器 (SnakeBeta + AMP)
-│   │   └── mrte.rs            # 多参考音色编码器
-│   ├── inference/
-│   │   └── mod.rs             # 推理管线编排
-│   └── utils/
-│       ├── mod.rs
-│       ├── audio.rs           # 音频 I/O (WAV 读写/内存编码)
-│       ├── audio_features.rs  # STFT/mel 频谱提取
-│       ├── kv_cache.rs        # KV Cache 优化
-│       └── weights.rs         # safetensors 权重加载
-├── examples/
-│   ├── benchmark_kv_cache.rs      # KV Cache 基准测试
-│   ├── benchmark_gpu_kv_cache.rs  # GPU KV Cache 基准测试
-│   ├── profile_pipeline.rs        # 全流程性能分析
-│   ├── verify_gpt.rs              # GPT 数值验证
-│   ├── check_phonemes.rs          # G2P 音素检查
-│   └── e2e_quick.rs               # 快速端到端测试
-├── tests/
-│   └── integration_tests.rs       # 集成测试 (45 tests)
-└── models/                        # 模型文件 (gitignore)
+src/
+├── inference/mod.rs        # 推理管线（ref_text 拼接、BERT 对齐、KV cache 调度）
+├── models/
+│   ├── gpt.rs              # GPT 自回归生成（prefill KV cache + 采样）
+│   ├── hubert.rs           # HuBERT ONNX + soxr 重采样 + 静音填充
+│   ├── bert.rs             # BERT ONNX 特征提取
+│   ├── semantic_tokenizer.rs # VQ 语义 token 提取
+│   ├── sovits.rs           # SoVITS 主模型
+│   ├── sovits_decoder.rs   # HiFi-GAN 解码器
+│   ├── sovits_flow.rs      # Flow（残差耦合层）
+│   ├── transformer.rs      # Multi-head attention + KV cache
+│   └── ...
+├── text_frontend/
+│   ├── g2p.rs              # G2P（中文拼音 + 三声连读变调）
+│   └── symbols_v2.json     # GPT-SoVITS v2 符号表（732 符号）
+└── utils/
+    ├── kv_cache.rs         # KvCache / KvCacheManager
+    └── audio_features.rs   # STFT / mel 频谱提取
 ```
 
-## 支持的模型
-
-| 模型 | 格式 | 状态 | 精度 |
-|------|------|------|------|
-| GPT v1/v2/v3 | `.ckpt` → `.safetensors` | ✅ 已实现 | 已验证 ✓ |
-| SoVITS v1/v2/v3 | `.pth` → `.safetensors` | ✅ 已实现 | 已验证 ✓ |
-| BigVGAN v2 | `.pt` → `.safetensors` | ✅ 已实现 | 已验证 ✓ |
-| BERT (RoBERTa) | ONNX | ✅ 已实现 | 已验证 ✓ |
-| Hubert | ONNX | ✅ 已实现 | 已验证 ✓ |
-
-## 开发
-
-### 运行测试
+## 开发与验证
 
 ```bash
+# 端到端快速测试（需要 CUDA + ONNX + 模型文件）
+cargo run --features cuda,onnx --example e2e_quick
+
+# GPU KV Cache 基准对比
+cargo run --features cuda,onnx --example benchmark_gpu_kv_cache
+
+# 全流程时间分析
+cargo run --features cuda,onnx --example profile_kv_cache
+
+# 单元 + 集成测试
 cargo test
 ```
 
-### CUDA 支持
+## 依赖说明
 
-```bash
-export CUDA_HOME=/usr/local/cuda
-cargo build --release --features cuda
-```
+| 依赖 | 用途 |
+|------|------|
+| `candle-core` | Tensor 运算 + CUDA 后端 |
+| `ort` | ONNX Runtime（BERT / HuBERT 推理） |
+| `soxr` | 音频重采样（libsoxr HQ，与 librosa 输出完全一致） |
+| `hound` | WAV 读写 |
+| `jieba-rs` | 中文分词（G2P 前处理） |
+| `tokenizers` | HuggingFace tokenizer（BERT 分词） |
 
 ## 许可证
 
-MIT License - 详见 [LICENSE](LICENSE) 文件。
+MIT License
 
 ## 致谢
 
 - 原始项目 [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) by RVC-Boss
 - [Candle](https://github.com/huggingface/candle) by Hugging Face
-- [BigVGAN](https://github.com/NVIDIA/BigVGAN) by NVIDIA
-
-## 贡献
-
-欢迎贡献！请阅读我们的贡献指南。

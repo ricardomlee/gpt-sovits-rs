@@ -48,7 +48,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let start = Instant::now();
     let gpt = pipeline.gpt_model().as_ref().unwrap();
     let semantic_tokens = gpt.generate_with_features(
-        &phoneme_ids, None, None, 5, 0.9, 0.8, 1.35,
+        &phoneme_ids, None, None, 5, 0.9, 0.8, 1.35, 500,
     )?;
     let elapsed = start.elapsed();
     println!("Generated {} tokens in {:.2?}", semantic_tokens.len(), elapsed);
@@ -78,12 +78,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         println!("\n=== SoVITS Inference (with reference audio) ===");
 
         // Extract reference mel via pipeline
-        
+        // Python: filter_length=2048, hop_length=640, sampling_rate=32000, then y[:, :704]
         let device = sovits.device();
-        let audio_data = load_wav(ref_audio, 24000)?;
+        let audio_data = load_wav(ref_audio, sovits.sampling_rate())?;
         use gpt_sovits_rs::utils::SpectrogramExtractor;
-        let mel_extractor = SpectrogramExtractor::new(24000, 2048, 512, sovits.n_mels());
+        let mel_extractor = SpectrogramExtractor::new(sovits.sampling_rate(), 2048, 640, sovits.n_mels());
         let ref_mel = mel_extractor.extract_spectrogram_batched(&audio_data, device)?;
+        let ref_mel = ref_mel.narrow(1, 0, 704).map_err(|e| format!("narrow: {}", e))?;
         println!("Reference STFT magnitude: {:?}", ref_mel.dims());
 
         let start = Instant::now();

@@ -135,6 +135,7 @@ fn run_profile() -> Result<(), Box<dyn std::error::Error>> {
         options.top_p,
         options.temperature,
         1.35,
+        options.max_tokens,
     )?;
     let gpt_time = gpt_start.elapsed();
     timings.push(TimingStats {

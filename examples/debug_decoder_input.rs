@@ -21,7 +21,7 @@ fn main() {
     // GPT generation
     let gpt = pipeline.gpt_model().as_ref().unwrap();
     let semantic_tokens = gpt
-        .generate_with_features(&phoneme_ids, None, None, 5, 0.9, 0.8, 1.35)
+        .generate_with_features(&phoneme_ids, None, None, 5, 0.9, 0.8, 1.35, 500)
         .unwrap();
     println!("GPT: {} semantic tokens", semantic_tokens.len());
 

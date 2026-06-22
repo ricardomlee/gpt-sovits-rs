@@ -8,8 +8,7 @@
 //! - Hubert feature projection for prosody guidance
 //! - MRTE (Multi-Reference Timbre Encoder) for advanced fusion
 
-use candle_core::{Device, DType, Tensor, D};
-use candle_nn::ops::softmax;
+use candle_core::{Device, DType, Tensor};
 use crate::{Result, Error};
 use crate::utils::{StateDict, load_safetensors, KvCacheManager};
 use super::transformer::{TransformerGPTSoVITS, TransformerConfig};
@@ -66,7 +65,7 @@ fn mixed_embedding_lookup(
             // Audio tokens are in range [0, audio_vocab), so subtract text_vocab_size
             let audio_idx = (idx as usize).saturating_sub(text_vocab_size);
             if audio_idx >= audio_emb.dims()[0] {
-                eprintln!("WARN: audio_idx {} out of range for audio_emb {:?}", audio_idx, audio_emb.dims());
+                tracing::warn!("audio_idx {} out of range for audio_emb {:?}", audio_idx, audio_emb.dims());
                 return Err(candle_core::Error::UnexpectedShape {
                     msg: format!("Audio token index {} out of range [0, {})", audio_idx, audio_emb.dims()[0]),
                     expected: candle_core::Shape::from(&[1usize, 1]),
@@ -157,8 +156,8 @@ impl GPTModel {
             }
         }
 
-        // Infer number of attention heads (GPT-SoVITS uses 8 heads for 512 hidden)
-        let num_attention_heads = 8;
+        // GPT-SoVITS v2 uses 16 attention heads for 512 hidden (head_dim=32)
+        let num_attention_heads = 16;
 
         // Get intermediate size from FFN
         let intermediate_size = state_dict.get("model.h.layers.0.linear1.weight")?.dims()[0];
@@ -213,22 +212,31 @@ impl GPTModel {
     }
 
     /// Sample next token from logits using top-k and top-p filtering
+    /// Sample a token from logits, matching Python's `logits_to_probs` order exactly:
+    ///   1. Repetition penalty (in logit domain)
+    ///   2. top_k filter: set non-top-k logits to -inf
+    ///   3. top_p filter: using softmax(logits) WITHOUT temperature, set overflow to -inf
+    ///   4. Temperature + softmax → final probs
+    ///   5. Multinomial sample
+    ///
+    /// `prompt_tokens` = prompt audio tokens (for rep penalty matching Python's y which includes prompt)
     fn sample_token(
         logits: &Tensor,
         top_k: usize,
         top_p: f32,
         temperature: f32,
         repetition_penalty: f32,
+        prompt_tokens: &[usize],
         generated_tokens: &[usize],
     ) -> Result<usize> {
-        let mut logits = logits.to_dtype(DType::F32)?;
+        let mut logits_vec: Vec<f32> = logits.to_dtype(DType::F32)?.to_vec1()?;
+        let n = logits_vec.len();
 
-        // Apply repetition penalty to logits of previously generated tokens
-        if repetition_penalty != 1.0 && !generated_tokens.is_empty() {
-            let mut logits_vec: Vec<f32> = logits.to_vec1()?;
-            let device = logits.device();
-            for &token in generated_tokens {
-                if token < logits_vec.len() {
+        // 1. Repetition penalty — Python uses set(y.flatten()) so each unique token is penalized once
+        if repetition_penalty != 1.0 {
+            let mut seen = std::collections::HashSet::new();
+            for &token in prompt_tokens.iter().chain(generated_tokens.iter()) {
+                if token < n && seen.insert(token) {
                     if logits_vec[token] > 0.0 {
                         logits_vec[token] /= repetition_penalty;
                     } else {
@@ -236,60 +244,66 @@ impl GPTModel {
                     }
                 }
             }
-            logits = Tensor::new(logits_vec.as_slice(), device)?;
         }
 
-        // Apply temperature
-        if temperature != 1.0 && temperature > 0.0 {
-            let t = Tensor::full(temperature, logits.dims(), &logits.device())?;
-            logits = logits.broadcast_div(&t)?;
-        }
-
-        // Get sorted indices and values for top-p filtering
-        let probs = softmax(&logits, D::Minus1)?;
-        let probs_vec: Vec<f32> = probs.to_vec1()?;
-
-        // Create (prob, index) pairs and sort by probability descending
-        let mut indexed_probs: Vec<(f32, usize)> = probs_vec.iter()
-            .copied()
-            .enumerate()
-            .map(|(i, p)| (p, i))
-            .collect();
-        indexed_probs.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-
-        // Apply top-k
-        if top_k < indexed_probs.len() {
-            indexed_probs.truncate(top_k);
-        }
-
-        // Apply top-p (nucleus) sampling
-        let mut cumsum = 0.0f32;
-        let mut cutoff_index = indexed_probs.len();
-        for (i, (prob, _)) in indexed_probs.iter().enumerate() {
-            cumsum += prob;
-            if cumsum >= top_p {
-                cutoff_index = i + 1;
-                break;
+        // 2. top_k: find the k-th largest logit value, set all below to -inf
+        if top_k > 0 && top_k < n {
+            let mut sorted = logits_vec.clone();
+            sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+            let pivot = sorted[top_k - 1];
+            for v in logits_vec.iter_mut() {
+                if *v < pivot {
+                    *v = f32::NEG_INFINITY;
+                }
             }
         }
-        indexed_probs.truncate(cutoff_index);
 
-        // Renormalize probabilities
-        let total: f32 = indexed_probs.iter().map(|(p, _)| p).sum();
-        let normalized: Vec<f32> = indexed_probs.iter().map(|(p, _)| p / total).collect();
+        // 3. top_p: cumulative prob filter on UNTEMPERATURE-SCALED softmax (matches Python)
+        if top_p < 1.0 {
+            // Compute softmax WITHOUT temperature for filtering
+            let max_l = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let exp_vals: Vec<f32> = logits_vec.iter().map(|&x| (x - max_l).exp()).collect();
+            let exp_sum: f32 = exp_vals.iter().sum();
+            let probs_unit: Vec<f32> = exp_vals.iter().map(|&e| e / exp_sum).collect();
 
-        // Sample from distribution
+            // Sort indices by prob descending
+            let mut idx_probs: Vec<(usize, f32)> = probs_unit.iter()
+                .copied().enumerate().collect();
+            idx_probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            // Find cutoff: remove tokens where cumsum - prob > top_p
+            let mut cumsum = 0.0f32;
+            for &(idx, prob) in &idx_probs {
+                if cumsum > top_p {
+                    logits_vec[idx] = f32::NEG_INFINITY;
+                }
+                cumsum += prob;
+            }
+        }
+
+        // 4. Temperature + softmax → final probs
+        let t = if temperature > 0.0 { temperature } else { 1.0 };
+        let max_l = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        let exp_vals: Vec<f32> = logits_vec.iter().map(|&x| ((x - max_l) / t).exp()).collect();
+        let exp_sum: f32 = exp_vals.iter().sum();
+        let final_probs: Vec<f32> = exp_vals.iter().map(|&e| e / exp_sum).collect();
+
+        // 5. Multinomial sample
         let rand_val = rand::random::<f32>();
         let mut cumsum = 0.0f32;
-        for (prob, &index) in normalized.iter().zip(indexed_probs.iter().map(|(_, i)| i)) {
+        for (i, &prob) in final_probs.iter().enumerate() {
             cumsum += prob;
             if rand_val <= cumsum {
-                return Ok(index);
+                return Ok(i);
             }
         }
 
-        // Fallback: return the most likely token
-        Ok(indexed_probs.first().map(|(_, i)| *i).unwrap_or(0))
+        // Fallback: argmax
+        let best = final_probs.iter().enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+        Ok(best)
     }
 
     /// Generate semantic tokens from phoneme IDs (without BERT/Hubert features)
@@ -309,187 +323,9 @@ impl GPTModel {
         top_p: f32,
         temperature: f32,
         repetition_penalty: f32,
+        max_tokens: usize,
     ) -> Result<Vec<usize>> {
-        self.generate_with_features(phoneme_ids, None, None, top_k, top_p, temperature, repetition_penalty)
-    }
-
-    /// Generate semantic tokens with BERT and Hubert features (with KV cache optimization)
-    ///
-    /// This method uses KV cache to speed up autoregressive generation.
-    /// KV cache avoids recomputing K and V for previous tokens.
-    ///
-    /// # Arguments
-    /// * `phoneme_ids` - Input phoneme sequence
-    /// * `bert_features` - Optional BERT features [batch, seq_len, 768]
-    /// * `hubert_features` - Optional Hubert features [batch, frames, 768]
-    /// * `top_k` - Top-k sampling parameter
-    /// * `top_p` - Top-p (nucleus) sampling parameter
-    /// * `temperature` - Sampling temperature
-    ///
-    /// # Returns
-    /// Vector of semantic token IDs
-    pub fn generate_with_features_kv_cache(
-        &self,
-        phoneme_ids: &[usize],
-        bert_features: Option<&Tensor>,
-        hubert_features: Option<&Tensor>,
-        top_k: usize,
-        top_p: f32,
-        temperature: f32,
-        repetition_penalty: f32,
-    ) -> Result<Vec<usize>> {
-        if phoneme_ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        // Initialize KV cache for all transformer layers
-        let mut kv_cache_manager = KvCacheManager::new(self.num_layers);
-
-        // Convert phoneme IDs to tensor [1, seq_len]
-        let input_ids: Vec<i64> = phoneme_ids.iter().map(|&x| x as i64).collect();
-        let mut current_ids = Tensor::new(input_ids.as_slice(), &self.device)?
-            .unsqueeze(0)?;
-
-        let mut generated_tokens = Vec::new();
-        let max_new_tokens = 500;
-
-        // Prepare BERT projection if available
-        let bert_proj_result = if let Some(bert) = bert_features {
-            if let Some((proj_w, proj_b)) = &self.bert_proj {
-                let bert_dims = bert.dims();
-                // BERT output is [1, seq_len, 1024]
-                let bert_reshaped = if bert_dims.len() == 3 && bert_dims[1] == 1024 {
-                    bert.transpose(1, 2)?
-                } else {
-                    bert.clone()
-                };
-
-                // Project from 1024 to 512 (Candle requires same dims for batched matmul)
-                if bert_reshaped.dims().last().copied() == Some(1024) {
-                    let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
-                    let projected = bert_reshaped.matmul(&proj_w_3d)?;
-                    let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
-                    Some(projected)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Prepare Hubert projection
-        let hubert_proj_result = if let Some(hubert) = hubert_features {
-            if let Some((proj_w, proj_b)) = &self.hubert_proj {
-                let hubert_dims = hubert.dims();
-                if hubert_dims.len() >= 2 && hubert_dims.last().copied() == Some(768) {
-                    let hubert_reshaped = if hubert_dims.len() == 3 && hubert_dims[1] == 768 {
-                        hubert.transpose(1, 2)?
-                    } else {
-                        hubert.clone()
-                    };
-
-                    let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
-                    let projected = hubert_reshaped.matmul(&proj_w_3d)?;
-                    let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
-                    Some(projected)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-
-        // Autoregressive generation with KV cache
-        for _step in 0..max_new_tokens {
-            let seq_len = current_ids.dims()[1];
-
-            // Get token embeddings
-            let token_emb = mixed_embedding_lookup(&self.text_embedding, &self.audio_embedding, &current_ids, self.vocab_size)?;
-
-            // Fuse with BERT/Hubert features (only for the first position in generation)
-            let mut fused_emb = token_emb.clone();
-            if _step == 0 {
-                // Only fuse features at the beginning of generation
-                if let Some(ref bert_proj) = bert_proj_result {
-                    if bert_proj.dims().len() >= 2 {
-                        let bert_seq_len = bert_proj.dims()[1];
-                        if bert_seq_len >= seq_len {
-                            let bert_narrowed = if bert_seq_len > seq_len {
-                                bert_proj.narrow(1, 0, seq_len)?
-                            } else {
-                                bert_proj.clone()
-                            };
-                            if bert_narrowed.dims() == fused_emb.dims() {
-                                let scale = 0.5f32;
-                                let scaled_bert = bert_narrowed.broadcast_mul(&Tensor::full(scale, bert_narrowed.dims(), &self.device)?)?;
-                                fused_emb = fused_emb.broadcast_add(&scaled_bert)?;
-                            }
-                        }
-                    }
-                }
-
-                if let Some(ref hubert_proj) = hubert_proj_result {
-                    let hubert_frames = hubert_proj.dims()[1];
-                    if hubert_frames > 0 {
-                        let hubert_aligned = if hubert_frames >= seq_len {
-                            hubert_proj.narrow(1, 0, seq_len)?
-                        } else {
-                            let last_frame = hubert_proj.narrow(1, hubert_frames - 1, 1)?;
-                            let mut frames = vec![hubert_proj.clone()];
-                            for _ in 0..(seq_len - hubert_frames) {
-                                frames.push(last_frame.clone());
-                            }
-                            Tensor::cat(&frames, 1).unwrap_or_else(|_| hubert_proj.clone())
-                        };
-                        if hubert_aligned.dims() == fused_emb.dims() {
-                            let scale = 0.3f32;
-                            let scaled_hubert = hubert_aligned.broadcast_mul(&Tensor::full(scale, hubert_aligned.dims(), &self.device)?)?;
-                            fused_emb = fused_emb.broadcast_add(&scaled_hubert)?;
-                        }
-                    }
-                }
-            }
-
-            // For KV cache, we only pass the last token embedding
-            // The cache contains all previous tokens
-            let last_token_emb = fused_emb.narrow(1, seq_len - 1, 1)?;
-
-            // Create causal mask for current sequence length (including cached tokens)
-            let total_seq_len = kv_cache_manager.len() + 1;
-            let causal_mask = TransformerGPTSoVITS::create_causal_mask(total_seq_len, &self.device)?;
-
-            // Forward through transformer with KV cache
-            // last_token_emb: [1, 1, hidden], hidden output: [1, 1, hidden]
-            let hidden = self.transformer.forward_from_embedding_kv(&last_token_emb, Some(&causal_mask), &mut kv_cache_manager)?;
-
-            // Project to vocab: [1, 1, hidden] @ [vocab, hidden]^T -> [1, 1, vocab]
-            let last_hidden = hidden.squeeze(0)?; // [1, hidden]
-            let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?; // [1, vocab]
-            let logits = logits.squeeze(0)?; // [vocab]
-
-            // Sample next token
-            let next_token = Self::sample_token(&logits, top_k, top_p, temperature, repetition_penalty, &generated_tokens)?;
-
-            // Check for end-of-sequence token
-            let audio_vocab_size = self.ar_predict_layer.dims()[0];
-            if next_token >= audio_vocab_size - 1 {
-                break;
-            }
-
-            generated_tokens.push(next_token);
-
-            // Append token to input for next iteration
-            let next_tensor = Tensor::new(&[next_token as i64], &self.device)?;
-            current_ids = Tensor::cat(&[current_ids, next_tensor.unsqueeze(0)?], 1)?;
-        }
-
-        Ok(generated_tokens)
+        self.generate_with_features(phoneme_ids, None, None, top_k, top_p, temperature, repetition_penalty, max_tokens)
     }
 
     /// Generate semantic tokens with BERT and Hubert features
@@ -513,6 +349,7 @@ impl GPTModel {
         top_p: f32,
         temperature: f32,
         repetition_penalty: f32,
+        max_tokens: usize,
     ) -> Result<Vec<usize>> {
         if phoneme_ids.is_empty() {
             return Ok(Vec::new());
@@ -524,7 +361,7 @@ impl GPTModel {
             .unsqueeze(0)?;
 
         let mut generated_tokens = Vec::new();
-        let max_new_tokens = 500;
+        let max_new_tokens = max_tokens;
 
         // Prepare BERT projection if available
         let bert_proj_result = if let Some(bert) = bert_features {
@@ -667,8 +504,8 @@ impl GPTModel {
             let last_hidden = hidden.narrow(1, seq_len - 1, 1)?.squeeze(0)?;
             let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?;
 
-            // Sample next token
-            let next_token = Self::sample_token(&logits, top_k, top_p, temperature, repetition_penalty, &generated_tokens)?;
+            // Sample next token (no prompt tokens for generate_with_features path)
+            let next_token = Self::sample_token(&logits, top_k, top_p, temperature, repetition_penalty, &[], &generated_tokens)?;
 
             // Check for end-of-sequence token
             let audio_vocab_size = self.ar_predict_layer.dims()[0];
@@ -706,10 +543,164 @@ impl GPTModel {
         phoneme_ids: &[usize],
         prompt_tokens: &[usize],
         bert_features: Option<&Tensor>,
+        word2ph: &[usize],
         top_k: usize,
         top_p: f32,
         temperature: f32,
         repetition_penalty: f32,
+        max_tokens: usize,
+    ) -> Result<Vec<usize>> {
+        self.generate_with_prompts_inner(
+            phoneme_ids, prompt_tokens, bert_features, None, word2ph,
+            top_k, top_p, temperature, repetition_penalty, max_tokens,
+        )
+    }
+
+    /// Like `generate_with_prompts` but accepts pre-aligned 512-dim BERT features
+    /// [1, all_phones, 512] ready to add directly to text embeddings.
+    /// Use this when ref+target BERT features are pre-concatenated externally.
+    pub fn generate_with_prompts_aligned_bert(
+        &self,
+        phoneme_ids: &[usize],
+        prompt_tokens: &[usize],
+        pre_aligned_bert: Option<&Tensor>,
+        top_k: usize,
+        top_p: f32,
+        temperature: f32,
+        repetition_penalty: f32,
+        max_tokens: usize,
+    ) -> Result<Vec<usize>> {
+        self.generate_with_prompts_inner(
+            phoneme_ids, prompt_tokens, None, pre_aligned_bert, &[],
+            top_k, top_p, temperature, repetition_penalty, max_tokens,
+        )
+    }
+
+    /// KV-cache version of `generate_with_prompts_aligned_bert`.
+    ///
+    /// Prefills the cache with the full text+prompt sequence in one forward pass,
+    /// then generates each audio token with a single-token forward pass (O(1) per step
+    /// instead of O(n) for the non-cached version).
+    pub fn generate_with_prompts_aligned_bert_kv_cache(
+        &self,
+        phoneme_ids: &[usize],
+        prompt_tokens: &[usize],
+        pre_aligned_bert: Option<&Tensor>,
+        top_k: usize,
+        top_p: f32,
+        temperature: f32,
+        repetition_penalty: f32,
+        max_tokens: usize,
+    ) -> Result<Vec<usize>> {
+        if phoneme_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let text_seq = phoneme_ids.len();
+        let prompt_seq = prompt_tokens.len();
+        let audio_vocab_size = self.ar_predict_layer.dims()[0];
+        let max_new_tokens = max_tokens;
+
+        // Build text embeddings + BERT fusion (same as non-cached path)
+        let text_ids: Vec<i64> = phoneme_ids.iter().map(|&x| x as i64).collect();
+        let text_tensor = Tensor::new(text_ids.as_slice(), &self.device)?.unsqueeze(0)?;
+        let x_emb = self.lookup_tokens(&self.text_embedding, &text_tensor, text_seq)?;
+
+        let x_emb = if let Some(aligned) = pre_aligned_bert {
+            x_emb.broadcast_add(aligned)?
+        } else {
+            x_emb
+        };
+        let x_emb = self.add_sine_positional(&x_emb, "text")?;
+
+        // Build audio prompt embeddings
+        let prompt_ids: Vec<i64> = prompt_tokens.iter().map(|&x| x as i64).collect();
+        let prompt_tensor = Tensor::new(prompt_ids.as_slice(), &self.device)?.unsqueeze(0)?;
+        let y_emb = self.lookup_tokens(&self.audio_embedding, &prompt_tensor, prompt_seq)?;
+        let y_pos = self.add_sine_positional(&y_emb, "audio")?;
+
+        // Prefill: run the full text+prompt sequence through the transformer, filling KV cache
+        let prefill_input = Tensor::cat(&[&x_emb, &y_pos], 1)?;
+        let total_prefill = text_seq + prompt_seq;
+        let hybrid_mask = self.create_hybrid_mask(text_seq, total_prefill)?;
+
+        let mut kv_cache = KvCacheManager::new(self.num_layers);
+        let prefill_out = self.transformer.forward_from_embedding_kv(
+            &prefill_input, Some(&hybrid_mask), &mut kv_cache
+        )?;
+
+        // Get logits from the last prefill position
+        let last_hidden = prefill_out.narrow(1, total_prefill - 1, 1)?.squeeze(0)?;
+        let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?;
+
+        let mut generated_tokens: Vec<usize> = Vec::new();
+
+        // First token sampling from prefill logits (step 0 — always mask EOS)
+        let logits_for_sampling = logits.narrow(0, 0, audio_vocab_size - 1)?;
+        let next_token = Self::sample_token(
+            &logits_for_sampling, top_k, top_p, temperature, repetition_penalty,
+            prompt_tokens, &generated_tokens,
+        )?;
+        if next_token >= audio_vocab_size - 1 {
+            return Ok(generated_tokens);
+        }
+        generated_tokens.push(next_token);
+
+        // Autoregressive generation: single token per forward pass
+        for step in 1..max_new_tokens {
+            let prev_token = *generated_tokens.last().unwrap();
+            let new_ids = Tensor::new(&[prev_token as i64], &self.device)?.unsqueeze(0)?;
+            let new_emb = self.lookup_tokens(&self.audio_embedding, &new_ids, 1)?;
+            let audio_pe_pos = prompt_seq + generated_tokens.len() - 1;
+            let new_pos = self.add_sine_positional_at(&new_emb, audio_pe_pos)?;
+
+            // Single-token forward: new token attends to ALL cached K/V (no mask needed)
+            let hidden = self.transformer.forward_from_embedding_kv(
+                &new_pos, None, &mut kv_cache
+            )?;
+
+            let logits = hidden.squeeze(0)?.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?;
+
+            let is_eos_masked = step < 11;
+            let effective_vocab = if is_eos_masked { audio_vocab_size - 1 } else { audio_vocab_size };
+            let logits_for_sampling = logits.narrow(0, 0, effective_vocab)?;
+
+            let next_token = Self::sample_token(
+                &logits_for_sampling, top_k, top_p, temperature, repetition_penalty,
+                prompt_tokens, &generated_tokens,
+            )?;
+
+            let argmax_eos = if !is_eos_masked {
+                let lv = logits_for_sampling.to_vec1::<f32>().unwrap_or_default();
+                lv.iter().enumerate()
+                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                    .map(|(i, _)| i).unwrap_or(0) == audio_vocab_size - 1
+            } else {
+                false
+            };
+
+            if next_token >= audio_vocab_size - 1 || argmax_eos {
+                break;
+            }
+            generated_tokens.push(next_token);
+        }
+
+        tracing::info!("[GPT kv] Total generated tokens: {}", generated_tokens.len());
+        Ok(generated_tokens)
+    }
+
+    fn generate_with_prompts_inner(
+        &self,
+        phoneme_ids: &[usize],
+        prompt_tokens: &[usize],
+        bert_features: Option<&Tensor>,
+        pre_aligned_bert: Option<&Tensor>,  // [1, all_phones, 512] — bypasses projection+alignment
+        word2ph: &[usize],
+        top_k: usize,
+        top_p: f32,
+        temperature: f32,
+        repetition_penalty: f32,
+        max_tokens: usize,
     ) -> Result<Vec<usize>> {
         if phoneme_ids.is_empty() {
             return Ok(Vec::new());
@@ -729,36 +720,25 @@ impl GPTModel {
         // Step 1: Embed text tokens [1, text_seq, 512]
         let x_emb = self.lookup_tokens(&self.text_embedding, &text_tensor, text_seq)?;
 
-        // Step 2: Project and add BERT features
-        let x_emb = if let (Some(bert), Some((proj_w, proj_b))) = (bert_features, &self.bert_proj) {
+        // Step 2: Add BERT features (either pre-aligned 512-dim, or raw 1024-dim with projection)
+        let x_emb = if let Some(aligned) = pre_aligned_bert {
+            // Pre-aligned 512-dim features: add directly without any processing
+            x_emb.broadcast_add(aligned)?
+        } else if let (Some(bert), Some((proj_w, proj_b))) = (bert_features, &self.bert_proj) {
             let bert_dims = bert.dims();
             let bert_reshaped = if bert_dims.len() == 3 && bert_dims[1] == 1024 {
                 bert.transpose(1, 2)?  // [batch, 1024, seq] -> [batch, seq, 1024]
             } else {
                 bert.clone()
             };
-            if bert_reshaped.dims().last().copied() == Some(1024) {
+            let last_dim = bert_reshaped.dims().last().copied();
+            if last_dim == Some(1024) {
                 let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
                 let projected = bert_reshaped.matmul(&proj_w_3d)?;
                 let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
-                // Align BERT sequence length to text sequence length
-                let bert_seq = projected.dims()[1];
-                let text_seq = x_emb.dims()[1];
-                let aligned = if bert_seq > text_seq {
-                    projected.narrow(1, 0, text_seq)?
-                } else if bert_seq < text_seq {
-                    let last = projected.narrow(1, bert_seq - 1, 1)?;
-                    let mut frames = vec![projected];
-                    for _ in 0..(text_seq - bert_seq) {
-                        frames.push(last.clone());
-                    }
-                    Tensor::cat(&frames, 1)?
-                } else {
-                    projected
-                };
-                let scale = 0.5f32;
-                let scaled = aligned.broadcast_mul(&Tensor::full(scale, aligned.dims(), &self.device)?)?;
-                x_emb.broadcast_add(&scaled)?
+                let target_seq = x_emb.dims()[1];
+                let aligned = self.align_bert_to_phonemes(&projected, target_seq, word2ph)?;
+                x_emb.broadcast_add(&aligned)?
             } else {
                 x_emb
             }
@@ -777,25 +757,23 @@ impl GPTModel {
 
         // Step 6: Concatenate text + audio along sequence dimension
         let mut xy_pos = Tensor::cat(&[&x_emb, &y_pos], 1)?;
-
         let mut generated_tokens = Vec::new();
-        let max_new_tokens = 500;
+        let max_new_tokens = max_tokens;
         let audio_vocab_size = self.ar_predict_layer.dims()[0];
 
-        // Step 7: Autoregressive generation
-        for _step in 0..max_new_tokens {
+        for step in 0..max_new_tokens {
             let total_seq = xy_pos.dims()[1];
 
-            let hidden = self.transformer.forward_from_embedding(
-                &xy_pos,
-            )?;
+            // Use hybrid mask: text bidirectional + text blocked from audio + audio causal
+            let mask = self.create_hybrid_mask(text_seq, total_seq)?;
+            let hidden = self.transformer.forward_all_layers_with_mask(&xy_pos, &mask)?;
 
             // Project last position to vocab
             let last_hidden = hidden.narrow(1, total_seq - 1, 1)?.squeeze(0)?;
             let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?;
 
             // For first 11 steps, mask out EOS logit
-            let is_eos_masked = _step < 11;
+            let is_eos_masked = step < 11;
             let effective_vocab_size = if is_eos_masked { audio_vocab_size - 1 } else { audio_vocab_size };
             let logits_for_sampling = if is_eos_masked {
                 logits.narrow(0, 0, effective_vocab_size)?
@@ -803,10 +781,16 @@ impl GPTModel {
                 logits.clone()
             };
 
-            let next_token = Self::sample_token(&logits_for_sampling, top_k, top_p, temperature, repetition_penalty, &generated_tokens)?;
+            let next_token = Self::sample_token(&logits_for_sampling, top_k, top_p, temperature, repetition_penalty, prompt_tokens, &generated_tokens)?;
 
-            if next_token >= audio_vocab_size - 1 {
-                tracing::info!("[GPT] EOS detected at step {}", _step);
+            // Python stop condition: argmax(logits_for_sampling) == EOS OR sampled == EOS
+            let argmax_eos = if !is_eos_masked {
+                let lv = logits_for_sampling.to_vec1::<f32>().unwrap_or_default();
+                lv.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(i,_)| i).unwrap_or(0) == audio_vocab_size - 1
+            } else {
+                false
+            };
+            if next_token >= audio_vocab_size - 1 || argmax_eos {
                 break;
             }
 
@@ -814,7 +798,9 @@ impl GPTModel {
 
             let new_ids = Tensor::new(&[next_token as i64], &self.device)?.unsqueeze(0)?;
             let new_emb = self.lookup_tokens(&self.audio_embedding, &new_ids, 1)?;
-            let new_pos = self.add_sine_positional_at(&new_emb, total_seq)?;
+            // Audio PE position = prompt_seq + generated_so_far (not text_seq + total_audio)
+            let audio_pe_pos = prompt_seq + generated_tokens.len() - 1;
+            let new_pos = self.add_sine_positional_at(&new_emb, audio_pe_pos)?;
             xy_pos = Tensor::cat(&[&xy_pos, &new_pos], 1)?;
         }
 
@@ -822,22 +808,116 @@ impl GPTModel {
         Ok(generated_tokens)
     }
 
-    /// Create hybrid attention mask matching Python's infer_panel:
-    /// - Text positions: full bidirectional attention (no masking)
-    /// - Audio positions: attend to all text + causal among audio
-    fn create_hybrid_mask(&self, text_seq: usize, total_seq: usize) -> Result<Tensor> {
-        let mut mask = vec![0.0f32; total_seq * total_seq]; // 0 = visible, 1 = masked
+    /// Project and align raw BERT features to phone level.
+    ///
+    /// Takes raw ONNX BERT output [1, seq+2, 1024] (includes CLS/SEP), applies bert_proj,
+    /// strips CLS/SEP, and expands to phone level via word2ph.
+    /// Returns [1, n_phones, 512].
+    ///
+    /// Used by the inference pipeline to pre-align ref and target BERT features separately
+    /// before concatenating them for joint GPT conditioning.
+    pub fn project_and_align_bert(
+        &self,
+        bert_raw: &Tensor,  // [1, seq_with_cls_sep, 1024]
+        word2ph: &[usize],
+        n_phones: usize,
+    ) -> Result<Tensor> {
+        let (proj_w, proj_b) = self.bert_proj.as_ref()
+            .ok_or_else(|| Error::ModelLoadError("bert_proj not loaded".to_string()))?;
 
-        for i in text_seq..total_seq {  // Only for audio positions
-            for j in text_seq..total_seq {
-                if j > i {
-                    // Audio position i cannot attend to future audio position j
-                    mask[i * total_seq + j] = 1.0;
+        let bert = if bert_raw.dims().len() == 3 && bert_raw.dims()[1] == 1024 {
+            bert_raw.transpose(1, 2)?
+        } else {
+            bert_raw.clone()
+        };
+        let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
+        let projected = bert.matmul(&proj_w_3d)?;
+        let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
+        self.align_bert_to_phonemes(&projected, n_phones, word2ph)
+    }
+
+    /// Align BERT features (from ONNX model including CLS/SEP) to phoneme sequence.
+    ///
+    /// Python's pipeline:
+    ///   1. Extract BERT hidden states (char-level, includes CLS/SEP tokens)
+    ///   2. Remove CLS (first) and SEP (last) tokens → bert_content[i] per char
+    ///   3. Expand: repeat bert_content[i] word2ph[i] times (skip if 0 for punctuation)
+    ///
+    /// When word2ph is provided: uses exact word2ph expansion (matches Python exactly).
+    /// When word2ph is empty: falls back to nearest-neighbor interpolation.
+    ///
+    /// # Arguments
+    /// * `projected` - BERT projected features [1, bert_seq, hidden] (including CLS/SEP)
+    /// * `target_seq` - Target phoneme sequence length
+    /// * `word2ph` - Per-character phoneme counts from G2P (empty → use nearest-neighbor)
+    fn align_bert_to_phonemes(&self, projected: &Tensor, target_seq: usize, word2ph: &[usize]) -> Result<Tensor> {
+        let bert_full_len = projected.dims()[1];
+
+        // Strip CLS (index 0) and SEP (last index)
+        let bert_content = if bert_full_len >= 2 {
+            projected.narrow(1, 1, bert_full_len - 2)?
+        } else {
+            projected.clone()
+        };
+        let bert_len = bert_content.dims()[1];
+
+        if bert_len == 0 {
+            return Ok(projected.clone());
+        }
+
+        // Use word2ph expansion if provided and consistent with bert_content
+        if !word2ph.is_empty() && word2ph.len() == bert_len {
+            let total_phonemes: usize = word2ph.iter().sum();
+            if total_phonemes == target_seq {
+                let mut frames = Vec::with_capacity(target_seq);
+                for (i, &count) in word2ph.iter().enumerate() {
+                    for _ in 0..count {
+                        frames.push(bert_content.narrow(1, i, 1)?);
+                    }
                 }
+                return Tensor::cat(&frames, 1).map_err(|e| e.into());
+            } else {
+                tracing::debug!("word2ph sum={} != target_seq={}, falling back to nearest-neighbor",
+                    total_phonemes, target_seq);
             }
         }
-        // Text positions (0..text_seq) have no masking - full bidirectional
-        // Audio positions can see all text positions (0..text_seq) - no masking
+
+        // Fallback: nearest-neighbor interpolation from bert_len to target_seq
+        if bert_len == target_seq {
+            Ok(bert_content)
+        } else if bert_len > target_seq {
+            bert_content.narrow(1, 0, target_seq).map_err(|e| e.into())
+        } else {
+            let mut frames = Vec::with_capacity(target_seq);
+            for i in 0..target_seq {
+                let bert_idx = (i * bert_len / target_seq).min(bert_len - 1);
+                frames.push(bert_content.narrow(1, bert_idx, 1)?);
+            }
+            Tensor::cat(&frames, 1).map_err(|e| e.into())
+        }
+    }
+
+    /// Create hybrid attention mask matching Python's infer_panel:
+    /// Hybrid attention mask matching Python's infer_panel:
+    /// - Text→Text: bidirectional (no masking)
+    /// - Text→Audio: BLOCKED (True in Python x_attn_mask_pad)
+    /// - Audio→Text: allowed (no masking)
+    /// - Audio→Audio: causal (block future j > i)
+    fn create_hybrid_mask(&self, text_seq: usize, total_seq: usize) -> Result<Tensor> {
+        let mut mask = vec![0.0f32; total_seq * total_seq]; // 0 = allow, 1 = block
+
+        for i in 0..text_seq {
+            // Text positions: block attending to audio positions
+            for j in text_seq..total_seq {
+                mask[i * total_seq + j] = 1.0;
+            }
+        }
+        for i in text_seq..total_seq {
+            // Audio positions: block future audio
+            for j in (i + 1)..total_seq {
+                mask[i * total_seq + j] = 1.0;
+            }
+        }
 
         Ok(Tensor::from_vec(mask, (total_seq, total_seq), &self.device)?)
     }
@@ -981,24 +1061,11 @@ impl GPTModel {
                 let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
                 let projected = bert_reshaped.matmul(&proj_w_3d)?;
                 let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
-                // Align BERT sequence length to text sequence length
-                let bert_seq = projected.dims()[1];
+                // Align BERT features: strip CLS/SEP, expand via word2ph to phoneme seq length
                 let text_seq = x_emb.dims()[1];
-                let aligned = if bert_seq > text_seq {
-                    projected.narrow(1, 0, text_seq)?
-                } else if bert_seq < text_seq {
-                    let last = projected.narrow(1, bert_seq - 1, 1)?;
-                    let mut frames = vec![projected];
-                    for _ in 0..(text_seq - bert_seq) {
-                        frames.push(last.clone());
-                    }
-                    Tensor::cat(&frames, 1)?
-                } else {
-                    projected
-                };
-                let scale = 0.5f32;
-                let scaled = aligned.broadcast_mul(&Tensor::full(scale, aligned.dims(), &self.device)?)?;
-                x_emb.broadcast_add(&scaled)?
+                let aligned = self.align_bert_to_phonemes(&projected, text_seq, &[])?;
+                // Python: x = x + self.bert_proj(...) — no scaling
+                x_emb.broadcast_add(&aligned)?
             } else {
                 x_emb
             }
