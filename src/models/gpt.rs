@@ -219,6 +219,7 @@ impl GPTModel {
     ///   4. Temperature + softmax → final probs
     ///   5. Multinomial sample
     ///
+    /// Returns `(sampled_token, argmax_token)` — both computed from ONE D2H transfer.
     /// `prompt_tokens` = prompt audio tokens (for rep penalty matching Python's y which includes prompt)
     fn sample_token(
         logits: &Tensor,
@@ -228,9 +229,17 @@ impl GPTModel {
         repetition_penalty: f32,
         prompt_tokens: &[usize],
         generated_tokens: &[usize],
-    ) -> Result<usize> {
-        let mut logits_vec: Vec<f32> = logits.to_dtype(DType::F32)?.to_vec1()?;
+    ) -> Result<(usize, usize)> {
+        let logits_vec: Vec<f32> = logits.to_dtype(DType::F32)?.to_vec1()?;
         let n = logits_vec.len();
+
+        // Compute argmax of raw logits (before any filtering) — Python: torch.argmax(logits)
+        let argmax = logits_vec.iter().enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(i, _)| i)
+            .unwrap_or(0);
+
+        let mut logits_vec = logits_vec;
 
         // 1. Repetition penalty — Python uses set(y.flatten()) so each unique token is penalized once
         if repetition_penalty != 1.0 {
@@ -260,18 +269,15 @@ impl GPTModel {
 
         // 3. top_p: cumulative prob filter on UNTEMPERATURE-SCALED softmax (matches Python)
         if top_p < 1.0 {
-            // Compute softmax WITHOUT temperature for filtering
             let max_l = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let exp_vals: Vec<f32> = logits_vec.iter().map(|&x| (x - max_l).exp()).collect();
             let exp_sum: f32 = exp_vals.iter().sum();
             let probs_unit: Vec<f32> = exp_vals.iter().map(|&e| e / exp_sum).collect();
 
-            // Sort indices by prob descending
             let mut idx_probs: Vec<(usize, f32)> = probs_unit.iter()
                 .copied().enumerate().collect();
             idx_probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-            // Find cutoff: remove tokens where cumsum - prob > top_p
             let mut cumsum = 0.0f32;
             for &(idx, prob) in &idx_probs {
                 if cumsum > top_p {
@@ -294,16 +300,16 @@ impl GPTModel {
         for (i, &prob) in final_probs.iter().enumerate() {
             cumsum += prob;
             if rand_val <= cumsum {
-                return Ok(i);
+                return Ok((i, argmax));
             }
         }
 
-        // Fallback: argmax
+        // Fallback: argmax of final probs
         let best = final_probs.iter().enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(i, _)| i)
             .unwrap_or(0);
-        Ok(best)
+        Ok((best, argmax))
     }
 
     /// Generate semantic tokens from phoneme IDs (without BERT/Hubert features)
@@ -505,7 +511,7 @@ impl GPTModel {
             let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?;
 
             // Sample next token (no prompt tokens for generate_with_features path)
-            let next_token = Self::sample_token(&logits, top_k, top_p, temperature, repetition_penalty, &[], &generated_tokens)?;
+            let (next_token, _argmax) = Self::sample_token(&logits, top_k, top_p, temperature, repetition_penalty, &[], &generated_tokens)?;
 
             // Check for end-of-sequence token
             let audio_vocab_size = self.ar_predict_layer.dims()[0];
@@ -637,7 +643,7 @@ impl GPTModel {
 
         // First token sampling from prefill logits (step 0 — always mask EOS)
         let logits_for_sampling = logits.narrow(0, 0, audio_vocab_size - 1)?;
-        let next_token = Self::sample_token(
+        let (next_token, _argmax) = Self::sample_token(
             &logits_for_sampling, top_k, top_p, temperature, repetition_penalty,
             prompt_tokens, &generated_tokens,
         )?;
@@ -665,19 +671,13 @@ impl GPTModel {
             let effective_vocab = if is_eos_masked { audio_vocab_size - 1 } else { audio_vocab_size };
             let logits_for_sampling = logits.narrow(0, 0, effective_vocab)?;
 
-            let next_token = Self::sample_token(
+            // sample_token returns (sampled, argmax) from a single D2H transfer
+            let (next_token, argmax) = Self::sample_token(
                 &logits_for_sampling, top_k, top_p, temperature, repetition_penalty,
                 prompt_tokens, &generated_tokens,
             )?;
 
-            let argmax_eos = if !is_eos_masked {
-                let lv = logits_for_sampling.to_vec1::<f32>().unwrap_or_default();
-                lv.iter().enumerate()
-                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-                    .map(|(i, _)| i).unwrap_or(0) == audio_vocab_size - 1
-            } else {
-                false
-            };
+            let argmax_eos = !is_eos_masked && argmax == audio_vocab_size - 1;
 
             if next_token >= audio_vocab_size - 1 || argmax_eos {
                 break;
@@ -781,15 +781,11 @@ impl GPTModel {
                 logits.clone()
             };
 
-            let next_token = Self::sample_token(&logits_for_sampling, top_k, top_p, temperature, repetition_penalty, prompt_tokens, &generated_tokens)?;
+            // sample_token returns (sampled, argmax) from a single D2H transfer
+            let (next_token, argmax) = Self::sample_token(&logits_for_sampling, top_k, top_p, temperature, repetition_penalty, prompt_tokens, &generated_tokens)?;
 
             // Python stop condition: argmax(logits_for_sampling) == EOS OR sampled == EOS
-            let argmax_eos = if !is_eos_masked {
-                let lv = logits_for_sampling.to_vec1::<f32>().unwrap_or_default();
-                lv.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).map(|(i,_)| i).unwrap_or(0) == audio_vocab_size - 1
-            } else {
-                false
-            };
+            let argmax_eos = !is_eos_masked && argmax == audio_vocab_size - 1;
             if next_token >= audio_vocab_size - 1 || argmax_eos {
                 break;
             }
@@ -922,21 +918,24 @@ impl GPTModel {
         Ok(Tensor::from_vec(mask, (total_seq, total_seq), &self.device)?)
     }
 
-    /// Lookup token embeddings for a tensor of token IDs
+    /// Lookup token embeddings for a tensor of token IDs.
+    /// Stays entirely on GPU via Tensor::embedding (no D2H transfer).
+    /// ids: [batch, seq] (i64) → output: [batch, seq, hidden]
     fn lookup_tokens(&self, embedding: &Tensor, ids: &Tensor, _seq: usize) -> Result<Tensor> {
-        // embedding: [vocab, hidden], ids: [batch, seq]
-        // Use gather or index_select
-        let flat_ids = ids.flatten_all()?;
-        let mut embeddings = Vec::new();
-        let id_vec: Vec<i64> = flat_ids.to_vec1()?;
-        for &id in &id_vec {
-            embeddings.push(embedding.get(id as usize)?);
-        }
-        let batch = ids.dims()[0];
-        let seq = ids.dims()[1];
+        let orig_dims = ids.dims().to_vec();
         let hidden = embedding.dims()[1];
-        let stacked = Tensor::stack(&embeddings, 0)?;
-        stacked.reshape((batch, seq, hidden)).map_err(|e| crate::Error::InferenceError(e.to_string()))
+        // index_select (used internally by Tensor::embedding) requires 1D ids
+        let ids_flat = ids.flatten_all()
+            .map_err(|e| crate::Error::InferenceError(e.to_string()))?
+            .to_dtype(candle_core::DType::U32)
+            .map_err(|e| crate::Error::InferenceError(e.to_string()))?;
+        let flat_emb = embedding.embedding(&ids_flat)
+            .map_err(|e| crate::Error::InferenceError(e.to_string()))?;
+        // Restore original batch/seq dims: [batch*seq, hidden] → [batch, seq, hidden]
+        let mut out_dims = orig_dims;
+        out_dims.push(hidden);
+        flat_emb.reshape(out_dims)
+            .map_err(|e| crate::Error::InferenceError(e.to_string()))
     }
 
     /// Add sinusoidal positional encoding with learned alpha scaling
