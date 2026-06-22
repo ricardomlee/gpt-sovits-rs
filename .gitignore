@@ -77,3 +77,4 @@ decoder_*.txt
 __pycache__/
 *.py[cod]
 .github/
+docker-ort-libs/

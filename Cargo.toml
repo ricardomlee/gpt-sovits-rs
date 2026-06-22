@@ -50,8 +50,8 @@ candle-transformers = "0.10"
 half = { version = "2.4", features = ["num-traits", "zerocopy"] }
 
 # ONNX Runtime (optional, for BERT/Hubert if needed)
-# ort 2.x uses Execution Providers - cuda feature enables CUDA EP
-ort = { version = "2.0.0-rc.12", features = ["cuda", "half"], optional = true }
+# ort 2.x uses Execution Providers - cuda EP enabled via the cuda feature flag (see [features])
+ort = { version = "2.0.0-rc.12", features = ["half"], optional = true }
 
 # Audio Processing
 hound = "3.5"                    # WAV I/O
@@ -96,7 +96,7 @@ tempfile = "3.14"
 
 [features]
 default = []
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "ort?/cuda"]
 http-api = ["tokio", "axum", "tower-http"]
 mkl = ["candle-core/mkl"]
 onnx = ["ort"]

@@ -4,16 +4,21 @@
 # ============================================================
 # Builder stage — CUDA toolkit + Rust toolchain
 # ============================================================
-FROM nvidia/cuda:12.6.0-devel-ubuntu22.04 AS builder
+FROM nvidia/cuda:12.6.0-devel-ubuntu24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
+
+# GPU compute capability — override with: docker build --build-arg CUDA_COMPUTE_CAP=86
+# Common: 75=RTX20xx, 80=A100, 86=RTX30xx, 89=RTX40xx, 90=H100
+ARG CUDA_COMPUTE_CAP=89
+ENV CUDA_COMPUTE_CAP=${CUDA_COMPUTE_CAP}
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl build-essential pkg-config libssl-dev ca-certificates libsoxr-dev \
+    curl build-essential g++ pkg-config libssl-dev ca-certificates libsoxr-dev \
     && rm -rf /var/lib/apt/lists/* \
-    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.86.0 \
+    && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
     && ln -s /root/.cargo/bin/cargo /usr/local/bin/cargo \
     && ln -s /root/.cargo/bin/rustc /usr/local/bin/rustc
 
@@ -22,33 +27,42 @@ ENV PATH=${CUDA_HOME}/bin:${PATH}
 ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
 
 # Copy entire project (.dockerignore excludes target/, .git/, models/, etc.)
+# Includes .cargo/config.toml which redirects crate downloads to rsproxy.cn (CN mirror)
 COPY . .
+
+# ORT_LIB_LOCATION: skip cdn.pyke.io download, use pre-bundled CUDA libonnxruntime.a + provider .so.
+# NOTE: docker-ort-libs/cuda/ contains the CUDA 13 prebuilt (built on a CUDA 13 host).
+# The CUDA EP (for BERT/HuBERT) requires libcublasLt.so.13 which is only in CUDA 13 images.
+# Until nvidia/cuda:13.x Docker images are available, ORT will fall back to the CPU EP for
+# BERT/HuBERT while Candle (GPT + SoVITS) still runs fully on GPU.
+ENV ORT_LIB_LOCATION=/app/docker-ort-libs/cuda
 
 # Build binary — cuda enables Candle CUDA backend; onnx enables BERT/HuBERT via ort
 RUN cargo build --release --locked --features http-api,cuda,onnx && \
     cp target/release/gpt-sovits /app/gpt-sovits && \
     # ort statically links libonnxruntime.a but loads CUDA EP and shared provider via dlopen at runtime.
-    # libonnxruntime_providers_cuda.so is ~113MB — required for GPU-accelerated ONNX inference.
-    cp -L target/release/libonnxruntime_providers_shared.so /app/ && \
-    cp -L target/release/libonnxruntime_providers_cuda.so /app/
+    # Use the pre-bundled .so files from docker-ort-libs/cuda/ (same ones used for linking).
+    cp -L docker-ort-libs/cuda/libonnxruntime_providers_shared.so /app/ && \
+    cp -L docker-ort-libs/cuda/libonnxruntime_providers_cuda.so /app/
 
 # ============================================================
 # Runtime stage — minimal CUDA runtime
 # ============================================================
-FROM nvidia/cuda:12.6.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.6.0-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 
-# libsoxr0:     audio resampling (soxr crate)
-# libcublas-12-6, libcurand-12-6: cuBLAS + cuRAND required by Candle's CUDA kernels
+# libcublas/libcurand already included in nvidia/cuda:12.6.0-runtime base image
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 ca-certificates libsoxr0 fonts-noto-cjk \
-    libcublas-12-6 libcurand-12-6 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/gpt-sovits /usr/local/bin/gpt-sovits
+# ORT loads provider .so via dlopen relative to cwd (/app) — put them there and in /usr/local/lib
+COPY --from=builder /app/libonnxruntime_providers_shared.so /app/
+COPY --from=builder /app/libonnxruntime_providers_cuda.so /app/
 COPY --from=builder /app/libonnxruntime_providers_shared.so /usr/local/lib/
 COPY --from=builder /app/libonnxruntime_providers_cuda.so /usr/local/lib/
 

@@ -4,31 +4,34 @@
 # ============================================================
 # Stage 1: Builder
 # ============================================================
-FROM rust:1.86-slim AS builder
+FROM rust:1-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
     libsoxr-dev \
     ca-certificates \
+    g++ \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
 # Copy entire project (.dockerignore excludes target/, .git/, models/, etc.)
+# Includes .cargo/config.toml which redirects crate downloads to rsproxy.cn (CN mirror)
 COPY . .
 
-# Build binary — onnx enables BERT/HuBERT via ort (downloads libonnxruntime.a at build time)
+# ORT_LIB_LOCATION: skip cdn.pyke.io download, use pre-bundled libonnxruntime.a
+ENV ORT_LIB_LOCATION=/app/docker-ort-libs/cpu
+
+# Build binary — onnx enables BERT/HuBERT via ort
+# For CPU-only ort, libonnxruntime.a is statically linked; no runtime provider .so needed.
 RUN cargo build --release --locked --features http-api,onnx && \
-    cp target/release/gpt-sovits /app/gpt-sovits && \
-    # ort statically links libonnxruntime.a, but loads provider plugins via dlopen at runtime.
-    # Copy the shared provider base (needed even for CPU EP).
-    cp -L target/release/libonnxruntime_providers_shared.so /app/
+    cp target/release/gpt-sovits /app/gpt-sovits
 
 # ============================================================
 # Stage 2: Runtime (minimal)
 # ============================================================
-FROM debian:bookworm-slim
+FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
@@ -38,9 +41,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/gpt-sovits /usr/local/bin/gpt-sovits
-COPY --from=builder /app/libonnxruntime_providers_shared.so /usr/local/lib/
-
-RUN ldconfig
 
 RUN mkdir -p /app/models
 
