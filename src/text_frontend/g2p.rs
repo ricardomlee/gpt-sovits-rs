@@ -4,6 +4,8 @@
 //! matching GPT-SoVITS Python text frontend (symbols_v2 format).
 
 use crate::{Language, Result};
+use crate::text_frontend::tone_sandhi::ToneSandhi;
+use jieba_rs::Jieba;
 use pinyin::ToPinyin;
 use std::collections::HashMap;
 
@@ -259,84 +261,101 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
 }
 
 /// G2P Converter for multiple languages
-#[derive(Debug)]
 pub struct G2PConverter {
     pinyin_map: HashMap<&'static str, (&'static str, &'static str)>,
+    jieba: Jieba,
+    tone_sandhi: ToneSandhi,
+}
+
+impl std::fmt::Debug for G2PConverter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("G2PConverter").finish()
+    }
 }
 
 impl G2PConverter {
     pub fn new() -> Result<Self> {
         Ok(Self {
             pinyin_map: pinyin_split(),
+            jieba: Jieba::new(),
+            tone_sandhi: ToneSandhi::new(),
         })
     }
 
     /// Convert Chinese text to phonemes with per-character phoneme counts (word2ph).
     ///
+    /// Uses jieba word segmentation + full ToneSandhi rules (不/一/轻声/三声连读),
+    /// matching the Python GPT-SoVITS text frontend.
+    ///
     /// Returns (phoneme_string, word2ph) where word2ph[i] = number of phonemes for BERT
     /// content token i (after CLS/SEP removal). Includes ALL characters (Chinese and
-    /// punctuation/spaces), with 0 for characters that produce no phonemes. This matches
-    /// Python: len(word2ph) == number of BERT content tokens after CLS/SEP stripping.
+    /// punctuation/spaces), with 0 for characters that produce no phonemes.
     pub fn convert_chinese_with_word2ph(&self, text: &str) -> Result<(String, Vec<usize>)> {
-        // First pass: collect raw (base_pinyin, tone) per character, tracking None slots
-        let mut char_entries: Vec<Option<(String, u32)>> = Vec::new();
-        for py_opt in text.to_pinyin() {
-            match py_opt {
-                None => char_entries.push(None),
-                Some(py_result) => {
-                    let pinyin_with_tone = py_result.with_tone_num_end();
-                    if pinyin_with_tone.is_empty() {
-                        char_entries.push(None);
-                        continue;
-                    }
-                    let (base_pinyin, tone) = if let Some(last) = pinyin_with_tone.chars().last() {
-                        if last.is_ascii_digit() {
-                            let base = &pinyin_with_tone[..pinyin_with_tone.len() - 1];
-                            (base.to_string(), last.to_digit(10).unwrap_or(5) as u32)
-                        } else {
-                            (pinyin_with_tone.to_string(), 5)
-                        }
-                    } else {
-                        char_entries.push(None);
-                        continue;
-                    };
-                    char_entries.push(Some((base_pinyin, tone)));
-                }
-            }
-        }
+        // Step 1: jieba POS tagging
+        let tags = self.jieba.tag(text, true);
+        let seg: Vec<(String, String)> = tags
+            .iter()
+            .map(|t| (t.word.to_string(), t.tag.to_string()))
+            .collect();
 
-        // Apply third-tone sandhi (3+3 → 2+3) across adjacent syllables
-        let n = char_entries.len();
-        for i in 0..n.saturating_sub(1) {
-            if let (Some((_, t1)), Some((_, t2))) = (char_entries[i].as_ref(), char_entries[i + 1].as_ref()) {
-                if *t1 == 3 && *t2 == 3 {
-                    if let Some((_, tone)) = char_entries[i].as_mut() {
-                        *tone = 2;
-                    }
-                }
-            }
-        }
+        // Step 2: pre-merge for cross-word sandhi contexts
+        let merged = self.tone_sandhi.pre_merge_for_modify(seg);
 
-        // Second pass: convert to phonemes with word2ph
-        let mut phonemes = Vec::new();
-        let mut word2ph = Vec::new();
-        for entry in char_entries {
-            match entry {
-                None => word2ph.push(0usize),
-                Some((base_pinyin, tone)) => {
-                    let before = phonemes.len();
-                    if let Some(&(initial, final_base)) = self.pinyin_map.get(base_pinyin.as_str()) {
-                        let final_with_tone = format!("{}{}", final_base, tone);
-                        if initial.is_empty() {
-                            phonemes.push(final_with_tone);
-                        } else {
-                            phonemes.push(initial.to_string());
-                            phonemes.push(final_with_tone);
+        // Step 3: process each merged word
+        let mut phonemes: Vec<String> = Vec::new();
+        let mut word2ph: Vec<usize> = Vec::new();
+
+        for (word, pos) in &merged {
+            // Collect (base_pinyin, raw_tone) for each character in this word
+            let char_data: Vec<Option<(String, u32)>> = word.as_str()
+                .to_pinyin()
+                .map(|opt| match opt {
+                    None => None,
+                    Some(py) => {
+                        let s = py.with_tone_num_end().to_string();
+                        if s.is_empty() {
+                            return None;
                         }
-                    } else {
-                        phonemes.push(format!("{}{}", base_pinyin, tone));
+                        if let Some(last) = s.chars().last() {
+                            if last.is_ascii_digit() {
+                                let base = s[..s.len() - 1].to_string();
+                                let tone = last.to_digit(10).unwrap_or(5) as u32;
+                                Some((base, tone))
+                            } else {
+                                Some((s, 5u32))
+                            }
+                        } else {
+                            None
+                        }
                     }
-                    word2ph.push(phonemes.len() - before);
+                })
+                .collect();
+
+            // Build tones vec (0 for non-Chinese chars) and apply sandhi
+            let mut tones: Vec<u32> = char_data
+                .iter()
+                .map(|opt| opt.as_ref().map(|(_, t)| *t).unwrap_or(0))
+                .collect();
+            self.tone_sandhi.modified_tone(word, pos, &mut tones, &self.jieba);
+
+            // Convert each char to phonemes and record word2ph
+            for (i, opt) in char_data.iter().enumerate() {
+                match opt {
+                    None => word2ph.push(0),
+                    Some((base, _)) => {
+                        let tone = tones[i];
+                        let before = phonemes.len();
+                        if let Some(&(initial, final_base)) = self.pinyin_map.get(base.as_str()) {
+                            let final_str = format!("{}{}", final_base, tone);
+                            if !initial.is_empty() {
+                                phonemes.push(initial.to_string());
+                            }
+                            phonemes.push(final_str);
+                        } else {
+                            phonemes.push(format!("{}{}", base, tone));
+                        }
+                        word2ph.push(phonemes.len() - before);
+                    }
                 }
             }
         }
@@ -362,56 +381,9 @@ impl G2PConverter {
         }
     }
 
-    /// Convert Chinese characters to initials + finals with tones
-    /// Matching Python's clean_text output for zh v2.
-    /// e.g., "你好" -> "n i2 h ao3" (NOT "ni3 hao3")
     fn convert_chinese(&self, text: &str) -> Result<String> {
-        // First pass: collect (base_pinyin, tone) pairs
-        let mut syllables: Vec<(String, u32)> = Vec::new();
-        for py_result in text.to_pinyin().flatten() {
-            let pinyin_with_tone = py_result.with_tone_num_end();
-            if pinyin_with_tone.is_empty() { continue; }
-            let (base_pinyin, tone) = if let Some(last) = pinyin_with_tone.chars().last() {
-                if last.is_ascii_digit() {
-                    let base = &pinyin_with_tone[..pinyin_with_tone.len() - 1];
-                    let tone_num = last.to_digit(10).unwrap_or(5) as u32;
-                    (base.to_string(), tone_num)
-                } else {
-                    (pinyin_with_tone.to_string(), 5)
-                }
-            } else { continue; };
-            syllables.push((base_pinyin, tone));
-        }
-
-        // Apply third-tone sandhi (3+3 → 2+3) from left to right
-        let n = syllables.len();
-        for i in 0..n.saturating_sub(1) {
-            if syllables[i].1 == 3 && syllables[i + 1].1 == 3 {
-                syllables[i].1 = 2;
-            }
-        }
-
-        // Second pass: convert to initials+finals phonemes
-        let mut phonemes = Vec::new();
-        for (base_pinyin, tone) in &syllables {
-            if let Some(&(initial, final_base)) = self.pinyin_map.get(base_pinyin.as_str()) {
-                let final_with_tone = format!("{}{}", final_base, tone);
-                if initial.is_empty() {
-                    phonemes.push(final_with_tone);
-                } else {
-                    phonemes.push(initial.to_string());
-                    phonemes.push(final_with_tone);
-                }
-            } else {
-                phonemes.push(format!("{}{}", base_pinyin, tone));
-            }
-        }
-
-        if phonemes.is_empty() {
-            Ok(text.chars().map(|c| format!("[{}]", c)).collect())
-        } else {
-            Ok(phonemes.join(" "))
-        }
+        let (phonemes, _) = self.convert_chinese_with_word2ph(text)?;
+        Ok(phonemes)
     }
 
     /// Convert English text to phonemes using rules
@@ -587,5 +559,46 @@ mod tests {
         let converter = G2PConverter::new().unwrap();
         let result = converter.convert("안녕하세요", Language::Korean);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_bu_sandhi() {
+        let converter = G2PConverter::new().unwrap();
+        // 不怕: 不(4th-tone follows) → tone 2
+        let result = converter.convert("不怕", Language::Chinese).unwrap();
+        // 不 is bu4 normally; before 怕(pa4) → bu2. 怕 stays pa4.
+        assert!(result.contains("u2"), "不 before 4th tone should become tone 2: got {}", result);
+    }
+
+    #[test]
+    fn test_yi_sandhi() {
+        let converter = G2PConverter::new().unwrap();
+        // 一天: 一 before non-4th-tone → tone 4
+        let result = converter.convert("一天", Language::Chinese).unwrap();
+        assert!(result.contains("i4"), "一 before non-4th-tone should become tone 4: got {}", result);
+
+        // 一段: 一 before 4th tone → tone 2
+        let result2 = converter.convert("一段", Language::Chinese).unwrap();
+        assert!(result2.contains("i2"), "一 before 4th-tone should become tone 2: got {}", result2);
+    }
+
+    #[test]
+    fn test_neural_sandhi_word() {
+        let converter = G2PConverter::new().unwrap();
+        // 知识: in must_neural_tone_words → last char → tone 5
+        let (phones, _) = converter.convert_chinese_with_word2ph("知识").unwrap();
+        assert!(phones.contains("ir5"), "知识 last char should be tone 5: got {}", phones);
+    }
+
+    #[test]
+    fn test_three_sandhi_three_char() {
+        let converter = G2PConverter::new().unwrap();
+        // 所有人: 所有(tone3+tone3) / 人(tone2) — sub1 all-tone-3 len==2 → first char → tone 2
+        // 所=suo3, 有=you3, 人=ren2 — not all tone 3, else branch
+        // split "所有人" → ["所有","人"] (2+1), t1=[3,3], t2=[2]
+        // t1_all3=true, len==2 → tones[0]=2
+        let (phones, _) = converter.convert_chinese_with_word2ph("所有人").unwrap();
+        // 所 should be tone 2
+        assert!(phones.contains("uo2"), "所 should change to tone 2 in 所有人: got {}", phones);
     }
 }

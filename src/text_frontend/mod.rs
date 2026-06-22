@@ -6,6 +6,7 @@ pub mod g2p;
 pub mod lang_detect;
 pub mod normalizer;
 pub mod symbols;
+pub mod tone_sandhi;
 
 pub use g2p::G2PConverter;
 pub use lang_detect::LanguageDetector;
@@ -53,6 +54,33 @@ impl TextFrontend {
         let ids = self.symbol_table.encode(&phonemes)?;
 
         Ok(ids)
+    }
+
+    /// Process text and return (phoneme_ids, word2ph) for proper BERT alignment.
+    ///
+    /// word2ph[i] = number of phonemes for BERT content token i.
+    /// Only valid for Chinese text; for other languages returns empty word2ph (falls back to nearest-neighbor).
+    pub fn process_with_word2ph(&self, text: &str, language: Language) -> Result<(Vec<usize>, Vec<usize>)> {
+        let normalized = self.normalizer.normalize(text)?;
+        let detected_lang = if language == Language::Auto {
+            self.language_detector.detect(&normalized)?
+        } else {
+            language
+        };
+
+        match detected_lang {
+            Language::Chinese => {
+                let (phonemes, word2ph) = self.g2p_converter.convert_chinese_with_word2ph(&normalized)?;
+                let ids = self.symbol_table.encode(&phonemes)?;
+                Ok((ids, word2ph))
+            }
+            _ => {
+                // For non-Chinese, fall back to standard processing with empty word2ph
+                let phonemes = self.g2p_converter.convert(&normalized, detected_lang)?;
+                let ids = self.symbol_table.encode(&phonemes)?;
+                Ok((ids, Vec::new()))
+            }
+        }
     }
 
     /// Get phoneme string from text
