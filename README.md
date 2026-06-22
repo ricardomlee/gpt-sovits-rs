@@ -85,8 +85,7 @@ docker run --rm \
 
 **CUDA GPU 版本**
 
-> **注意**：CUDA 镜像使用 CUDA 12.6 基础镜像；ORT 预编译二进制需要 CUDA 13（libcublasLt.so.13），
-> 因此 BERT/HuBERT 会自动降级到 CPU EP 运行。GPT + SoVITS 通过 Candle 全程使用 GPU，推理速度不受影响。
+> BERT/HuBERT 预处理通过 ORT CPU EP 运行（一次性预处理，性能影响可忽略）；GPT 自回归生成 + SoVITS 解码通过 Candle CUDA 全程使用 GPU。如需 ORT CUDA EP，可将 `nvidia/cuda:13.2.0-cudnn-runtime-ubuntu24.04` 作为 runtime 基础镜像并安装 cuDNN。
 
 ```bash
 docker build -t gpt-sovits-rs:cuda -f Dockerfile.cuda .

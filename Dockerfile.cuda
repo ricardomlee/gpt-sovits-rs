@@ -4,7 +4,7 @@
 # ============================================================
 # Builder stage — CUDA toolkit + Rust toolchain
 # ============================================================
-FROM nvidia/cuda:12.6.0-devel-ubuntu24.04 AS builder
+FROM nvidia/cuda:13.2.0-devel-ubuntu24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -30,11 +30,9 @@ ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
 # Includes .cargo/config.toml which redirects crate downloads to rsproxy.cn (CN mirror)
 COPY . .
 
-# ORT_LIB_LOCATION: skip cdn.pyke.io download, use pre-bundled CUDA libonnxruntime.a + provider .so.
-# NOTE: docker-ort-libs/cuda/ contains the CUDA 13 prebuilt (built on a CUDA 13 host).
-# The CUDA EP (for BERT/HuBERT) requires libcublasLt.so.13 which is only in CUDA 13 images.
-# Until nvidia/cuda:13.x Docker images are available, ORT will fall back to the CPU EP for
-# BERT/HuBERT while Candle (GPT + SoVITS) still runs fully on GPU.
+# ORT_LIB_LOCATION: skip cdn.pyke.io download, use pre-bundled CUDA 13 libonnxruntime.a + provider .so.
+# ORT CUDA EP requires cuDNN (libcudnn.so.9) which is not included here to keep image size small.
+# BERT/HuBERT preprocessing runs on ORT CPU EP (fast, runs once); GPT+SoVITS uses Candle CUDA.
 ENV ORT_LIB_LOCATION=/app/docker-ort-libs/cuda
 
 # Build binary — cuda enables Candle CUDA backend; onnx enables BERT/HuBERT via ort
@@ -48,7 +46,7 @@ RUN cargo build --release --locked --features http-api,cuda,onnx && \
 # ============================================================
 # Runtime stage — minimal CUDA runtime
 # ============================================================
-FROM nvidia/cuda:12.6.0-runtime-ubuntu24.04
+FROM nvidia/cuda:13.2.0-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
