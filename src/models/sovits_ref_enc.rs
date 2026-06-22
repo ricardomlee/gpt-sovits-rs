@@ -5,7 +5,7 @@
 //! The ref_enc processes reference audio to produce a 512-d speaker embedding.
 //!
 //! Architecture (MelStyleEncoder):
-//! - spectral: FC(1025→128) → Mish → Dropout → FC(128→128) → Mish → Dropout
+//! - spectral: FC(704→128) → Mish → Dropout → FC(128→128) → Mish → Dropout
 //! - temporal: Conv1dGLU(128→128, k=5) → Conv1dGLU(128→128, k=5)
 //! - self_attn: MultiHeadAttention(2 heads, 128 dim, head=64)
 //! - fc: FC(128→512)
@@ -221,7 +221,7 @@ impl RefEnc {
     }
 
     /// Forward pass
-    /// x: [batch, n_mel, time] - reference spectrogram (STFT magnitude, truncated to 704 or 1025 channels)
+    /// x: [batch, 704, time] - reference spectrogram (first 704 bins of 1025-bin STFT, pre-truncated by caller)
     /// mask: [batch, 1, time] - attention mask (0=padded, 1=valid)
     /// Returns: [batch, 512, 1] - speaker embedding
     pub fn forward(&self, x: &Tensor, mask: &Tensor) -> Result<Tensor> {

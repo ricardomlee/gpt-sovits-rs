@@ -1,6 +1,7 @@
 /// Benchmark comparing inference() vs inference_kv_cache() on GPU
 ///
 /// Measures wall-clock time for full end-to-end synthesis with and without KV cache.
+/// Uses multiple text lengths to show how speedup scales with sequence length.
 
 use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
 use std::time::Instant;
@@ -32,53 +33,53 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     let _ = pipeline.load_hubert("models/onnx/hubert.onnx");
     println!("Models loaded.\n");
 
-    let input_text = "你好，世界！";
     let ref_audio = "/home/ric/gpt-sovits-rs/test_zh_py_wav16k.wav";
     let ref_text = "先帝创业未半而中道崩殂";
 
+    // Test with different text lengths to show KV cache scaling
+    let test_cases: &[(&str, &str)] = &[
+        ("short",  "你好世界"),
+        ("medium", "先帝创业未半而中道崩殂，今天下三分，益州疲弊，此诚危急存亡之秋也。"),
+        ("long",   "先帝创业未半而中道崩殂，今天下三分，益州疲弊，此诚危急存亡之秋也。然侍卫之臣不懈于内，忠志之士忘身于外者，盖追先帝之殊遇，欲报之于陛下也。"),
+    ];
+
     let options = InferenceOptions::builder()
-        .top_k(15).top_p(0.95).temperature(0.8)
-        .language(Language::Chinese).max_tokens(500)
+        .top_k(15).top_p(1.0).temperature(1.0)
+        .language(Language::Chinese).max_tokens(1000)
         .build();
 
-    println!("Input: \"{}\"\n", input_text);
+    println!("{:<8} {:<8} {:<10} {:<10} {:<8}", "length", "tokens", "plain(s)", "kv(s)", "speedup");
+    println!("{}", "-".repeat(52));
 
-    // --- Without KV Cache ---
-    println!("--- inference() — 3 iterations ---");
-    let mut times_plain = Vec::new();
-    for i in 1..=3 {
-        let start = Instant::now();
-        let audio = pipeline.inference(input_text, ref_audio, ref_text, &options)?;
-        let elapsed = start.elapsed();
-        times_plain.push(elapsed.as_secs_f64());
-        println!("  Run {}: {:.2}s  ({} samples, {:.2}s audio)",
-            i, elapsed.as_secs_f64(), audio.samples.len(), audio.duration());
+    for (label, input_text) in test_cases {
+        // 1 warmup + 2 timed runs each
+        let _ = pipeline.inference(input_text, ref_audio, ref_text, &options)?;
+        let _ = pipeline.inference_kv_cache(input_text, ref_audio, ref_text, &options)?;
+
+        let mut t_plain = 0.0f64;
+        let mut t_kv = 0.0f64;
+        let mut token_count = 0usize;
+
+        for _ in 0..2 {
+            let t = Instant::now();
+            let audio = pipeline.inference(input_text, ref_audio, ref_text, &options)?;
+            t_plain += t.elapsed().as_secs_f64();
+            token_count = audio.samples.len() / (audio.sample_rate as usize / 25);
+        }
+        for _ in 0..2 {
+            let t = Instant::now();
+            let _ = pipeline.inference_kv_cache(input_text, ref_audio, ref_text, &options)?;
+            t_kv += t.elapsed().as_secs_f64();
+        }
+
+        let avg_plain = t_plain / 2.0;
+        let avg_kv = t_kv / 2.0;
+        let speedup = avg_plain / avg_kv;
+
+        println!("{:<8} {:<8} {:<10.2} {:<10.2} {:.2}x",
+            label, token_count, avg_plain, avg_kv, speedup);
     }
 
-    // --- With KV Cache ---
-    println!("\n--- inference_kv_cache() — 3 iterations ---");
-    let mut times_kv = Vec::new();
-    for i in 1..=3 {
-        let start = Instant::now();
-        let audio = pipeline.inference_kv_cache(input_text, ref_audio, ref_text, &options)?;
-        let elapsed = start.elapsed();
-        times_kv.push(elapsed.as_secs_f64());
-        println!("  Run {}: {:.2}s  ({} samples, {:.2}s audio)",
-            i, elapsed.as_secs_f64(), audio.samples.len(), audio.duration());
-    }
-
-    let avg_plain = times_plain.iter().sum::<f64>() / times_plain.len() as f64;
-    let avg_kv    = times_kv.iter().sum::<f64>() / times_kv.len() as f64;
-
-    println!("\n=== Results ===");
-    println!("inference():          {:.2}s avg", avg_plain);
-    println!("inference_kv_cache(): {:.2}s avg", avg_kv);
-
-    if avg_kv < avg_plain {
-        println!("KV cache speedup: {:.2}x", avg_plain / avg_kv);
-    } else {
-        println!("(no speedup on this input length — try longer text)");
-    }
-
+    println!("\nNote: speedup grows with sequence length (O(n²) vs O(n) attention cost).");
     Ok(())
 }

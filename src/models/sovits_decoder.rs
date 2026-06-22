@@ -246,8 +246,7 @@ impl Decoder {
         let _ = x.device().synchronize();
 
         // x: [batch, channels, time]
-        let x = self.leaky_relu(x, 0.1)?;
-        let mut x = self.conv_pre.forward(&x)?;
+        let mut x = self.conv_pre.forward(x)?;
 
         // Add condition if provided
         if let Some(cond) = &self.cond {
@@ -276,7 +275,6 @@ impl Decoder {
                 for j in resblock_start..resblock_end {
                     let block = &self.resblocks[j];
                     let xs = block.forward(&x)?;
-                    eprintln!("[DEC] resblock{} input={:?} output={:?}", j, x.dims(), xs.dims());
                     xs_acc = Some(match xs_acc {
                         Some(acc) => acc.add(&xs)?,
                         None => xs,
@@ -290,8 +288,8 @@ impl Decoder {
             }
         }
 
-        // Final activation
-        x = self.leaky_relu(&x, 0.1)?;
+        // Final activation (Python uses F.leaky_relu(x) with default slope=0.01)
+        x = self.leaky_relu(&x, 0.01)?;
 
         // Output projection
         x = self.conv_post.forward(&x)?;
@@ -307,8 +305,7 @@ impl Decoder {
 
     /// Generate waveform and save intermediate outputs for debugging
     pub fn forward_debug(&self, x: &Tensor, g: Option<&Tensor>) -> Result<Vec<f32>> {
-        let x = self.leaky_relu(x, 0.1)?;
-        let mut x = self.conv_pre.forward(&x)?;
+        let mut x = self.conv_pre.forward(x)?;
         self.save_tensor("debug_conv_pre", &x)?;
 
         if let Some(cond) = &self.cond {
@@ -346,7 +343,7 @@ impl Decoder {
             }
         }
 
-        x = self.leaky_relu(&x, 0.1)?;
+        x = self.leaky_relu(&x, 0.01)?;
         x = self.conv_post.forward(&x)?;
         self.save_tensor("debug_post_conv", &x)?;
         x = x.tanh()?;

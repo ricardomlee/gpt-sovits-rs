@@ -139,26 +139,14 @@ impl WN {
 }
 
 /// Fused add tanh-sigmoid multiply (matches Python commons.fused_add_tanh_sigmoid_multiply)
-/// Splits both inputs in half along channel dim: tanh(a1)*sigmoid(a2) + tanh(b1)*sigmoid(b2)
-/// When broadcast_time is true, b (global conditioning) is broadcast across time dimension of a.
-fn fused_add_tanh_sigmoid_multiply(a: &Tensor, b: &Tensor, n_channels: usize, broadcast_time: bool) -> Result<Tensor> {
-    let a_tanh = a.narrow(1, 0, n_channels)?.tanh()?;
-    let a_sig = a.narrow(1, n_channels, n_channels)?;
-    let a_sig = candle_nn::ops::sigmoid(&a_sig)?;
-    let a_out = a_tanh.mul(&a_sig)?;
-
-    let b_tanh = b.narrow(1, 0, n_channels)?.tanh()?;
-    let b_sig = b.narrow(1, n_channels, n_channels)?;
-    let b_sig = candle_nn::ops::sigmoid(&b_sig)?;
-    let b_out = b_tanh.mul(&b_sig)?;
-
-    if broadcast_time {
-        // b_out is [batch, n_channels, 1], a_out is [batch, n_channels, time]
-        // Broadcast b_out across time dimension
-        Ok(a_out.broadcast_add(&b_out)?)
-    } else {
-        Ok(a_out.add(&b_out)?)
-    }
+/// Python: in_act = a + b (broadcast), then tanh(in_act[:n]) * sigmoid(in_act[n:])
+/// Note: this is NOT the same as tanh(a[:n])*sigmoid(a[n:]) + tanh(b[:n])*sigmoid(b[n:])
+fn fused_add_tanh_sigmoid_multiply(a: &Tensor, b: &Tensor, n_channels: usize, _broadcast_time: bool) -> Result<Tensor> {
+    // b may be [batch, 2*n_channels, 1] while a is [batch, 2*n_channels, time] — broadcast_add handles this
+    let in_act = a.broadcast_add(b)?;
+    let t_act = in_act.narrow(1, 0, n_channels)?.tanh()?;
+    let s_act = candle_nn::ops::sigmoid(&in_act.narrow(1, n_channels, n_channels)?)?;
+    Ok(t_act.mul(&s_act)?)
 }
 
 /// Residual Coupling Layer for Normalizing Flow
@@ -225,8 +213,11 @@ impl ResidualCouplingLayer {
             let kernel_size = if weight.dims().len() >= 3 { weight.dims()[2] } else { 1 };
             let padding = (kernel_size - 1) / 2;
 
-            // Create dummy weight_g for Conv1dWeightNorm
-            let weight_g = Tensor::full(1.0f32, weight.dims(), &weight.device())?;
+            // Set weight_g = per-channel L2 norm so (w/norm)*norm = w (no spurious normalization)
+            let v_sq = weight.sqr()?;
+            let v_norm = v_sq.sum(candle_core::D::Minus1)?.sum(candle_core::D::Minus1)?.sqrt()?;
+            let out_ch = weight.dims()[0];
+            let weight_g = v_norm.reshape((out_ch, 1, 1))?;
             Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight, bias, 1, padding, 1)?)
         }
     }

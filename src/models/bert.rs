@@ -96,9 +96,10 @@ impl BertModel {
         let outputs = self.session.run(inputs)
             .map_err(|e| crate::Error::InferenceError(format!("ONNX run error: {}", e)))?;
 
-        // Extract features from output
-        let output_value = outputs.get("last_hidden_state")
-            .ok_or_else(|| crate::Error::InferenceError("No 'last_hidden_state' output from BERT".to_string()))?;
+        // Extract features from output — re-exported BERT uses "hidden_state_neg3" (hidden_states[-3] layer)
+        let output_value = outputs.get("hidden_state_neg3")
+            .or_else(|| outputs.get("last_hidden_state"))
+            .ok_or_else(|| crate::Error::InferenceError("No BERT output found".to_string()))?;
 
         // Try float32 first, fall back to float16
         let candle_shape: Vec<usize>;

@@ -168,16 +168,17 @@ impl HubertModel {
             all_samples
         };
 
+        // Python always appends 0.3s at 32kHz (= 9600 samples) as a zero-pad, which at 16kHz
+        // is equivalent to 0.6s. We match this exactly so VQ prompt tokens align with Python.
+        let pad = (self.sampling_rate as f32 * 0.6) as usize;
         if spec.sample_rate != self.sampling_rate {
-            // Resample with sinc filter then add Python's 0.6s silence padding
             let mut resampled = self.resample_sinc(&samples, spec.sample_rate, self.sampling_rate)?;
-            // Python: wav16k = np.concatenate([wav16k, np.zeros(int(sr * 0.6))])
-            let pad = (self.sampling_rate as f32 * 0.6) as usize;
             resampled.resize(resampled.len() + pad, 0.0);
             Ok(resampled)
         } else {
-            // Already at target rate — assume caller pre-processed (including silence if needed)
-            Ok(samples)
+            let mut padded = samples;
+            padded.resize(padded.len() + pad, 0.0);
+            Ok(padded)
         }
     }
 

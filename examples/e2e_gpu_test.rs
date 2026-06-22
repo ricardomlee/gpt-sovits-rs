@@ -38,7 +38,7 @@ fn run_test() -> Result<(), Box<dyn std::error::Error>> {
     let gpt_path = "models/gpt-model.safetensors";
     let sovits_path = "models/sovits-model.safetensors";
     let bigvgan_path = "models/bigvgan.safetensors";
-    let bert_path = "models/onnx/bert.onnx";
+    let bert_path = "models/onnx/bert_hs22.onnx";
     let hubert_path = "models/onnx/hubert.onnx";
 
     println!("\nLoading models...");
@@ -81,18 +81,19 @@ fn run_test() -> Result<(), Box<dyn std::error::Error>> {
     let test_cases = vec![
         (
             "用户句子测试",
-            "如果确实没问题的话，运行一遍完整的pipeline生成一段音频，文字就是我的这句话",
+            "如果确实没问题的话，运行一遍完整的流程生成一段音频，文字就是我的这句话",
             "/home/ric/gpt-sovits/test_zh.wav",
             "这是一个测试文本。",
         ),
     ];
 
+    // Match Python TTS defaults (top_k=5, top_p=1.0, temperature=1.0, repetition_penalty=1.35)
     let options = InferenceOptions::builder()
-        .top_k(15)
-        .top_p(0.95)
-        .temperature(0.8)
+        .top_k(5)
+        .top_p(1.0)
+        .temperature(1.0)
         .language(Language::Chinese)
-        .max_tokens(500)
+        .max_tokens(1500)
         .build();
 
     for (test_name, input_text, ref_audio, ref_text) in test_cases {

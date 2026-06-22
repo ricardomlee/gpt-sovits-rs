@@ -43,15 +43,15 @@ impl EncoderLayer {
     }
 
     pub fn forward(&self, x: &Tensor, x_mask: &Tensor) -> Result<Tensor> {
-        // Self-attention with residual
-        let normed = self.norm1.forward(x)?;
-        let attn_out = self.self_attn.forward(&normed, x_mask)?;
-        let x = x.add(&attn_out)?;
+        // Post-norm attention: y = attn(x); x = norm1(x + y)
+        // Matches Python: x = self.norm_layers_1[i](x + attn(x))
+        let attn_out = self.self_attn.forward(x, x_mask)?;
+        let x = self.norm1.forward(&x.add(&attn_out)?)?;
 
-        // FFN with residual
-        let normed = self.norm2.forward(&x)?;
-        let ffn_out = self.ffn.forward(&normed)?;
-        let x = x.add(&ffn_out)?;
+        // Post-norm FFN: y = ffn(x); x = norm2(x + y)
+        // Matches Python: x = self.norm_layers_2[i](x + ffn(x))
+        let ffn_out = self.ffn.forward(&x)?;
+        let x = self.norm2.forward(&x.add(&ffn_out)?)?;
 
         Ok(x.broadcast_mul(x_mask)?)
     }
@@ -79,16 +79,20 @@ impl SelfAttention {
         let conv_o = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_o", prefix, layer_idx), device)?;
 
         let hidden = conv_q.weight().dims()[0];
-        let n_heads = 8;
-        let head_dim = hidden / n_heads;
+        // Derive head_dim from emb_rel_k shape [n_heads_rel, window_size, head_dim]
+        let head_dim = if let Ok(emb) = state_dict.get(&format!("{}.attn_layers.{}.emb_rel_k", prefix, layer_idx)) {
+            emb.dims()[2]
+        } else {
+            hidden / 2  // fallback: assume 2 heads (model default)
+        };
+        let n_heads = hidden / head_dim;
 
-        // Load relative position embeddings (stored but not used - they use a different format)
-        let _emb_rel_k = if state_dict.contains(&format!("{}.attn_layers.{}.emb_rel_k", prefix, layer_idx)) {
+        let emb_rel_k = if state_dict.contains(&format!("{}.attn_layers.{}.emb_rel_k", prefix, layer_idx)) {
             Some(state_dict.get(&format!("{}.attn_layers.{}.emb_rel_k", prefix, layer_idx))?.to_device(device)?.to_dtype(DType::F32)?)
         } else {
             None
         };
-        let _emb_rel_v = if state_dict.contains(&format!("{}.attn_layers.{}.emb_rel_v", prefix, layer_idx)) {
+        let emb_rel_v = if state_dict.contains(&format!("{}.attn_layers.{}.emb_rel_v", prefix, layer_idx)) {
             Some(state_dict.get(&format!("{}.attn_layers.{}.emb_rel_v", prefix, layer_idx))?.to_device(device)?.to_dtype(DType::F32)?)
         } else {
             None
@@ -101,8 +105,8 @@ impl SelfAttention {
             conv_o,
             n_heads,
             head_dim,
-            emb_rel_k: None,
-            emb_rel_v: None,
+            emb_rel_k,
+            emb_rel_v,
         })
     }
 
@@ -115,36 +119,112 @@ impl SelfAttention {
         let k = self.conv_k.forward(x)?;
         let v = self.conv_v.forward(x)?;
 
-        // Reshape for multi-head attention
-        // Conv1d output is [batch, channels, seq_len] = [batch, n_heads*head_dim, seq_len]
-        // Channels are stored contiguously: [head0_ch0, head0_ch1, ..., head0_ch23, head1_ch0, ...]
-        // Direct reshape to [batch, n_heads, seq_len, head_dim] correctly groups channels by head
-        // (same as PyTorch: tensor.reshape(batch, n_heads, seq_len, head_dim))
-        let q = q.reshape((batch, self.n_heads, seq_len, self.head_dim))?;  // [batch, n_heads, seq_len, head_dim]
-        let k = k.reshape((batch, self.n_heads, seq_len, self.head_dim))?;
-        let v = v.reshape((batch, self.n_heads, seq_len, self.head_dim))?;
+        // Reshape: [batch, n_heads*head_dim, T] → [batch, n_heads, T, head_dim]
+        // Python: q.view(b, n_heads, k_ch, T).transpose(2, 3)
+        let q = q.reshape((batch, self.n_heads, self.head_dim, seq_len))?.transpose(2, 3)?;
+        let k = k.reshape((batch, self.n_heads, self.head_dim, seq_len))?.transpose(2, 3)?;
+        let v = v.reshape((batch, self.n_heads, self.head_dim, seq_len))?.transpose(2, 3)?;
+        // All: [batch, n_heads, seq_len, head_dim]
 
-        let scale = 1.0 / (self.head_dim as f64).sqrt();
-        let k_t = k.transpose(2, 3)?;  // [batch, n_heads, head_dim, seq_len]
-        let scores = q.matmul(&k_t)?;  // [batch, n_heads, seq_len, seq_len]
-        let scores = scores.broadcast_mul(&Tensor::full(scale as f32, scores.dims(), x.device())?)?;
+        // Scale q: Python scales q BEFORE content and relative key matmuls
+        let scale = (self.head_dim as f64).powf(-0.5);
+        let q_scaled = (q * scale)?;
 
-        // Apply mask: scores * mask + (1 - mask) * (-1e9)
-        // x_mask is [batch, 1, seq_len]
-        // Expand to [batch, n_heads, seq_len, seq_len] where mask[..., j] = 1 if j < length
-        let mask_2d = x_mask.squeeze(1)?;  // [batch, seq_len]
-        let mask_4d = mask_2d.unsqueeze(1)?.unsqueeze(2)?;  // [batch, 1, seq_len, 1]
-        let mask_bc = mask_4d.broadcast_as((batch, self.n_heads, seq_len, seq_len))?;
-        let neg_inf = Tensor::full(-1e9f32, mask_bc.dims(), x.device())?;
+        // Content attention scores: [batch, n_heads, T, T]
+        let k_t = k.transpose(2, 3)?;
+        let mut scores = q_scaled.matmul(&k_t)?;
+
+        // Relative position attention (Shaw et al.) – only for self-attention with window
+        if let Some(emb_rel_k) = &self.emb_rel_k {
+            let key_rel_emb = Self::get_relative_embeddings(emb_rel_k, seq_len)?;
+            // key_rel_emb: [1, 2T-1, d]. Expand across heads: [1, n_heads, d, 2T-1]
+            let kre_t = key_rel_emb.transpose(1, 2)?;  // [1, d, 2T-1]
+            // repeat for each head: [n_heads, d, 2T-1] → unsqueeze → [1, n_heads, d, 2T-1]
+            let kre_t_exp = kre_t.repeat(vec![self.n_heads, 1, 1])?.unsqueeze(0)?;
+            // q_scaled [b, n_h, T, d] × [1, n_h, d, 2T-1] → [b, n_h, T, 2T-1]
+            let rel_logits = q_scaled.matmul(&kre_t_exp)?;
+            let scores_local = Self::relative_to_absolute(rel_logits)?;
+            scores = scores.add(&scores_local)?;
+        }
+
+        // Apply attention mask: masked_fill(mask == 0, -1e4)
+        // x_mask: [batch, 1, T]; expand to [batch, n_heads, T, T] masking key positions
+        let mask_2d = x_mask.squeeze(1)?;
+        let mask_4d = mask_2d.unsqueeze(1)?.unsqueeze(2)?;  // [b, 1, 1, T] (key dim)
+        let mask_bc = mask_4d.broadcast_as(scores.dims())?;
         let ones = Tensor::ones(mask_bc.dims(), DType::F32, x.device())?;
-        let inv_mask = ones.sub(&mask_bc)?.broadcast_mul(&neg_inf)?;  // (1 - mask) * (-1e9)
-        let scores = scores.broadcast_mul(&mask_bc)?.add(&inv_mask)?;  // scores * mask + (1 - mask) * (-1e9)
+        let inv_mask = ones.sub(&mask_bc)?.broadcast_mul(
+            &Tensor::full(-1e4f32, mask_bc.dims(), x.device())?
+        )?;
+        scores = scores.broadcast_mul(&mask_bc)?.add(&inv_mask)?;
 
         let attn_probs = candle_nn::ops::softmax(&scores, candle_core::D::Minus1)?;
-        let attn_out = attn_probs.matmul(&v)?;  // [batch, n_heads, seq_len, head_dim]
-        // Inverse of the input reshape: [batch, n_heads, seq_len, head_dim] -> [batch, channels, seq_len]
-        let attn_out = attn_out.reshape((batch, channels, seq_len))?;
+        let mut attn_out = attn_probs.matmul(&v)?;  // [b, n_heads, T, head_dim]
+
+        // Relative value attention
+        if let Some(emb_rel_v) = &self.emb_rel_v {
+            let rel_weights = Self::absolute_to_relative(attn_probs)?;
+            let val_rel_emb = Self::get_relative_embeddings(emb_rel_v, seq_len)?;
+            // val_rel_emb: [1, 2T-1, d]. Expand across heads: [1, n_heads, 2T-1, d]
+            let vre_exp = val_rel_emb.repeat(vec![self.n_heads, 1, 1])?.unsqueeze(0)?;
+            // [b, n_h, T, 2T-1] × [1, n_h, 2T-1, d] → [b, n_h, T, d]
+            let value_local = rel_weights.matmul(&vre_exp)?;
+            attn_out = attn_out.add(&value_local)?;
+        }
+
+        // Reshape back: [b, n_heads, T, head_dim] → [b, channels, T]
+        let attn_out = attn_out.transpose(2, 3)?.contiguous()?.reshape((batch, channels, seq_len))?;
         Ok(self.conv_o.forward(&attn_out)?)
+    }
+
+    /// Get relative position embeddings for sequence length L.
+    /// emb: [1, 2*window+1, k_ch] → output: [1, 2*L-1, k_ch]
+    fn get_relative_embeddings(emb: &Tensor, length: usize) -> Result<Tensor> {
+        let emb_len = emb.dims()[1];
+        let window_size = (emb_len - 1) / 2;
+        let k_ch = emb.dims()[2];
+        let device = emb.device();
+
+        let pad_length = if length > window_size + 1 { length - window_size - 1 } else { 0 };
+        let slice_start = if window_size + 1 > length { window_size + 1 - length } else { 0 };
+        let slice_end = slice_start + 2 * length - 1;
+
+        // Pad emb on dim 1 with zeros on both sides
+        let padded = if pad_length > 0 {
+            let zeros = Tensor::zeros((1, pad_length, k_ch), DType::F32, device)?;
+            Tensor::cat(&[&zeros, emb, &zeros], 1)?
+        } else {
+            emb.clone()
+        };
+        Ok(padded.narrow(1, slice_start, slice_end - slice_start)?)
+    }
+
+    /// Convert relative logits [b, h, L, 2L-1] to absolute [b, h, L, L].
+    /// Python: _relative_position_to_absolute_position
+    fn relative_to_absolute(x: Tensor) -> Result<Tensor> {
+        let (b, h, l, _) = x.dims4()?;
+        let device = x.device();
+        let zeros = Tensor::zeros((b, h, l, 1), DType::F32, device)?;
+        let x = Tensor::cat(&[&x, &zeros], 3)?;
+        let x = x.reshape((b, h, 2 * l * l))?;
+        let zeros2 = Tensor::zeros((b, h, l - 1), DType::F32, device)?;
+        let x = Tensor::cat(&[&x, &zeros2], 2)?;
+        let x = x.reshape((b, h, l + 1, 2 * l - 1))?;
+        Ok(x.narrow(2, 0, l)?.narrow(3, l - 1, l)?.contiguous()?)
+    }
+
+    /// Convert absolute attn weights [b, h, L, L] to relative [b, h, L, 2L-1].
+    /// Python: _absolute_position_to_relative_position
+    fn absolute_to_relative(x: Tensor) -> Result<Tensor> {
+        let (b, h, l, _) = x.dims4()?;
+        let device = x.device();
+        let zeros = Tensor::zeros((b, h, l, l - 1), DType::F32, device)?;
+        let x = Tensor::cat(&[&x, &zeros], 3)?;
+        let x = x.reshape((b, h, 2 * l * l - l))?;
+        let zeros2 = Tensor::zeros((b, h, l), DType::F32, device)?;
+        let x = Tensor::cat(&[&zeros2, &x], 2)?;
+        let x = x.reshape((b, h, l, 2 * l))?;
+        Ok(x.narrow(3, 1, 2 * l - 1)?.contiguous()?)
     }
 }
 
@@ -165,7 +245,7 @@ impl FeedForward {
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let x = self.conv_1.forward(x)?;
-        let x = x.gelu()?;
+        let x = x.relu()?;  // Python FFN default activation is ReLU (not GELU)
         Ok(self.conv_2.forward(&x)?)
     }
 }
@@ -241,10 +321,12 @@ impl MultiHeadAttention {
         let n_heads = self.n_heads;
         let k_ch = self.k_channels;
 
-        // Reshape: [batch, channels, seq] -> [batch, n_heads, seq, k_ch]
-        let q_heads = q.reshape((batch, n_heads, seq_q, k_ch))?;
-        let k_heads = k.reshape((batch, n_heads, seq_k, k_ch))?;
-        let v_heads = v.reshape((batch, n_heads, seq_k, k_ch))?;
+        // Reshape: [batch, n_heads*k_ch, seq] -> [batch, n_heads, k_ch, seq] -> transpose -> [batch, n_heads, seq, k_ch]
+        // Python: q.view(b, n_heads, k_ch, seq).transpose(2, 3)
+        let q_heads = q.reshape((batch, n_heads, k_ch, seq_q))?.transpose(2, 3)?;
+        let k_heads = k.reshape((batch, n_heads, k_ch, seq_k))?.transpose(2, 3)?;
+        let v_heads = v.reshape((batch, n_heads, k_ch, seq_k))?.transpose(2, 3)?;
+        // All: [batch, n_heads, seq, k_ch]
 
         // Scaled dot-product attention: Q @ K^T
         let k_t = k_heads.transpose(2, 3)?; // [batch, n_heads, k_ch, seq_k]
@@ -262,17 +344,12 @@ impl MultiHeadAttention {
         )?;
         let masked_scores = scores.broadcast_mul(&mask_bc)?.add(&neg_inf)?;
 
-        // Softmax over last dimension (seq_k) - numerically stable version
-        // Subtract max to prevent exp overflow
-        let max_scores = masked_scores.max_keepdim(3)?.broadcast_as(scores.dims())?;
-        let stable_scores = masked_scores.sub(&max_scores)?;
-        let scores_exp = stable_scores.exp()?;
-        let sum_exp = scores_exp.sum_keepdim(3)?;
-        let attn_probs = scores_exp.broadcast_div(&sum_exp)?;
+        // Softmax over last dimension (seq_k)
+        let attn_probs = candle_nn::ops::softmax(&masked_scores, candle_core::D::Minus1)?;
 
-        // Attention output: attn_probs @ V
+        // Attention output: attn_probs @ V, then transpose+reshape back to [batch, channels, seq_q]
         let attn_out = attn_probs.matmul(&v_heads)?; // [batch, n_heads, seq_q, k_ch]
-        let attn_out = attn_out.reshape((batch, channels, seq_q))?; // [batch, channels, seq_q]
+        let attn_out = attn_out.transpose(2, 3)?.contiguous()?.reshape((batch, channels, seq_q))?;
 
         // Output projection
         Ok(self.conv_o.forward(&attn_out)?)
@@ -402,7 +479,6 @@ fn load_linear(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<
 #[derive(Debug, Clone)]
 pub struct EncP {
     ssl_proj: candle_nn::Conv1d,
-    initial_norm: LayerNorm,
     encoder_ssl: Vec<EncoderLayer>,
     encoder_text: Vec<EncoderLayer>,
     text_embedding: Tensor,
@@ -433,12 +509,7 @@ impl EncP {
         };
         let ssl_proj = candle_nn::Conv1d::new(ssl_proj_weight, ssl_proj_bias, ssl_proj_config);
 
-        // Load initial layer norm (use encoder_ssl first norm)
-        let initial_norm_beta = state_dict.get("enc_p.encoder_ssl.norm_layers_1.0.beta")?
-            .to_device(device)?.to_dtype(DType::F32)?;
-        let initial_norm_gamma = state_dict.get("enc_p.encoder_ssl.norm_layers_1.0.gamma")?
-            .to_device(device)?.to_dtype(DType::F32)?;
-        let initial_norm = LayerNorm::new(initial_norm_gamma, initial_norm_beta);
+
 
         // Load text embedding
         let text_embedding = state_dict.get("enc_p.text_embedding.weight")?
@@ -501,7 +572,6 @@ impl EncP {
 
         Ok(Self {
             ssl_proj,
-            initial_norm,
             encoder_ssl,
             encoder_text,
             text_embedding,
@@ -529,11 +599,8 @@ impl EncP {
         let y_mask = self.sequence_mask(y_lengths, y_max_len, device)?;
         let y_mask_expanded = y_mask.unsqueeze(1)?;
 
-        // SSL projection (matching Python: y = self.ssl_proj(y * y_mask) * y_mask)
+        // SSL projection: matches Python y = self.ssl_proj(y * y_mask) * y_mask
         let mut y = self.ssl_proj.forward(&quantized.broadcast_mul(&y_mask_expanded)?)?;
-
-        // Initial layer norm to normalize large values from ssl_proj
-        y = self.initial_norm.forward(&y)?;
         y = y.broadcast_mul(&y_mask_expanded)?;
 
         // Create text mask
