@@ -1,4 +1,5 @@
 # syntax=docker/dockerfile:1
+# CUDA GPU build (Candle CUDA + ONNX Runtime CUDA EP for BERT/HuBERT)
 
 # ============================================================
 # Builder stage — CUDA toolkit + Rust toolchain
@@ -9,15 +10,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 
-# Install Rust and build dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl build-essential pkg-config libssl-dev ca-certificates \
+    curl build-essential pkg-config libssl-dev ca-certificates libsoxr-dev \
     && rm -rf /var/lib/apt/lists/* \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.86.0 \
     && ln -s /root/.cargo/bin/cargo /usr/local/bin/cargo \
     && ln -s /root/.cargo/bin/rustc /usr/local/bin/rustc
 
-# CUDA environment
 ENV CUDA_HOME=/usr/local/cuda
 ENV PATH=${CUDA_HOME}/bin:${PATH}
 ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
@@ -25,9 +24,13 @@ ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
 # Copy entire project (.dockerignore excludes target/, .git/, models/, etc.)
 COPY . .
 
-# Build binary
-RUN cargo build --release --locked --features http-api,cuda && \
-    cp target/release/gpt-sovits /app/gpt-sovits
+# Build binary — cuda enables Candle CUDA backend; onnx enables BERT/HuBERT via ort
+RUN cargo build --release --locked --features http-api,cuda,onnx && \
+    cp target/release/gpt-sovits /app/gpt-sovits && \
+    # ort statically links libonnxruntime.a but loads CUDA EP and shared provider via dlopen at runtime.
+    # libonnxruntime_providers_cuda.so is ~113MB — required for GPU-accelerated ONNX inference.
+    cp -L target/release/libonnxruntime_providers_shared.so /app/ && \
+    cp -L target/release/libonnxruntime_providers_cuda.so /app/
 
 # ============================================================
 # Runtime stage — minimal CUDA runtime
@@ -38,12 +41,18 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 
-# Install minimal runtime deps
+# libsoxr0:     audio resampling (soxr crate)
+# libcublas-12-6, libcurand-12-6: cuBLAS + cuRAND required by Candle's CUDA kernels
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libssl3 ca-certificates fonts-noto-cjk \
+    libssl3 ca-certificates libsoxr0 fonts-noto-cjk \
+    libcublas-12-6 libcurand-12-6 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/gpt-sovits /usr/local/bin/gpt-sovits
+COPY --from=builder /app/libonnxruntime_providers_shared.so /usr/local/lib/
+COPY --from=builder /app/libonnxruntime_providers_cuda.so /usr/local/lib/
+
+RUN ldconfig
 
 RUN mkdir -p /app/models
 
