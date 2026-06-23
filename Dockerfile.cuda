@@ -54,13 +54,10 @@ WORKDIR /app
 
 # libcublas/libcurand already included in nvidia/cuda:12.6.0-runtime base image
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libssl3 ca-certificates libsoxr0 fonts-noto-cjk \
+    libssl3 ca-certificates libsoxr0 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/gpt-sovits /usr/local/bin/gpt-sovits
-# ORT loads provider .so via dlopen relative to cwd (/app) — put them there and in /usr/local/lib
-COPY --from=builder /app/libonnxruntime_providers_shared.so /app/
-COPY --from=builder /app/libonnxruntime_providers_cuda.so /app/
 COPY --from=builder /app/libonnxruntime_providers_shared.so /usr/local/lib/
 COPY --from=builder /app/libonnxruntime_providers_cuda.so /usr/local/lib/
 
