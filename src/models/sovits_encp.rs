@@ -17,14 +17,14 @@ pub struct EncoderLayer {
 }
 
 impl EncoderLayer {
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, layer_idx: usize, n_heads: usize) -> Result<Self> {
+    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, layer_idx: usize, n_heads: usize, dtype: DType) -> Result<Self> {
         // Model uses format: enc_p.encoder_ssl.attn_layers.0.conv_q.weight
-        let self_attn = SelfAttention::load(state_dict, prefix, device, layer_idx, n_heads)?;
+        let self_attn = SelfAttention::load(state_dict, prefix, device, layer_idx, n_heads, dtype)?;
 
         // FFN layers
-        let ffn = FeedForward::load(state_dict, prefix, device, layer_idx)?;
+        let ffn = FeedForward::load(state_dict, prefix, device, layer_idx, dtype)?;
 
-        // Layer norms - model uses norm_layers_1 and norm_layers_2
+        // Layer norms - keep F32 for numerical stability
         let norm1 = LayerNorm::new(
             state_dict.get(&format!("{}.norm_layers_1.{}.gamma", prefix, layer_idx))?.to_device(device)?.to_dtype(DType::F32)?,
             state_dict.get(&format!("{}.norm_layers_1.{}.beta", prefix, layer_idx))?.to_device(device)?.to_dtype(DType::F32)?,
@@ -72,11 +72,11 @@ pub struct SelfAttention {
 }
 
 impl SelfAttention {
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, layer_idx: usize, _n_heads: usize) -> Result<Self> {
-        let conv_q = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_q", prefix, layer_idx), device)?;
-        let conv_k = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_k", prefix, layer_idx), device)?;
-        let conv_v = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_v", prefix, layer_idx), device)?;
-        let conv_o = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_o", prefix, layer_idx), device)?;
+    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, layer_idx: usize, _n_heads: usize, dtype: DType) -> Result<Self> {
+        let conv_q = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_q", prefix, layer_idx), device, dtype)?;
+        let conv_k = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_k", prefix, layer_idx), device, dtype)?;
+        let conv_v = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_v", prefix, layer_idx), device, dtype)?;
+        let conv_o = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_o", prefix, layer_idx), device, dtype)?;
 
         let hidden = conv_q.weight().dims()[0];
         // Derive head_dim from emb_rel_k shape [n_heads_rel, window_size, head_dim]
@@ -88,12 +88,12 @@ impl SelfAttention {
         let n_heads = hidden / head_dim;
 
         let emb_rel_k = if state_dict.contains(&format!("{}.attn_layers.{}.emb_rel_k", prefix, layer_idx)) {
-            Some(state_dict.get(&format!("{}.attn_layers.{}.emb_rel_k", prefix, layer_idx))?.to_device(device)?.to_dtype(DType::F32)?)
+            Some(state_dict.get(&format!("{}.attn_layers.{}.emb_rel_k", prefix, layer_idx))?.to_device(device)?.to_dtype(dtype)?)
         } else {
             None
         };
         let emb_rel_v = if state_dict.contains(&format!("{}.attn_layers.{}.emb_rel_v", prefix, layer_idx)) {
-            Some(state_dict.get(&format!("{}.attn_layers.{}.emb_rel_v", prefix, layer_idx))?.to_device(device)?.to_dtype(DType::F32)?)
+            Some(state_dict.get(&format!("{}.attn_layers.{}.emb_rel_v", prefix, layer_idx))?.to_device(device)?.to_dtype(dtype)?)
         } else {
             None
         };
@@ -236,9 +236,9 @@ pub struct FeedForward {
 }
 
 impl FeedForward {
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, layer_idx: usize) -> Result<Self> {
-        let conv_1 = load_conv1d(state_dict, &format!("{}.ffn_layers.{}.conv_1", prefix, layer_idx), device)?;
-        let conv_2 = load_conv1d(state_dict, &format!("{}.ffn_layers.{}.conv_2", prefix, layer_idx), device)?;
+    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, layer_idx: usize, dtype: DType) -> Result<Self> {
+        let conv_1 = load_conv1d(state_dict, &format!("{}.ffn_layers.{}.conv_1", prefix, layer_idx), device, dtype)?;
+        let conv_2 = load_conv1d(state_dict, &format!("{}.ffn_layers.{}.conv_2", prefix, layer_idx), device, dtype)?;
 
         Ok(Self { conv_1, conv_2 })
     }
@@ -250,13 +250,13 @@ impl FeedForward {
     }
 }
 
-fn load_conv1d(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<candle_nn::Conv1d> {
+fn load_conv1d(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<candle_nn::Conv1d> {
     let weight = state_dict.get(&format!("{}.weight", prefix))?
-        .to_device(device)?.to_dtype(DType::F32)?;
+        .to_device(device)?.to_dtype(dtype)?;
     let bias = state_dict.get(&format!("{}.bias", prefix))
         .ok()
         .cloned()
-        .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
+        .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
         .transpose()?;
 
     let weight_dims = weight.dims();
@@ -290,11 +290,11 @@ struct MultiHeadAttention {
 }
 
 impl MultiHeadAttention {
-    fn load(state_dict: &StateDict, prefix: &str, device: &Device, n_heads: usize) -> Result<Self> {
-        let conv_q = load_conv1d(state_dict, &format!("{}.conv_q", prefix), device)?;
-        let conv_k = load_conv1d(state_dict, &format!("{}.conv_k", prefix), device)?;
-        let conv_v = load_conv1d(state_dict, &format!("{}.conv_v", prefix), device)?;
-        let conv_o = load_conv1d(state_dict, &format!("{}.conv_o", prefix), device)?;
+    fn load(state_dict: &StateDict, prefix: &str, device: &Device, n_heads: usize, dtype: DType) -> Result<Self> {
+        let conv_q = load_conv1d(state_dict, &format!("{}.conv_q", prefix), device, dtype)?;
+        let conv_k = load_conv1d(state_dict, &format!("{}.conv_k", prefix), device, dtype)?;
+        let conv_v = load_conv1d(state_dict, &format!("{}.conv_v", prefix), device, dtype)?;
+        let conv_o = load_conv1d(state_dict, &format!("{}.conv_o", prefix), device, dtype)?;
 
         let channels = conv_q.weight().dims()[0];
         let k_channels = channels / n_heads;
@@ -366,27 +366,27 @@ pub struct MRTE {
 }
 
 impl MRTE {
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Self> {
+    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
         let c_pre = if state_dict.contains(&format!("{}.c_pre.weight", prefix)) {
-            Some(load_conv1d(state_dict, &format!("{}.c_pre", prefix), device)?)
+            Some(load_conv1d(state_dict, &format!("{}.c_pre", prefix), device, dtype)?)
         } else {
             None
         };
 
         let c_post = if state_dict.contains(&format!("{}.c_post.weight", prefix)) {
-            Some(load_conv1d(state_dict, &format!("{}.c_post", prefix), device)?)
+            Some(load_conv1d(state_dict, &format!("{}.c_post", prefix), device, dtype)?)
         } else {
             None
         };
 
         let text_pre = if state_dict.contains(&format!("{}.text_pre.weight", prefix)) {
-            Some(load_conv1d(state_dict, &format!("{}.text_pre", prefix), device)?)
+            Some(load_conv1d(state_dict, &format!("{}.text_pre", prefix), device, dtype)?)
         } else {
             None
         };
 
         let cross_attention = if state_dict.contains(&format!("{}.cross_attention.conv_q.weight", prefix)) {
-            Some(MultiHeadAttention::load(state_dict, &format!("{}.cross_attention", prefix), device, 4)?)
+            Some(MultiHeadAttention::load(state_dict, &format!("{}.cross_attention", prefix), device, 4, dtype)?)
         } else {
             None
         };
@@ -463,13 +463,13 @@ impl MRTE {
 }
 
 #[allow(dead_code)]
-fn load_linear(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<candle_nn::Linear> {
+fn load_linear(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<candle_nn::Linear> {
     let weight = state_dict.get(&format!("{}.weight", prefix))?
-        .to_device(device)?.to_dtype(DType::F32)?;
+        .to_device(device)?.to_dtype(dtype)?;
     let bias = state_dict.get(&format!("{}.bias", prefix))
         .ok()
         .cloned()
-        .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
+        .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
         .transpose()?;
 
     Ok(candle_nn::Linear::new(weight, bias))
@@ -490,14 +490,14 @@ pub struct EncP {
 
 impl EncP {
     /// Load EncP from SoVITS state dict
-    pub fn load(state_dict: &StateDict, device: &Device, _hidden_channels: usize, n_layers: usize, out_channels: usize) -> Result<Self> {
+    pub fn load(state_dict: &StateDict, device: &Device, _hidden_channels: usize, n_layers: usize, out_channels: usize, dtype: DType) -> Result<Self> {
         // Load SSL projection: [192, 768, 1]
         let ssl_proj_weight = state_dict.get("enc_p.ssl_proj.weight")?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let ssl_proj_bias = state_dict.get("enc_p.ssl_proj.bias")
             .ok()
             .cloned()
-            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
+            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
             .transpose()?;
 
         let ssl_proj_config = candle_nn::Conv1dConfig {
@@ -513,14 +513,14 @@ impl EncP {
 
         // Load text embedding
         let text_embedding = state_dict.get("enc_p.text_embedding.weight")?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
 
         // Load encoder_ssl layers (model uses 3 layers)
         let mut encoder_ssl = Vec::new();
         for i in 0..(n_layers / 2) {
             let prefix = "enc_p.encoder_ssl";
             if state_dict.contains(&format!("{}.attn_layers.{}.conv_q.weight", prefix, i)) {
-                let layer = EncoderLayer::load(state_dict, prefix, device, i, 8)?;
+                let layer = EncoderLayer::load(state_dict, prefix, device, i, 8, dtype)?;
                 encoder_ssl.push(layer);
             }
         }
@@ -530,14 +530,14 @@ impl EncP {
         for i in 0..n_layers {
             let prefix = "enc_p.encoder_text";
             if state_dict.contains(&format!("{}.attn_layers.{}.conv_q.weight", prefix, i)) {
-                let layer = EncoderLayer::load(state_dict, prefix, device, i, 8)?;
+                let layer = EncoderLayer::load(state_dict, prefix, device, i, 8, dtype)?;
                 encoder_text.push(layer);
             }
         }
 
         // Load MRTE (optional)
         let mrte = if state_dict.contains("enc_p.mrte.cross_attention.conv_q.weight") {
-            Some(MRTE::load(state_dict, "enc_p.mrte", device)?)
+            Some(MRTE::load(state_dict, "enc_p.mrte", device, dtype)?)
         } else {
             None
         };
@@ -547,18 +547,18 @@ impl EncP {
         for i in 0..(n_layers / 2) {
             let prefix = "enc_p.encoder2";
             if state_dict.contains(&format!("{}.attn_layers.{}.conv_q.weight", prefix, i)) {
-                let layer = EncoderLayer::load(state_dict, prefix, device, i, 8)?;
+                let layer = EncoderLayer::load(state_dict, prefix, device, i, 8, dtype)?;
                 encoder2.push(layer);
             }
         }
 
         // Load output projection: [out_channels * 2, hidden_channels, 1]
         let proj_weight = state_dict.get("enc_p.proj.weight")?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let proj_bias = state_dict.get("enc_p.proj.bias")
             .ok()
             .cloned()
-            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
+            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
             .transpose()?;
 
         let proj_config = candle_nn::Conv1dConfig {

@@ -4,7 +4,7 @@
 //! cross-attention between content features (Hubert) and text features
 //! for prosody-aware feature fusion.
 
-use candle_core::{Device, Tensor, D};
+use candle_core::{Device, DType, Tensor, D};
 use candle_nn::{Conv1d, Module, VarBuilder};
 use crate::Result;
 use crate::utils::StateDict;
@@ -108,11 +108,11 @@ impl MultiHeadAttention {
     }
 
     /// Load MultiHeadAttention from state dict
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Self> {
-        let conv_q = Self::load_conv(state_dict, &format!("{}.conv_q", prefix), device)?;
-        let conv_k = Self::load_conv(state_dict, &format!("{}.conv_k", prefix), device)?;
-        let conv_v = Self::load_conv(state_dict, &format!("{}.conv_v", prefix), device)?;
-        let conv_o = Self::load_conv(state_dict, &format!("{}.conv_o", prefix), device)?;
+    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
+        let conv_q = Self::load_conv(state_dict, &format!("{}.conv_q", prefix), device, dtype)?;
+        let conv_k = Self::load_conv(state_dict, &format!("{}.conv_k", prefix), device, dtype)?;
+        let conv_v = Self::load_conv(state_dict, &format!("{}.conv_v", prefix), device, dtype)?;
+        let conv_o = Self::load_conv(state_dict, &format!("{}.conv_o", prefix), device, dtype)?;
 
         // Infer n_heads and k_channels from weight shapes
         // conv_q weight: [channels, channels, 1]
@@ -133,11 +133,11 @@ impl MultiHeadAttention {
         })
     }
 
-    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1d> {
+    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Conv1d> {
         let weight = state_dict.get(&format!("{}.weight", prefix))?
-            .to_device(device)?.to_dtype(candle_core::DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let bias = state_dict.get(&format!("{}.bias", prefix))?
-            .to_device(device)?.to_dtype(candle_core::DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let config = candle_nn::Conv1dConfig {
             padding: 0,
             stride: 1,
@@ -250,11 +250,11 @@ impl MRTE {
     }
 
     /// Load MRTE from state dict
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Self> {
-        let cross_attention = MultiHeadAttention::load(state_dict, &format!("{}.cross_attention", prefix), device)?;
-        let c_pre = Self::load_conv1d(state_dict, &format!("{}.c_pre", prefix), device)?;
-        let text_pre = Self::load_conv1d(state_dict, &format!("{}.text_pre", prefix), device)?;
-        let c_post = Self::load_conv1d(state_dict, &format!("{}.c_post", prefix), device)?;
+    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
+        let cross_attention = MultiHeadAttention::load(state_dict, &format!("{}.cross_attention", prefix), device, dtype)?;
+        let c_pre = Self::load_conv1d(state_dict, &format!("{}.c_pre", prefix), device, dtype)?;
+        let text_pre = Self::load_conv1d(state_dict, &format!("{}.text_pre", prefix), device, dtype)?;
+        let c_post = Self::load_conv1d(state_dict, &format!("{}.c_post", prefix), device, dtype)?;
 
         Ok(Self {
             cross_attention,
@@ -264,11 +264,11 @@ impl MRTE {
         })
     }
 
-    fn load_conv1d(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1d> {
+    fn load_conv1d(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Conv1d> {
         let weight = state_dict.get(&format!("{}.weight", prefix))?
-            .to_device(device)?.to_dtype(candle_core::DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let bias = state_dict.get(&format!("{}.bias", prefix))?
-            .to_device(device)?.to_dtype(candle_core::DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let config = candle_nn::Conv1dConfig {
             padding: 0,
             stride: 1,

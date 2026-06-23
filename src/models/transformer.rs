@@ -557,12 +557,12 @@ pub struct TransformerGPTSoVITS {
 }
 
 impl TransformerGPTSoVITS {
-    pub fn new(config: TransformerConfig, weights: &StateDict, device: &Device) -> Result<Self> {
-        // Load text embedding with F32 conversion
+    pub fn new(config: TransformerConfig, weights: &StateDict, device: &Device, dtype: DType) -> Result<Self> {
+        // Load text embedding with dtype conversion
         let token_embedding_weight = weights
             .get("model.ar_text_embedding.word_embeddings.weight")?
             .to_device(device)?
-            .to_dtype(DType::F32)?;
+            .to_dtype(dtype)?;
         let token_embedding = Embedding::new(token_embedding_weight);
 
         // Create transformer layers with GPT-SoVITS format
@@ -571,13 +571,13 @@ impl TransformerGPTSoVITS {
             let prefix = format!("model.h.layers.{}", i);
 
             // Load fused QKV projection: [hidden * 3, hidden]
-            // Split into separate Q, K, V weights with F32 conversion
+            // Split into separate Q, K, V weights with dtype conversion
             let in_proj_weight = weights.get(&format!("{}.self_attn.in_proj_weight", prefix))?
                 .to_device(device)?
-                .to_dtype(DType::F32)?;
+                .to_dtype(dtype)?;
             let in_proj_bias = weights.get(&format!("{}.self_attn.in_proj_bias", prefix))?
                 .to_device(device)?
-                .to_dtype(DType::F32)?;
+                .to_dtype(dtype)?;
 
             // Split QKV weight into three parts: [hidden, hidden] each
             // Must call .contiguous() after narrow() to avoid non-contiguous CUDA matmul bugs
@@ -596,30 +596,30 @@ impl TransformerGPTSoVITS {
             let wk = Linear::new(k_weight, Some(k_bias));
             let wv = Linear::new(v_weight, Some(v_bias));
 
-            // Load output projection with F32 conversion
+            // Load output projection with dtype conversion
             let wo_weight = weights.get(&format!("{}.self_attn.out_proj.weight", prefix))?
                 .to_device(device)?
-                .to_dtype(DType::F32)?;
+                .to_dtype(dtype)?;
             let wo_bias = weights.get(&format!("{}.self_attn.out_proj.bias", prefix))?
                 .to_device(device)?
-                .to_dtype(DType::F32)?;
+                .to_dtype(dtype)?;
             let wo = Linear::new(wo_weight, Some(wo_bias));
 
             let attn = MultiHeadAttention::new(wq, wk, wv, wo, config.num_attention_heads);
 
-            // Load FFN with F32 conversion
+            // Load FFN with dtype conversion
             let linear1_weight = weights.get(&format!("{}.linear1.weight", prefix))?
                 .to_device(device)?
-                .to_dtype(DType::F32)?;
+                .to_dtype(dtype)?;
             let linear1_bias = weights.get(&format!("{}.linear1.bias", prefix))?
                 .to_device(device)?
-                .to_dtype(DType::F32)?;
+                .to_dtype(dtype)?;
             let linear2_weight = weights.get(&format!("{}.linear2.weight", prefix))?
                 .to_device(device)?
-                .to_dtype(DType::F32)?;
+                .to_dtype(dtype)?;
             let linear2_bias = weights.get(&format!("{}.linear2.bias", prefix))?
                 .to_device(device)?
-                .to_dtype(DType::F32)?;
+                .to_dtype(dtype)?;
 
             // Simple ReLU FFN: linear2(relu(linear1(x))) - matching Python
             let w1 = Linear::new(linear1_weight, Some(linear1_bias));
@@ -627,7 +627,7 @@ impl TransformerGPTSoVITS {
 
             let ff = FeedForward::new(w1, w2);
 
-            // Load layer norms with F32 conversion
+            // Load layer norms: keep F32 for numerical stability
             let attn_norm_weight = weights.get(&format!("{}.norm1.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
             let attn_norm_bias = weights.get(&format!("{}.norm1.bias", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
             let attn_norm = LayerNorm::new(attn_norm_weight, attn_norm_bias);

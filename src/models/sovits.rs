@@ -124,11 +124,11 @@ fn nearest_upsample_2x(x: &Tensor) -> Result<Tensor> {
 impl SoVITSModel {
     /// Load model from safetensors file
     pub fn load(path: &str) -> Result<Self> {
-        Self::load_with_device(path, &Device::Cpu)
+        Self::load_with_device(path, &Device::Cpu, DType::F32)
     }
 
     /// Load model with specific device
-    pub fn load_with_device(path: &str, device: &Device) -> Result<Self> {
+    pub fn load_with_device(path: &str, device: &Device, dtype: DType) -> Result<Self> {
         let weights_map = load_safetensors(path)?;
         let state_dict = StateDict::new(weights_map);
 
@@ -140,27 +140,27 @@ impl SoVITSModel {
 
         // Load quantizer (dimension=768 matches codebook embedding size)
         let codebook = state_dict.get("quantizer.vq.layers.0._codebook.embed")?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let quantizer = Quantizer::new(768, 1024, codebook);
 
         // Load EncP (text + semantic token encoder)
-        let enc_p = EncP::load(&state_dict, device, hidden_channels, n_layers, enc_out_channels)?;
+        let enc_p = EncP::load(&state_dict, device, hidden_channels, n_layers, enc_out_channels, dtype)?;
 
         // Load EncQ (reference audio mel encoder)
-        let enc_q = EncQ::load(&state_dict, device, hidden_channels, enc_out_channels)?;
+        let enc_q = EncQ::load(&state_dict, device, hidden_channels, enc_out_channels, dtype)?;
 
         // Load Flow (ResidualCouplingBlock)
-        let flow = ResidualCouplingBlock::load(&state_dict, "flow.flows", device, 4)?;
+        let flow = ResidualCouplingBlock::load(&state_dict, "flow.flows", device, 4, dtype)?;
 
         // Load Decoder
-        let decoder = Decoder::load(&state_dict, device)?;
+        let decoder = Decoder::load(&state_dict, device, dtype)?;
 
         // Load RefEnc (MelStyleEncoder for speaker embedding)
-        let ref_enc = RefEnc::load(&state_dict, device)?;
+        let ref_enc = RefEnc::load(&state_dict, device, dtype)?;
 
         Ok(Self {
             device: device.clone(),
-            dtype: DType::F32,
+            dtype,
             quantizer,
             enc_p,
             enc_q,

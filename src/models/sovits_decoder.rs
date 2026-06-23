@@ -21,7 +21,7 @@ pub struct ResBlock1 {
 }
 
 impl ResBlock1 {
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Self> {
+    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
         let mut convs1 = Vec::new();
         let mut convs2 = Vec::new();
 
@@ -29,7 +29,7 @@ impl ResBlock1 {
         for i in 0..3 {
             let key = format!("{}.convs1.{}.weight_v", prefix, i);
             if state_dict.contains(&key) {
-                convs1.push(Self::load_conv(state_dict, &format!("{}.convs1.{}", prefix, i), device)?);
+                convs1.push(Self::load_conv(state_dict, &format!("{}.convs1.{}", prefix, i), device, dtype)?);
             }
         }
 
@@ -37,22 +37,22 @@ impl ResBlock1 {
         for i in 0..3 {
             let key = format!("{}.convs2.{}.weight_v", prefix, i);
             if state_dict.contains(&key) {
-                convs2.push(Self::load_conv(state_dict, &format!("{}.convs2.{}", prefix, i), device)?);
+                convs2.push(Self::load_conv(state_dict, &format!("{}.convs2.{}", prefix, i), device, dtype)?);
             }
         }
 
         Ok(Self { convs1, convs2 })
     }
 
-    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1dWeightNorm> {
+    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Conv1dWeightNorm> {
         let weight_g = state_dict.get(&format!("{}.weight_g", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let weight_v = state_dict.get(&format!("{}.weight_v", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let bias = state_dict.get(&format!("{}.bias", prefix))
             .ok()
             .cloned()
-            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
+            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
             .transpose()?;
 
         // Kernel sizes cycle [3, 7, 11] across resblocks (rb_idx % 3).
@@ -117,16 +117,16 @@ struct Upsample {
 
 impl Decoder {
     /// Load decoder from SoVITS safetensors
-    pub fn load(state_dict: &StateDict, device: &Device) -> Result<Self> {
+    pub fn load(state_dict: &StateDict, device: &Device, dtype: DType) -> Result<Self> {
         // Load conv_pre: [512, 192, 7] - PLAIN conv, NOT weight_norm
-        let conv_pre = Self::load_conv_plain(state_dict, "dec.conv_pre", device)?;
+        let conv_pre = Self::load_conv_plain(state_dict, "dec.conv_pre", device, dtype)?;
 
         // Load conv_post: [1, 16, 7] - PLAIN conv, NOT weight_norm
-        let conv_post = Self::load_conv_plain_weight(state_dict, "dec.conv_post", device)?;
+        let conv_post = Self::load_conv_plain_weight(state_dict, "dec.conv_post", device, dtype)?;
 
         // Load condition layer if exists - PLAIN conv, NOT weight_norm
         let cond = if state_dict.contains("dec.cond.weight") {
-            Some(Self::load_conv_plain(state_dict, "dec.cond", device)?)
+            Some(Self::load_conv_plain(state_dict, "dec.cond", device, dtype)?)
         } else {
             None
         };
@@ -142,7 +142,7 @@ impl Decoder {
         for i in 0..10 {
             let prefix = format!("dec.ups.{}", i);
             if state_dict.contains(&format!("{}.weight_v", prefix)) {
-                let conv = Self::load_conv_wn(state_dict, &prefix, device)?;
+                let conv = Self::load_conv_wn(state_dict, &prefix, device, dtype)?;
                 let upsample_factor = if up_idx < UPSAMPLE_RATES.len() {
                     UPSAMPLE_RATES[up_idx]
                 } else {
@@ -158,7 +158,7 @@ impl Decoder {
         for i in 0..15 {
             let prefix = format!("dec.resblocks.{}", i);
             if state_dict.contains(&format!("{}.convs1.0.weight_v", prefix)) {
-                let block = ResBlock1::load(state_dict, &prefix, device)?;
+                let block = ResBlock1::load(state_dict, &prefix, device, dtype)?;
                 resblocks.push(block);
             }
         }
@@ -176,13 +176,13 @@ impl Decoder {
         })
     }
 
-    fn load_conv_plain(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1d> {
+    fn load_conv_plain(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Conv1d> {
         let weight = state_dict.get(&format!("{}.weight", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let bias = state_dict.get(&format!("{}.bias", prefix))
             .ok()
             .cloned()
-            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
+            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
             .transpose()?;
 
         let weight_dims = weight.dims();
@@ -197,15 +197,15 @@ impl Decoder {
     }
 
     /// Load weight-norm conv (used by ups and resblocks which ARE weight_norm)
-    fn load_conv_wn(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1dWeightNorm> {
+    fn load_conv_wn(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Conv1dWeightNorm> {
         let weight_g = state_dict.get(&format!("{}.weight_g", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let weight_v = state_dict.get(&format!("{}.weight_v", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let bias = state_dict.get(&format!("{}.bias", prefix))
             .ok()
             .cloned()
-            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
+            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
             .transpose()?;
 
         let weight_v_shape = weight_v.dims();
@@ -219,14 +219,14 @@ impl Decoder {
         Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)?)
     }
 
-    fn load_conv_plain_weight(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1d> {
+    fn load_conv_plain_weight(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Conv1d> {
         // For conv_post, the weight is stored directly (not weight_norm)
         let weight = state_dict.get(&format!("{}.weight", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let bias = state_dict.get(&format!("{}.bias", prefix))
             .ok()
             .cloned()
-            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
+            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
             .transpose()?;
 
         let weight_dims = weight.dims();
@@ -297,8 +297,8 @@ impl Decoder {
         // Tanh activation
         x = x.tanh()?;
 
-        // Convert to Vec<f32>
-        let output: Vec<f32> = x.flatten_all()?.to_vec1()?;
+        // Convert to Vec<f32> — cast to F32 first since weights may be F16
+        let output: Vec<f32> = x.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?;
         let _ = x.device().synchronize();
         Ok(output)
     }
@@ -349,7 +349,8 @@ impl Decoder {
         x = x.tanh()?;
         self.save_tensor("debug_audio", &x)?;
 
-        let output: Vec<f32> = x.flatten_all()?.to_vec1()?;
+        // Cast to F32 before to_vec1 since weights may be F16
+        let output: Vec<f32> = x.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?;
         Ok(output)
     }
 

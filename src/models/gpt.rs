@@ -88,11 +88,11 @@ fn mixed_embedding_lookup(
 impl GPTModel {
     /// Load model from safetensors file
     pub fn load(path: &str) -> Result<Self> {
-        Self::load_with_device(path, &Device::Cpu)
+        Self::load_with_device(path, &Device::Cpu, DType::F32)
     }
 
     /// Load model with specific device
-    pub fn load_with_device(path: &str, device: &Device) -> Result<Self> {
+    pub fn load_with_device(path: &str, device: &Device, dtype: DType) -> Result<Self> {
         // Load weights from safetensors
         let weights_map = load_safetensors(path)?;
         let state_dict = StateDict::new(weights_map);
@@ -101,7 +101,7 @@ impl GPTModel {
         let text_emb_key = "model.ar_text_embedding.word_embeddings.weight";
         let text_embedding = state_dict.get(text_emb_key)?
             .to_device(device)?
-            .to_dtype(DType::F32)?;
+            .to_dtype(dtype)?;
 
         let vocab_size = text_embedding.dims()[0];
         let hidden_size = text_embedding.dims()[1];
@@ -110,12 +110,12 @@ impl GPTModel {
         let audio_emb_key = "model.ar_audio_embedding.word_embeddings.weight";
         let audio_embedding = state_dict.get(audio_emb_key)?
             .to_device(device)?
-            .to_dtype(DType::F32)?;
+            .to_dtype(dtype)?;
 
         // Load BERT projection (optional): weight [512, 1024], bias [512]
         let bert_proj = if state_dict.contains("model.bert_proj.weight") {
-            let bert_weight = state_dict.get("model.bert_proj.weight")?.to_device(device)?.to_dtype(DType::F32)?;
-            let bert_bias = state_dict.get("model.bert_proj.bias")?.to_device(device)?.to_dtype(DType::F32)?;
+            let bert_weight = state_dict.get("model.bert_proj.weight")?.to_device(device)?.to_dtype(dtype)?;
+            let bert_bias = state_dict.get("model.bert_proj.bias")?.to_device(device)?.to_dtype(dtype)?;
             Some((bert_weight, bert_bias))
         } else {
             None
@@ -123,8 +123,8 @@ impl GPTModel {
 
         // Load Hubert projection (optional): weight [512, 768], bias [512]
         let hubert_proj = if state_dict.contains("model.hubert_proj.weight") {
-            let hubert_weight = state_dict.get("model.hubert_proj.weight")?.to_device(device)?.to_dtype(DType::F32)?;
-            let hubert_bias = state_dict.get("model.hubert_proj.bias")?.to_device(device)?.to_dtype(DType::F32)?;
+            let hubert_weight = state_dict.get("model.hubert_proj.weight")?.to_device(device)?.to_dtype(dtype)?;
+            let hubert_bias = state_dict.get("model.hubert_proj.bias")?.to_device(device)?.to_dtype(dtype)?;
             Some((hubert_weight, hubert_bias))
         } else {
             None
@@ -136,7 +136,7 @@ impl GPTModel {
             // Convert StateDict to HashMap for VarBuilder
             let mrte_vb = candle_nn::VarBuilder::from_tensors(
                 state_dict.as_hash_map().clone(),
-                DType::F32,
+                dtype,
                 device,
             );
             // Check if we can access MRTE weights
@@ -173,7 +173,7 @@ impl GPTModel {
         };
 
         // Create transformer with GPT-SoVITS style weights
-        let transformer = TransformerGPTSoVITS::new(config, &state_dict, device)?;
+        let transformer = TransformerGPTSoVITS::new(config, &state_dict, device, dtype)?;
 
         // Load output projection: [vocab_size, hidden_size]
         // Load positional encoding alpha parameters
@@ -192,7 +192,7 @@ impl GPTModel {
 
         let ar_predict_layer = state_dict.get("model.ar_predict_layer.weight")?
             .to_device(device)?
-            .to_dtype(DType::F32)?;
+            .to_dtype(dtype)?;
 
         Ok(Self {
             text_embedding,
@@ -205,7 +205,7 @@ impl GPTModel {
             text_pos_alpha,
             audio_pos_alpha,
             device: device.clone(),
-            dtype: DType::F32,
+            dtype,
             vocab_size,
             num_layers: num_hidden_layers,
         })

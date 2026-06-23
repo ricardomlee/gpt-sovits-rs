@@ -17,7 +17,7 @@ pub struct WN {
 
 impl WN {
     /// Load WN from state dict
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Self> {
+    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
         let mut in_layers = Vec::new();
         let mut res_skip_layers = Vec::new();
 
@@ -28,7 +28,7 @@ impl WN {
             if !state_dict.contains(&key) {
                 break;
             }
-            in_layers.push(Self::load_conv(state_dict, &format!("{}.in_layers.{}", prefix, i), device)?);
+            in_layers.push(Self::load_conv(state_dict, &format!("{}.in_layers.{}", prefix, i), device, dtype)?);
             i += 1;
         }
 
@@ -39,13 +39,13 @@ impl WN {
             if !state_dict.contains(&key) {
                 break;
             }
-            res_skip_layers.push(Self::load_conv(state_dict, &format!("{}.res_skip_layers.{}", prefix, i), device)?);
+            res_skip_layers.push(Self::load_conv(state_dict, &format!("{}.res_skip_layers.{}", prefix, i), device, dtype)?);
             i += 1;
         }
 
         // Load condition layer (optional)
         let cond_layer = if state_dict.contains(&format!("{}.cond_layer.weight_v", prefix)) {
-            Some(Self::load_conv(state_dict, &format!("{}.cond_layer", prefix), device)?)
+            Some(Self::load_conv(state_dict, &format!("{}.cond_layer", prefix), device, dtype)?)
         } else {
             None
         };
@@ -60,15 +60,15 @@ impl WN {
         })
     }
 
-    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1dWeightNorm> {
+    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Conv1dWeightNorm> {
         let weight_g = state_dict.get(&format!("{}.weight_g", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let weight_v = state_dict.get(&format!("{}.weight_v", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let bias = state_dict.get(&format!("{}.bias", prefix))
             .ok()
             .cloned()
-            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
+            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
             .transpose()?;
 
         let weight_v_shape = weight_v.dims();
@@ -161,15 +161,15 @@ pub struct ResidualCouplingLayer {
 
 impl ResidualCouplingLayer {
     /// Load from state dict
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, mean_only: bool) -> Result<Self> {
+    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, mean_only: bool, dtype: DType) -> Result<Self> {
         // Load pre projection
-        let pre = Self::load_conv(state_dict, &format!("{}.pre", prefix), device)?;
+        let pre = Self::load_conv(state_dict, &format!("{}.pre", prefix), device, dtype)?;
 
         // Load WN encoder
-        let enc = WN::load(state_dict, &format!("{}.enc", prefix), device)?;
+        let enc = WN::load(state_dict, &format!("{}.enc", prefix), device, dtype)?;
 
         // Load post projection
-        let post = Self::load_conv(state_dict, &format!("{}.post", prefix), device)?;
+        let post = Self::load_conv(state_dict, &format!("{}.post", prefix), device, dtype)?;
 
         // Get half_channels from pre weight shape [out_channels, in_channels, kernel]
         let half_channels = pre.weight_v.dims()[1];
@@ -183,17 +183,17 @@ impl ResidualCouplingLayer {
         })
     }
 
-    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1dWeightNorm> {
+    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Conv1dWeightNorm> {
         // Try weight_norm format first, fall back to regular weight
         if state_dict.contains(&format!("{}.weight_v", prefix)) {
             let weight_g = state_dict.get(&format!("{}.weight_g", prefix))?
-                .to_device(device)?.to_dtype(DType::F32)?;
+                .to_device(device)?.to_dtype(dtype)?;
             let weight_v = state_dict.get(&format!("{}.weight_v", prefix))?
-                .to_device(device)?.to_dtype(DType::F32)?;
+                .to_device(device)?.to_dtype(dtype)?;
             let bias = state_dict.get(&format!("{}.bias", prefix))
                 .ok()
                 .cloned()
-                .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
+                .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
                 .transpose()?;
 
             let kernel_size = if weight_v.dims().len() >= 3 { weight_v.dims()[2] } else { 1 };
@@ -203,11 +203,11 @@ impl ResidualCouplingLayer {
         } else {
             // Regular weight format
             let weight = state_dict.get(&format!("{}.weight", prefix))?
-                .to_device(device)?.to_dtype(DType::F32)?;
+                .to_device(device)?.to_dtype(dtype)?;
             let bias = state_dict.get(&format!("{}.bias", prefix))
                 .ok()
                 .cloned()
-                .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
+                .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
                 .transpose()?;
 
             let kernel_size = if weight.dims().len() >= 3 { weight.dims()[2] } else { 1 };
@@ -280,7 +280,7 @@ pub struct ResidualCouplingBlock {
 
 impl ResidualCouplingBlock {
     /// Load from state dict
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, _n_layers: usize) -> Result<Self> {
+    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, _n_layers: usize, dtype: DType) -> Result<Self> {
         let mut layers = Vec::new();
 
         // Flow layers may be at even indices (0, 2, 4, 6) - check up to 8
@@ -288,7 +288,7 @@ impl ResidualCouplingBlock {
         for i in 0..8 {
             let layer_prefix = format!("{}.{}", prefix, i);
             if state_dict.contains(&format!("{}.pre.weight", layer_prefix)) {
-                let layer = ResidualCouplingLayer::load(state_dict, &layer_prefix, device, false)?;
+                let layer = ResidualCouplingLayer::load(state_dict, &layer_prefix, device, false, dtype)?;
                 layers.push(layer);
             }
         }

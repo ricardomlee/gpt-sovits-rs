@@ -69,6 +69,11 @@ impl Config {
         ConfigBuilder::default()
     }
 
+    /// Get the Candle dtype based on half_precision setting
+    pub fn candle_dtype(&self) -> candle_core::DType {
+        if self.half_precision { candle_core::DType::F16 } else { candle_core::DType::F32 }
+    }
+
     /// Get the Candle device type
     pub fn candle_device(&self) -> candle_core::Device {
         match self.device {

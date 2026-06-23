@@ -25,12 +25,12 @@ struct LinearNorm {
 }
 
 impl LinearNorm {
-    fn load(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Self> {
+    fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
         // Python uses `.fc` suffix: spectral.0.fc.weight, spectral.3.fc.weight
         let weight = state_dict.get(&format!("{}.fc.weight", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let bias = state_dict.get(&format!("{}.fc.bias", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         Ok(Self { weight, bias })
     }
 
@@ -67,12 +67,12 @@ struct Conv1dGLU {
 }
 
 impl Conv1dGLU {
-    fn load(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Self> {
+    fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
         let conv_prefix = format!("{}.conv1.conv", prefix);
         let weight = state_dict.get(&format!("{}.weight", conv_prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let bias = state_dict.get(&format!("{}.bias", conv_prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let kernel_size = weight.dims()[2];
         let padding = (kernel_size - 1) / 2;
         Ok(Self {
@@ -117,17 +117,17 @@ struct MultiHeadSelfAttention {
 }
 
 impl MultiHeadSelfAttention {
-    fn load(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Self> {
+    fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
         let w_q = state_dict.get(&format!("{}.w_qs.weight", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let w_k = state_dict.get(&format!("{}.w_ks.weight", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let w_v = state_dict.get(&format!("{}.w_vs.weight", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let fc = state_dict.get(&format!("{}.fc.weight", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let fc_bias = state_dict.get(&format!("{}.fc.bias", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
 
         let hidden_dim = w_q.dims()[0];
         let n_heads = 2;
@@ -209,14 +209,14 @@ pub struct RefEnc {
 }
 
 impl RefEnc {
-    pub fn load(state_dict: &StateDict, device: &Device) -> Result<Self> {
+    pub fn load(state_dict: &StateDict, device: &Device, dtype: DType) -> Result<Self> {
         Ok(Self {
-            spectral_0: LinearNorm::load(state_dict, "ref_enc.spectral.0", device)?,
-            spectral_3: LinearNorm::load(state_dict, "ref_enc.spectral.3", device)?,
-            temporal_0: Conv1dGLU::load(state_dict, "ref_enc.temporal.0", device)?,
-            temporal_1: Conv1dGLU::load(state_dict, "ref_enc.temporal.1", device)?,
-            self_attn: MultiHeadSelfAttention::load(state_dict, "ref_enc.slf_attn", device)?,
-            fc: LinearNorm::load(state_dict, "ref_enc.fc", device)?,
+            spectral_0: LinearNorm::load(state_dict, "ref_enc.spectral.0", device, dtype)?,
+            spectral_3: LinearNorm::load(state_dict, "ref_enc.spectral.3", device, dtype)?,
+            temporal_0: Conv1dGLU::load(state_dict, "ref_enc.temporal.0", device, dtype)?,
+            temporal_1: Conv1dGLU::load(state_dict, "ref_enc.temporal.1", device, dtype)?,
+            self_attn: MultiHeadSelfAttention::load(state_dict, "ref_enc.slf_attn", device, dtype)?,
+            fc: LinearNorm::load(state_dict, "ref_enc.fc", device, dtype)?,
         })
     }
 

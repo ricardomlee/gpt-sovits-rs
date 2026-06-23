@@ -173,14 +173,16 @@ impl Pipeline {
     }
 
     pub fn load_gpt<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let model = GPTModel::load_with_device(path.as_ref().to_str().unwrap(), &self.device)?;
+        let dtype = self.config.candle_dtype();
+        let model = GPTModel::load_with_device(path.as_ref().to_str().unwrap(), &self.device, dtype)?;
         self.gpt_model = Some(model);
         Ok(())
     }
 
     pub fn load_sovits<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let path_str = path.as_ref().to_str().unwrap();
-        let model = SoVITSModel::load_with_device(path_str, &self.device)?;
+        let dtype = self.config.candle_dtype();
+        let model = SoVITSModel::load_with_device(path_str, &self.device, dtype)?;
         self.sovits_model = Some(model);
         let tokenizer = SemanticTokenizer::load_with_device(path_str, &self.device)?;
         self.semantic_tokenizer = Some(tokenizer);

@@ -22,7 +22,7 @@ struct WN {
 }
 
 impl WN {
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, n_layers: usize) -> Result<Self> {
+    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, n_layers: usize, dtype: DType) -> Result<Self> {
         let mut in_layers = Vec::new();
         let mut res_skip_layers = Vec::new();
 
@@ -30,7 +30,7 @@ impl WN {
         for i in 0..n_layers {
             let key = format!("{}.in_layers.{}.weight_v", prefix, i);
             if state_dict.contains(&key) {
-                in_layers.push(Self::load_conv(state_dict, &format!("{}.in_layers.{}", prefix, i), device)?);
+                in_layers.push(Self::load_conv(state_dict, &format!("{}.in_layers.{}", prefix, i), device, dtype)?);
             }
         }
 
@@ -38,13 +38,13 @@ impl WN {
         for i in 0..n_layers {
             let key = format!("{}.res_skip_layers.{}.weight_v", prefix, i);
             if state_dict.contains(&key) {
-                res_skip_layers.push(Self::load_conv(state_dict, &format!("{}.res_skip_layers.{}", prefix, i), device)?);
+                res_skip_layers.push(Self::load_conv(state_dict, &format!("{}.res_skip_layers.{}", prefix, i), device, dtype)?);
             }
         }
 
         // Load condition layer (optional)
         let cond_layer = if state_dict.contains(&format!("{}.cond_layer.weight_v", prefix)) {
-            Some(Self::load_conv(state_dict, &format!("{}.cond_layer", prefix), device)?)
+            Some(Self::load_conv(state_dict, &format!("{}.cond_layer", prefix), device, dtype)?)
         } else {
             None
         };
@@ -59,15 +59,15 @@ impl WN {
         })
     }
 
-    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1dWeightNorm> {
+    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Conv1dWeightNorm> {
         let weight_g = state_dict.get(&format!("{}.weight_g", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let weight_v = state_dict.get(&format!("{}.weight_v", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let bias = state_dict.get(&format!("{}.bias", prefix))
             .ok()
             .cloned()
-            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
+            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
             .transpose()?;
 
         let kernel_size = if weight_v.dims().len() >= 3 {
@@ -169,20 +169,20 @@ pub struct EncQ {
 
 impl EncQ {
     /// Load EncQ from state dict
-    pub fn load(state_dict: &StateDict, device: &Device, _hidden_channels: usize, out_channels: usize) -> Result<Self> {
+    pub fn load(state_dict: &StateDict, device: &Device, _hidden_channels: usize, out_channels: usize, dtype: DType) -> Result<Self> {
         // Load pre projection: [192, 1025, 1]
-        let pre = Conv1dWeightNorm::load_regular(state_dict, "enc_q.pre", device)?;
+        let pre = Conv1dWeightNorm::load_regular(state_dict, "enc_q.pre", device, dtype)?;
 
         // Load WaveNet encoder (16 layers)
-        let enc = WN::load(state_dict, "enc_q.enc", device, 16)?;
+        let enc = WN::load(state_dict, "enc_q.enc", device, 16, dtype)?;
 
         // Load output projection: [384, 192, 1]
         let proj_weight = state_dict.get("enc_q.proj.weight")?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let proj_bias = state_dict.get("enc_q.proj.bias")
             .ok()
             .cloned()
-            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
+            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
             .transpose()?;
 
         let proj_config = candle_nn::Conv1dConfig {
@@ -256,13 +256,13 @@ impl EncQ {
 /// Extension trait for loading regular (non-weight-norm) convolutions from state dict
 impl Conv1dWeightNorm {
     /// Load a regular convolution as Conv1dWeightNorm (with dummy weight_g)
-    pub fn load_regular(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Self> {
+    pub fn load_regular(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
         let weight = state_dict.get(&format!("{}.weight", prefix))?
-            .to_device(device)?.to_dtype(DType::F32)?;
+            .to_device(device)?.to_dtype(dtype)?;
         let bias = state_dict.get(&format!("{}.bias", prefix))
             .ok()
             .cloned()
-            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
+            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
             .transpose()?;
 
         let kernel_size = if weight.dims().len() >= 3 {
@@ -272,7 +272,7 @@ impl Conv1dWeightNorm {
         };
         let padding = (kernel_size - 1) / 2;
 
-        let weight_g = Tensor::full(1.0f32, weight.dims(), &weight.device())?;
+        let weight_g = Tensor::full(1.0f32, weight.dims(), &weight.device())?.to_dtype(dtype)?;
         Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight, bias, 1, padding, 1)?)
     }
 }
