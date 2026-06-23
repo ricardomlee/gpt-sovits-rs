@@ -323,9 +323,11 @@ mod http_api {
     };
     use serde::Deserialize;
     use std::sync::{Arc, Mutex};
+    use tokio::sync::mpsc;
+    use tokio_stream::{wrappers::ReceiverStream, StreamExt as _};
     use tower_http::trace::TraceLayer;
     use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
-    use tracing::{info, error};
+    use tracing::{info, error, warn};
 
     #[derive(Clone)]
     pub struct AppState {
@@ -350,6 +352,119 @@ mod http_api {
 
     async fn health_handler() -> &'static str {
         "OK"
+    }
+
+    /// Build a streaming WAV header for unknown-length audio (size=0xFFFFFFFF).
+    /// Compatible with ffplay, mpv, VLC, curl | aplay.
+    fn streaming_wav_header(sample_rate: u32, channels: u16) -> Vec<u8> {
+        let bits_per_sample: u16 = 16;
+        let byte_rate = sample_rate * channels as u32 * bits_per_sample as u32 / 8;
+        let block_align = channels * bits_per_sample / 8;
+        let data_size: u32 = 0xFFFF_FFFE; // streaming sentinel
+        let riff_size: u32 = data_size; // also sentinel — no accurate total known
+
+        let mut h = Vec::with_capacity(44);
+        h.extend_from_slice(b"RIFF");
+        h.extend_from_slice(&riff_size.to_le_bytes());
+        h.extend_from_slice(b"WAVE");
+        h.extend_from_slice(b"fmt ");
+        h.extend_from_slice(&16u32.to_le_bytes());      // chunk size
+        h.extend_from_slice(&1u16.to_le_bytes());        // PCM
+        h.extend_from_slice(&channels.to_le_bytes());
+        h.extend_from_slice(&sample_rate.to_le_bytes());
+        h.extend_from_slice(&byte_rate.to_le_bytes());
+        h.extend_from_slice(&block_align.to_le_bytes());
+        h.extend_from_slice(&bits_per_sample.to_le_bytes());
+        h.extend_from_slice(b"data");
+        h.extend_from_slice(&data_size.to_le_bytes());
+        h
+    }
+
+    /// Encode f32 samples as i16 PCM bytes.
+    fn samples_to_pcm(samples: &[f32]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(samples.len() * 2);
+        for &s in samples {
+            let v = (s.clamp(-1.0, 1.0) * 32767.0) as i16;
+            out.extend_from_slice(&v.to_le_bytes());
+        }
+        out
+    }
+
+    /// POST /tts/stream — streams WAV audio sentence-by-sentence as chunked HTTP.
+    /// First byte arrives after the first sentence is synthesized (~1-2s for short sentences).
+    async fn tts_stream_handler(
+        State(state): State<AppState>,
+        Json(req): Json<TtsRequest>,
+    ) -> Result<Response<Body>, StatusCode> {
+        let language = req.text_language
+            .as_deref()
+            .and_then(Language::from_str)
+            .unwrap_or(Language::Chinese);
+
+        let options = InferenceOptions::builder()
+            .top_k(req.top_k.unwrap_or(15))
+            .top_p(req.top_p.unwrap_or(0.95))
+            .temperature(req.temperature.unwrap_or(0.8))
+            .speed(req.speed.unwrap_or(1.0))
+            .language(language)
+            .build();
+
+        let text = req.text.clone();
+        let refer_path = req.refer_wav_path.unwrap_or_else(|| "ref.wav".to_string());
+        let prompt_text = req.prompt_text.unwrap_or_default();
+        let pipeline = Arc::clone(&state.pipeline);
+
+        // Channel: inference thread sends PCM chunks; HTTP task streams them out
+        let (tx, rx) = mpsc::channel::<Result<Vec<u8>, String>>(8);
+
+        tokio::task::spawn_blocking(move || {
+            let mut pipeline = match pipeline.lock() {
+                Ok(p) => p,
+                Err(e) => {
+                    let _ = tx.blocking_send(Err(format!("Pipeline lock error: {}", e)));
+                    return;
+                }
+            };
+
+            // Preload speaker features (cached — free on 2nd+ call)
+            if let Err(e) = pipeline.preload_speaker(&refer_path, &prompt_text, options.language) {
+                warn!("Failed to preload speaker: {}", e);
+            }
+
+            // Send WAV header first (sample_rate and channels are fixed)
+            let header = streaming_wav_header(24000, 1);
+            if tx.blocking_send(Ok(header)).is_err() {
+                return;
+            }
+
+            // Stream each sentence
+            for result in pipeline.inference_sentences(&text, &refer_path, &prompt_text, &options, 5) {
+                match result {
+                    Ok(audio) => {
+                        let pcm = samples_to_pcm(&audio.samples);
+                        if tx.blocking_send(Ok(pcm)).is_err() {
+                            break; // client disconnected
+                        }
+                    }
+                    Err(e) => {
+                        error!("Sentence inference failed: {}", e);
+                        let _ = tx.blocking_send(Err(e.to_string()));
+                        break;
+                    }
+                }
+            }
+        });
+
+        let stream = ReceiverStream::new(rx).map(|item| {
+            item.map_err(|e| std::io::Error::other(e))
+        });
+
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "audio/wav")
+            .header(header::TRANSFER_ENCODING, "chunked")
+            .body(Body::from_stream(stream))
+            .unwrap())
     }
 
     async fn tts_handler(
@@ -452,6 +567,7 @@ mod http_api {
         // Build router
         let app = Router::new()
             .route("/tts", post(tts_handler))
+            .route("/tts/stream", post(tts_stream_handler))
             .route("/health", get(health_handler))
             .layer(TraceLayer::new_for_http())
             .with_state(state);

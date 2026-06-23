@@ -32,7 +32,7 @@ pub mod utils;
 
 // Re-export main types
 pub use config::Config;
-pub use inference::{InferenceOptions, Pipeline};
+pub use inference::{InferenceOptions, Pipeline, split_sentences};
 pub use utils::AudioBuffer;
 
 /// Library version

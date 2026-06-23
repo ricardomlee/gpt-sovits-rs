@@ -77,6 +77,7 @@ rand = "0.8"
 
 # Async Runtime (for HTTP API)
 tokio = { version = "1.40", features = ["full"], optional = true }
+tokio-stream = { version = "0.1", optional = true }
 axum = { version = "0.7", optional = true }
 tower-http = { version = "0.5", features = ["cors", "trace"], optional = true }
 
@@ -97,7 +98,7 @@ tempfile = "3.14"
 [features]
 default = []
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "ort?/cuda"]
-http-api = ["tokio", "axum", "tower-http"]
+http-api = ["tokio", "tokio-stream", "axum", "tower-http"]
 mkl = ["candle-core/mkl"]
 onnx = ["ort"]
 

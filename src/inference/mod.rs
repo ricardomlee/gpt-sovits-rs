@@ -11,6 +11,53 @@ use crate::{Error, Language, Result};
 use std::collections::HashMap;
 use std::path::Path;
 
+/// Split text into sentence-level chunks for streaming inference.
+/// Splits on Chinese/Japanese/English sentence-ending punctuation.
+/// Chunks shorter than `min_chars` are merged with the next chunk.
+pub fn split_sentences(text: &str, min_chars: usize) -> Vec<String> {
+    // Sentence-ending punctuation (keep the delimiter attached to preceding text)
+    const DELIMITERS: &[char] = &['。', '！', '？', '…', '!', '?', '.', '\n'];
+
+    let mut sentences: Vec<String> = Vec::new();
+    let mut current = String::new();
+
+    for ch in text.chars() {
+        current.push(ch);
+        if DELIMITERS.contains(&ch) && !current.trim().is_empty() {
+            let trimmed = current.trim().to_string();
+            if !trimmed.is_empty() {
+                sentences.push(trimmed);
+            }
+            current.clear();
+        }
+    }
+    // Remaining text without terminator
+    let tail = current.trim().to_string();
+    if !tail.is_empty() {
+        sentences.push(tail);
+    }
+
+    // Merge short chunks into next chunk (avoid tiny inference calls)
+    let mut merged: Vec<String> = Vec::new();
+    let mut acc = String::new();
+    for s in sentences {
+        acc.push_str(&s);
+        if acc.chars().count() >= min_chars {
+            merged.push(acc.trim().to_string());
+            acc.clear();
+        }
+    }
+    if !acc.trim().is_empty() {
+        if let Some(last) = merged.last_mut() {
+            last.push_str(&acc);
+        } else {
+            merged.push(acc.trim().to_string());
+        }
+    }
+
+    merged
+}
+
 /// Inference options
 #[derive(Debug, Clone)]
 pub struct InferenceOptions {
@@ -184,6 +231,28 @@ impl Pipeline {
     pub fn sovits_model(&self) -> &Option<SoVITSModel> { &self.sovits_model }
     pub fn bigvgan_model(&self) -> &Option<BigVGAN> { &self.bigvgan_model }
     pub fn is_ready(&self) -> bool { self.gpt_model.is_some() && self.sovits_model.is_some() }
+
+    /// Stream inference sentence-by-sentence.
+    /// Splits `text` into sentences, yields one `AudioBuffer` per sentence as it's ready.
+    /// Caller should preload speaker features first for best performance.
+    pub fn inference_sentences<'a, P: AsRef<Path> + 'a>(
+        &'a mut self,
+        text: &'a str,
+        reference_audio: P,
+        reference_text: &'a str,
+        options: &'a InferenceOptions,
+        min_sentence_chars: usize,
+    ) -> impl Iterator<Item = Result<AudioBuffer>> + 'a {
+        let sentences = split_sentences(text, min_sentence_chars);
+        SentenceIterator {
+            pipeline: self,
+            sentences,
+            index: 0,
+            reference_audio: reference_audio.as_ref().to_path_buf(),
+            reference_text,
+            options,
+        }
+    }
 
     /// Pre-compute and cache reference speaker features.
     /// Call once per speaker before batch inference to avoid repeated HuBERT/BERT runs.
@@ -549,5 +618,33 @@ impl Pipeline {
         tracing::info!("Extracted reference STFT magnitude: {:?}", stft_mag.dims());
         Ok(Some(stft_mag))
     }
+}
 
+/// Iterator that yields one `AudioBuffer` per sentence, advancing as each sentence is synthesized.
+struct SentenceIterator<'a> {
+    pipeline: &'a mut Pipeline,
+    sentences: Vec<String>,
+    index: usize,
+    reference_audio: std::path::PathBuf,
+    reference_text: &'a str,
+    options: &'a InferenceOptions,
+}
+
+impl<'a> Iterator for SentenceIterator<'a> {
+    type Item = Result<AudioBuffer>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.index >= self.sentences.len() {
+            return None;
+        }
+        let text = self.sentences[self.index].clone();
+        self.index += 1;
+        tracing::info!("Streaming sentence {}/{}: {:?}", self.index, self.sentences.len(), text);
+        Some(self.pipeline.inference_kv_cache(
+            &text,
+            &self.reference_audio,
+            self.reference_text,
+            self.options,
+        ))
+    }
 }
