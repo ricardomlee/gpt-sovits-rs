@@ -13,6 +13,9 @@ pub struct MultiHeadAttention {
     pub wk: Linear,
     pub wv: Linear,
     pub wo: Linear,
+    /// Fused QKV projection weight [3*hidden, hidden] + bias [3*hidden].
+    /// When set, replaces 3 separate wq/wk/wv matmuls with a single matmul.
+    w_qkv: Option<Linear>,
     pub n_heads: usize,
     pub head_dim: usize,
     pub scale: f64,
@@ -23,7 +26,30 @@ impl MultiHeadAttention {
         let out_features = q.out_features();
         let head_dim = out_features / n_heads;
         let scale = 1.0 / (head_dim as f64).sqrt();
-        Self { wq: q, wk: k, wv: v, wo: o, n_heads, head_dim, scale }
+        Self { wq: q, wk: k, wv: v, wo: o, w_qkv: None, n_heads, head_dim, scale }
+    }
+
+    /// Constructor that keeps the fused QKV weight for a single matmul at inference time.
+    /// `w_qkv` weight is [3*hidden, hidden], bias is [3*hidden].
+    pub fn new_fused(q: Linear, k: Linear, v: Linear, o: Linear, n_heads: usize, w_qkv: Linear) -> Self {
+        let out_features = q.out_features();
+        let head_dim = out_features / n_heads;
+        let scale = 1.0 / (head_dim as f64).sqrt();
+        Self { wq: q, wk: k, wv: v, wo: o, w_qkv: Some(w_qkv), n_heads, head_dim, scale }
+    }
+
+    /// Compute Q, K, V — uses fused matmul when available, else 3 separate projections.
+    fn project_qkv(&self, x: &Tensor) -> Result<(Tensor, Tensor, Tensor)> {
+        let hidden = self.n_heads * self.head_dim;
+        if let Some(w) = &self.w_qkv {
+            let qkv = w.forward(x)?; // [batch, seq, 3*hidden]
+            let q = qkv.narrow(D::Minus1, 0, hidden)?.contiguous()?;
+            let k = qkv.narrow(D::Minus1, hidden, hidden)?.contiguous()?;
+            let v = qkv.narrow(D::Minus1, hidden * 2, hidden)?.contiguous()?;
+            Ok((q, k, v))
+        } else {
+            Ok((self.wq.forward(x)?, self.wk.forward(x)?, self.wv.forward(x)?))
+        }
     }
 
     /// Split tensor into multiple heads
@@ -38,10 +64,7 @@ impl MultiHeadAttention {
         let dims = x.dims();
         let (batch_size, seq_len, _) = (dims[0], dims[1], dims[2]);
 
-        // Compute Q, K, V projections
-        let q = self.wq.forward(x)?;
-        let k = self.wk.forward(x)?;
-        let v = self.wv.forward(x)?;
+        let (q, k, v) = self.project_qkv(x)?;
 
         // Split into heads
         let q = self.split_heads(&q, batch_size, seq_len)?;
@@ -114,10 +137,7 @@ impl MultiHeadAttention {
         let dims = x.dims();
         let (batch_size, seq_len, _) = (dims[0], dims[1], dims[2]);
 
-        // Compute Q, K, V projections
-        let q = self.wq.forward(x)?;
-        let k = self.wk.forward(x)?;
-        let v = self.wv.forward(x)?;
+        let (q, k, v) = self.project_qkv(x)?;
 
         // Split into heads
         let q = self.split_heads(&q, batch_size, seq_len)?;
@@ -570,28 +590,26 @@ impl TransformerGPTSoVITS {
         for i in 0..config.num_hidden_layers {
             let prefix = format!("model.h.layers.{}", i);
 
-            // Load fused QKV projection: [hidden * 3, hidden]
-            // Split into separate Q, K, V weights with dtype conversion
+            // Load fused QKV projection: weight [3*hidden, hidden], bias [3*hidden]
+            // Keep the fused weight for a single matmul at inference time.
             let in_proj_weight = weights.get(&format!("{}.self_attn.in_proj_weight", prefix))?
                 .to_device(device)?
-                .to_dtype(dtype)?;
+                .to_dtype(dtype)?
+                .contiguous()?;
             let in_proj_bias = weights.get(&format!("{}.self_attn.in_proj_bias", prefix))?
                 .to_device(device)?
-                .to_dtype(dtype)?;
+                .to_dtype(dtype)?
+                .contiguous()?;
+            let w_qkv = Linear::new(in_proj_weight.clone(), Some(in_proj_bias.clone()));
 
-            // Split QKV weight into three parts: [hidden, hidden] each
-            // Must call .contiguous() after narrow() to avoid non-contiguous CUDA matmul bugs
+            // Also split for the separate wq/wk/wv fields (used by forward_debug_qkv only)
             let hidden = config.hidden_size;
             let q_weight = in_proj_weight.narrow(0, 0, hidden)?.contiguous()?;
             let k_weight = in_proj_weight.narrow(0, hidden, hidden)?.contiguous()?;
             let v_weight = in_proj_weight.narrow(0, hidden * 2, hidden)?.contiguous()?;
-
-            // Split QKV bias into three parts
             let q_bias = in_proj_bias.narrow(0, 0, hidden)?.contiguous()?;
             let k_bias = in_proj_bias.narrow(0, hidden, hidden)?.contiguous()?;
             let v_bias = in_proj_bias.narrow(0, hidden * 2, hidden)?.contiguous()?;
-
-            // Create Linear weights manually
             let wq = Linear::new(q_weight, Some(q_bias));
             let wk = Linear::new(k_weight, Some(k_bias));
             let wv = Linear::new(v_weight, Some(v_bias));
@@ -605,7 +623,7 @@ impl TransformerGPTSoVITS {
                 .to_dtype(dtype)?;
             let wo = Linear::new(wo_weight, Some(wo_bias));
 
-            let attn = MultiHeadAttention::new(wq, wk, wv, wo, config.num_attention_heads);
+            let attn = MultiHeadAttention::new_fused(wq, wk, wv, wo, config.num_attention_heads, w_qkv);
 
             // Load FFN with dtype conversion
             let linear1_weight = weights.get(&format!("{}.linear1.weight", prefix))?

@@ -170,6 +170,11 @@ name = "benchmark_fp16_vs_fp32"
 path = "examples/benchmark_fp16_vs_fp32.rs"
 required-features = ["cuda", "onnx"]
 
+[[example]]
+name = "benchmark_fused_qkv"
+path = "examples/benchmark_fused_qkv.rs"
+required-features = ["cuda", "onnx"]
+
 [[bench]]
 name = "inference_bench"
 harness = false
