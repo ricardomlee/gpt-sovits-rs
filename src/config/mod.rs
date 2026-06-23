@@ -74,8 +74,9 @@ impl Config {
         if self.half_precision { candle_core::DType::F16 } else { candle_core::DType::F32 }
     }
 
-    /// Dtype for the GPT autoregressive model — always F32 because F16 accumulation
-    /// errors in deep transformer layers cause premature EOS generation.
+    /// Dtype for the GPT autoregressive model — always F32.
+    /// F16 and BF16 both cause premature EOS due to accumulated rounding
+    /// errors across 16 transformer layers in a model trained in F32.
     pub fn gpt_dtype(&self) -> candle_core::DType {
         candle_core::DType::F32
     }
