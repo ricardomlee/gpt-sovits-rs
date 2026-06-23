@@ -139,6 +139,11 @@ name = "benchmark_kv_cache"
 path = "examples/benchmark_kv_cache.rs"
 
 [[example]]
+name = "benchmark_speaker_cache"
+path = "examples/benchmark_speaker_cache.rs"
+required-features = ["cuda", "onnx"]
+
+[[example]]
 name = "e2e_quick"
 path = "examples/e2e_quick.rs"
 
