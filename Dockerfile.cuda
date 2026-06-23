@@ -61,7 +61,10 @@ COPY --from=builder /app/gpt-sovits /usr/local/bin/gpt-sovits
 COPY --from=builder /app/libonnxruntime_providers_shared.so /usr/local/lib/
 COPY --from=builder /app/libonnxruntime_providers_cuda.so /usr/local/lib/
 
-RUN ldconfig
+RUN ldconfig && \
+    mkdir -p /app && \
+    ln -s /usr/local/lib/libonnxruntime_providers_shared.so /app/libonnxruntime_providers_shared.so && \
+    ln -s /usr/local/lib/libonnxruntime_providers_cuda.so /app/libonnxruntime_providers_cuda.so
 
 RUN mkdir -p /app/models
 
