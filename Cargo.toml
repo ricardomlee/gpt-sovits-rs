@@ -165,6 +165,11 @@ name = "compare_stages"
 path = "examples/compare_stages.rs"
 required-features = ["cuda", "onnx"]
 
+[[example]]
+name = "benchmark_fp16_vs_fp32"
+path = "examples/benchmark_fp16_vs_fp32.rs"
+required-features = ["cuda", "onnx"]
+
 [[bench]]
 name = "inference_bench"
 harness = false

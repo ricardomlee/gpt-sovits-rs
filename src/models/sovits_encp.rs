@@ -152,13 +152,13 @@ impl SelfAttention {
         let mask_2d = x_mask.squeeze(1)?;
         let mask_4d = mask_2d.unsqueeze(1)?.unsqueeze(2)?;  // [b, 1, 1, T] (key dim)
         let mask_bc = mask_4d.broadcast_as(scores.dims())?;
-        let ones = Tensor::ones(mask_bc.dims(), DType::F32, x.device())?;
+        let ones = Tensor::ones(mask_bc.dims(), scores.dtype(), x.device())?;
         let inv_mask = ones.sub(&mask_bc)?.broadcast_mul(
-            &Tensor::full(-1e4f32, mask_bc.dims(), x.device())?
+            &Tensor::full(-1e4f32, mask_bc.dims(), x.device())?.to_dtype(scores.dtype())?
         )?;
         scores = scores.broadcast_mul(&mask_bc)?.add(&inv_mask)?;
 
-        let attn_probs = candle_nn::ops::softmax(&scores, candle_core::D::Minus1)?;
+        let attn_probs = candle_nn::ops::softmax(&scores.to_dtype(DType::F32)?, candle_core::D::Minus1)?.to_dtype(scores.dtype())?;
         let mut attn_out = attn_probs.matmul(&v)?;  // [b, n_heads, T, head_dim]
 
         // Relative value attention
@@ -191,7 +191,7 @@ impl SelfAttention {
 
         // Pad emb on dim 1 with zeros on both sides
         let padded = if pad_length > 0 {
-            let zeros = Tensor::zeros((1, pad_length, k_ch), DType::F32, device)?;
+            let zeros = Tensor::zeros((1, pad_length, k_ch), emb.dtype(), device)?;
             Tensor::cat(&[&zeros, emb, &zeros], 1)?
         } else {
             emb.clone()
@@ -204,10 +204,10 @@ impl SelfAttention {
     fn relative_to_absolute(x: Tensor) -> Result<Tensor> {
         let (b, h, l, _) = x.dims4()?;
         let device = x.device();
-        let zeros = Tensor::zeros((b, h, l, 1), DType::F32, device)?;
+        let zeros = Tensor::zeros((b, h, l, 1), x.dtype(), device)?;
         let x = Tensor::cat(&[&x, &zeros], 3)?;
         let x = x.reshape((b, h, 2 * l * l))?;
-        let zeros2 = Tensor::zeros((b, h, l - 1), DType::F32, device)?;
+        let zeros2 = Tensor::zeros((b, h, l - 1), x.dtype(), device)?;
         let x = Tensor::cat(&[&x, &zeros2], 2)?;
         let x = x.reshape((b, h, l + 1, 2 * l - 1))?;
         Ok(x.narrow(2, 0, l)?.narrow(3, l - 1, l)?.contiguous()?)
@@ -218,10 +218,10 @@ impl SelfAttention {
     fn absolute_to_relative(x: Tensor) -> Result<Tensor> {
         let (b, h, l, _) = x.dims4()?;
         let device = x.device();
-        let zeros = Tensor::zeros((b, h, l, l - 1), DType::F32, device)?;
+        let zeros = Tensor::zeros((b, h, l, l - 1), x.dtype(), device)?;
         let x = Tensor::cat(&[&x, &zeros], 3)?;
         let x = x.reshape((b, h, 2 * l * l - l))?;
-        let zeros2 = Tensor::zeros((b, h, l), DType::F32, device)?;
+        let zeros2 = Tensor::zeros((b, h, l), x.dtype(), device)?;
         let x = Tensor::cat(&[&zeros2, &x], 2)?;
         let x = x.reshape((b, h, l, 2 * l))?;
         Ok(x.narrow(3, 1, 2 * l - 1)?.contiguous()?)
@@ -331,21 +331,21 @@ impl MultiHeadAttention {
         // Scaled dot-product attention: Q @ K^T
         let k_t = k_heads.transpose(2, 3)?; // [batch, n_heads, k_ch, seq_k]
         let scores_raw = q_heads.matmul(&k_t)?; // [batch, n_heads, seq_q, seq_k]
-        let scale = Tensor::full((k_ch as f32).sqrt().recip(), scores_raw.dims(), scores_raw.device())?;
+        let scale = Tensor::full((k_ch as f32).sqrt().recip(), scores_raw.dims(), scores_raw.device())?.to_dtype(scores_raw.dtype())?;
         let scores = scores_raw.broadcast_mul(&scale)?;
 
         // Apply mask: scores * mask + (1 - mask) * (-1e9)
         // attn_mask: [batch, 1, seq_q, seq_k] -> broadcast to [batch, n_heads, seq_q, seq_k]
         let mask_bc = attn_mask.broadcast_as(scores.dims())?;
         let dims = scores.dims();
-        let ones = Tensor::ones(dims, DType::F32, scores.device())?;
+        let ones = Tensor::ones(dims, scores.dtype(), scores.device())?;
         let neg_inf = ones.broadcast_sub(&mask_bc)?.broadcast_mul(
-            &Tensor::full(-1e9f32, dims, scores.device())?
+            &Tensor::full(-1e9f32, dims, scores.device())?.to_dtype(scores.dtype())?
         )?;
         let masked_scores = scores.broadcast_mul(&mask_bc)?.add(&neg_inf)?;
 
         // Softmax over last dimension (seq_k)
-        let attn_probs = candle_nn::ops::softmax(&masked_scores, candle_core::D::Minus1)?;
+        let attn_probs = candle_nn::ops::softmax(&masked_scores.to_dtype(DType::F32)?, candle_core::D::Minus1)?.to_dtype(masked_scores.dtype())?;
 
         // Attention output: attn_probs @ V, then transpose+reshape back to [batch, channels, seq_q]
         let attn_out = attn_probs.matmul(&v_heads)?; // [batch, n_heads, seq_q, k_ch]
@@ -441,7 +441,7 @@ impl MRTE {
         let x = x.add(&ssl_proj_out)?;
         let ge = match ge {
             Some(g) => g.clone(),
-            None => Tensor::zeros((x.dims()[0], x.dims()[1], 1), DType::F32, x.device())?,
+            None => Tensor::zeros((x.dims()[0], x.dims()[1], 1), x.dtype(), x.device())?,
         };
         let ge_broadcasted = if ge.dims()[2] == 1 && x.dims()[2] != 1 {
             ge.broadcast_as(x.dims())?
@@ -594,24 +594,25 @@ impl EncP {
     ) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
         let device = quantized.device();
 
-        // Create mask for quantized
+        // Create mask for quantized — cast to match quantized dtype (F16 in FP16 mode)
         let y_max_len = quantized.dims()[2] as i64;
-        let y_mask = self.sequence_mask(y_lengths, y_max_len, device)?;
+        let y_mask = self.sequence_mask(y_lengths, y_max_len, device)?.to_dtype(quantized.dtype())?;
         let y_mask_expanded = y_mask.unsqueeze(1)?;
 
         // SSL projection: matches Python y = self.ssl_proj(y * y_mask) * y_mask
         let mut y = self.ssl_proj.forward(&quantized.broadcast_mul(&y_mask_expanded)?)?;
         y = y.broadcast_mul(&y_mask_expanded)?;
 
-        // Create text mask
+        // Create text mask — cast to match embedding dtype
         let text_max_len = text.dims()[1] as i64;
-        let text_mask = self.sequence_mask(text_lengths, text_max_len, device)?;
-        let text_mask_expanded = text_mask.unsqueeze(1)?;
+        let text_mask_raw = self.sequence_mask(text_lengths, text_max_len, device)?;
 
         // Text embedding lookup
         let text_emb = self.lookup_embeddings(text)?;
 
         let mut text_emb = text_emb.transpose(1, 2)?;
+        // Cast mask to match text_emb dtype
+        let text_mask_expanded = text_mask_raw.unsqueeze(1)?.to_dtype(text_emb.dtype())?;
         text_emb = text_emb.broadcast_mul(&text_mask_expanded)?;
 
         // Pass through encoder_text

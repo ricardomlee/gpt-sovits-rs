@@ -36,8 +36,7 @@ impl LinearNorm {
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         // x: [batch, seq, in_features], weight: [out, in]
-        // Output: [batch, seq, out]
-        // Workaround: reshape to 2D, matmul, reshape back
+        let x = x.to_dtype(self.weight.dtype())?;
         let dims_x = x.dims();
         let batch = dims_x[0];
         let seq = dims_x[1];
@@ -51,7 +50,8 @@ impl LinearNorm {
 
 /// Mish activation: x * tanh(softplus(x))
 fn mish(x: &Tensor) -> Result<Tensor> {
-    let softplus = x.exp()?.add(&Tensor::full(1.0f32, x.dims(), x.device())?)?.log()?;
+    let one = Tensor::full(1.0f32, x.dims(), x.device())?.to_dtype(x.dtype())?;
+    let softplus = x.exp()?.add(&one)?.log()?;
     let tanh_soft = softplus.tanh()?;
     Ok(x.broadcast_mul(&tanh_soft)?)
 }
@@ -84,8 +84,8 @@ impl Conv1dGLU {
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let x = x.to_dtype(self.conv_weight.dtype())?;
         // x: [batch, channels, seq]
-        // Conv1d with kernel_size=5, padding=2
         let conv_out = x.conv1d(
             &self.conv_weight,
             self.padding, 1, 1, 1,
@@ -139,6 +139,7 @@ impl MultiHeadSelfAttention {
     }
 
     fn forward(&self, x: &Tensor, mask: Option<&Tensor>) -> Result<Tensor> {
+        let x = x.to_dtype(self.w_q.dtype())?;
         // x: [batch, seq, hidden]
         let dims = x.dims();
         let batch = dims[0];
@@ -146,9 +147,9 @@ impl MultiHeadSelfAttention {
         let hidden = dims[2];
 
         // Project Q, K, V using 2D reshape (workaround for CUDA matmul issue)
-        let q = self.linear_2d(x, &self.w_q)?; // [batch, seq, hidden]
-        let k = self.linear_2d(x, &self.w_k)?;
-        let v = self.linear_2d(x, &self.w_v)?;
+        let q = self.linear_2d(&x, &self.w_q)?; // [batch, seq, hidden]
+        let k = self.linear_2d(&x, &self.w_k)?;
+        let v = self.linear_2d(&x, &self.w_v)?;
 
         // Reshape: [batch, seq, heads, head_dim] -> [batch, heads, seq, head_dim]
         let q = q.reshape((batch, seq, self.n_heads, self.head_dim))?.transpose(1, 2)?.contiguous()?;
@@ -158,22 +159,21 @@ impl MultiHeadSelfAttention {
         // Scaled dot-product attention
         let scale = (self.head_dim as f64).sqrt().recip();
         let k_t = k.transpose(2, 3)?;
-        let scores = q.matmul(&k_t)?.broadcast_mul(&Tensor::full(scale as f32, &[batch, self.n_heads, seq, seq], q.device())?)?;
+        let scale_t = Tensor::full(scale as f32, &[batch, self.n_heads, seq, seq], q.device())?.to_dtype(q.dtype())?;
+        let scores = q.matmul(&k_t)?.broadcast_mul(&scale_t)?;
 
         // Apply mask if provided
         let scores = if let Some(m) = mask {
-            // m: [batch, seq, seq]
-            let neg_inf = Tensor::full(-1e9f32, scores.dims(), scores.device())?;
-            // Broadcast mask: [batch, seq, seq] -> [batch, heads, seq, seq]
-            let m_float = m.to_dtype(DType::F32)?;
-            let m_expanded = m_float.reshape((batch, 1, seq, seq))?;
+            let neg_inf = Tensor::full(-1e9f32, scores.dims(), scores.device())?.to_dtype(scores.dtype())?;
+            let m_cast = m.to_dtype(scores.dtype())?;
+            let m_expanded = m_cast.reshape((batch, 1, seq, seq))?;
             let mask_val = m_expanded.broadcast_mul(&neg_inf)?;
             scores.broadcast_add(&mask_val)?
         } else {
             scores
         };
 
-        let attn = softmax(&scores, 3)?;
+        let attn = softmax(&scores.to_dtype(DType::F32)?, 3)?.to_dtype(scores.dtype())?;
         let out = attn.matmul(&v)?; // [batch, heads, seq, head_dim]
 
         // Reshape: [batch, heads, seq, head_dim] -> [batch, seq, hidden]
@@ -258,7 +258,7 @@ impl RefEnc {
         // Our mask from caller is [batch, 1, time] with 1=valid, 0=invalid
         // x is [batch, time, 128], need mask as [batch, time, 1] to broadcast
         let x_attn_input = if mask.dims()[1] == 1 {
-            let m_2d = mask.reshape((batch, time))?; // [batch, time]
+            let m_2d = mask.reshape((batch, time))?.to_dtype(x.dtype())?; // [batch, time]
             let m_3d = m_2d.unsqueeze(2)?; // [batch, time, 1]
             x.broadcast_mul(&m_3d)?  // zeros invalid positions
         } else {
@@ -267,7 +267,8 @@ impl RefEnc {
 
         let slf_attn_mask = if mask.dims()[1] == 1 {
             let m_squeezed = mask.squeeze(1)?;
-            let ones = Tensor::full(1.0f32, &[batch, time], x.device())?;
+            let ones = Tensor::full(1.0f32, &[batch, time], x.device())?.to_dtype(x.dtype())?;
+            let m_squeezed = m_squeezed.to_dtype(x.dtype())?;
             let inverted = ones.broadcast_sub(&m_squeezed)?;
             let mask_2d = inverted.unsqueeze(1)?;
             Some(mask_2d.broadcast_as((batch, time, time))?)
@@ -299,7 +300,7 @@ impl RefEnc {
         // x: [batch, time, 512]
         // valid_mask: [batch, time] - 1=valid, 0=invalid (padded)
         if let Some(m) = valid_mask {
-            // m is already 1=valid, 0=invalid
+            let m = m.to_dtype(x.dtype())?;
             let m_expanded = m.unsqueeze(2)?; // [batch, time, 1]
             let x_masked = x.broadcast_mul(&m_expanded)?;
 

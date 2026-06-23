@@ -90,35 +90,45 @@ fn build_sequence_mask(lengths: &[i64], time: usize, batch: usize, device: &Devi
     let idx_tensor = Tensor::from_vec(indices, (1, 1, time), device)?;
     let len_tensor = Tensor::from_vec(lengths.to_vec(), (batch, 1, 1), device)?;
     let lengths_b = len_tensor.broadcast_as((batch, 1, time))?;
-    // mask = idx < length
+    // mask = idx < length — always F32; caller casts to model dtype as needed
     let mask = idx_tensor.broadcast_lt(&lengths_b)?;
     mask.to_dtype(DType::F32).map_err(|e| crate::Error::InferenceError(e.to_string()))
+}
+
+/// Build sequence mask with specified dtype
+fn build_sequence_mask_typed(lengths: &[i64], time: usize, batch: usize, device: &Device, dtype: DType) -> Result<Tensor> {
+    let mask = build_sequence_mask(lengths, time, batch, device)?;
+    mask.to_dtype(dtype).map_err(|e| crate::Error::InferenceError(e.to_string()))
 }
 
 /// Nearest-neighbor 2x upsampling along the time dimension
 /// Input: [batch, channels, time] → Output: [batch, channels, time*2]
 fn nearest_upsample_2x(x: &Tensor) -> Result<Tensor> {
-    let dims = x.dims();
+    let orig_dtype = x.dtype();
+    let x_f32 = x.to_dtype(DType::F32)?;
+    let dims = x_f32.dims();
     let batch = dims[0];
     let channels = dims[1];
     let time = dims[2];
     let new_time = time * 2;
 
     let mut result = Vec::with_capacity(batch * channels * new_time);
-    let flat: Vec<f32> = x.flatten_all()?.to_vec1()?;
+    let flat: Vec<f32> = x_f32.flatten_all()?.to_vec1()?;
 
     for b in 0..batch {
         for c in 0..channels {
             for t in 0..time {
                 let idx = b * channels * time + c * time + t;
                 let val = flat[idx];
-                result.push(val); // first copy
-                result.push(val); // second copy (2x)
+                result.push(val);
+                result.push(val);
             }
         }
     }
 
-    Tensor::from_vec(result, (batch, channels, new_time), x.device()).map_err(|e| crate::Error::InferenceError(e.to_string()))
+    Tensor::from_vec(result, (batch, channels, new_time), x.device())
+        .and_then(|t| t.to_dtype(orig_dtype))
+        .map_err(|e| crate::Error::InferenceError(e.to_string()))
 }
 
 impl SoVITSModel {
@@ -214,14 +224,14 @@ impl SoVITSModel {
 
             // Build refer_mask from time dimension (all valid since we have full audio)
             let time = mel_in.dims()[2];
-            let refer_mask = Tensor::full(1.0f32, &[1, 1, time], &self.device)?;
+            let refer_mask = Tensor::full(1.0f32, &[1, 1, time], &self.device)?.to_dtype(mel_in.dtype())?;
 
             // Apply mask and compute ge
             let mel_masked = mel_in.broadcast_mul(&refer_mask)?;
             let ge = self.ref_enc.forward(&mel_masked, &refer_mask)?;
             ge
         } else {
-            Tensor::zeros((1, 512, 1), DType::F32, &self.device)?
+            Tensor::zeros((1, 512, 1), self.dtype, &self.device)?
         };
 
         // Decode semantic codes using quantizer
@@ -236,7 +246,7 @@ impl SoVITSModel {
 
         // Build y_mask from y_lengths
         let time_len = quantized_up.dims()[2];
-        let y_mask = build_sequence_mask(&y_lengths, time_len, 1, &self.device)?;
+        let y_mask = build_sequence_mask_typed(&y_lengths, time_len, 1, &self.device, self.dtype)?;
 
         // Pass through enc_p
         let (_y, m_p, logs_p, _y_mask_enc) = self.enc_p.forward(
@@ -251,7 +261,7 @@ impl SoVITSModel {
         // Sample from N(m, exp(logs)) to get latent z_p (matching Python: noise_scale=0.5)
         let noise = self.sample_noise(&m_p)?;
         let logs_exp = logs_p.exp()?;
-        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(&Tensor::full(noise_scale, m_p.dims(), &self.device)?)?)?;
+        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(&Tensor::full(noise_scale, m_p.dims(), &self.device)?.to_dtype(m_p.dtype())?)?)?;
 
         // Invert flow transform: z_p → z (with ge conditioning, matching Python)
         let z = self.flow.forward(&z_p, &y_mask, Some(&ge), true)?;
@@ -266,7 +276,7 @@ impl SoVITSModel {
     }
 
     fn sample_noise(&self, mean: &Tensor) -> Result<Tensor> {
-        Ok(Tensor::randn(0.0f32, 1.0, mean.dims(), &self.device)?)
+        Ok(Tensor::randn(0.0f32, 1.0, mean.dims(), &self.device)?.to_dtype(mean.dtype())?)
     }
 
     /// Synthesize audio and return (decoder_input, audio) for debugging
@@ -293,12 +303,12 @@ impl SoVITSModel {
         let ge = if let Some(mel) = ref_audio_mel {
             let mel_in = mel.clone();
             let time = mel_in.dims()[2];
-            let refer_mask = Tensor::full(1.0f32, &[1, 1, time], &self.device)?;
+            let refer_mask = Tensor::full(1.0f32, &[1, 1, time], &self.device)?.to_dtype(mel_in.dtype())?;
             let mel_masked = mel_in.broadcast_mul(&refer_mask)?;
             let ge = self.ref_enc.forward(&mel_masked, &refer_mask)?;
             ge
         } else {
-            Tensor::zeros((1, 512, 1), DType::F32, &self.device)?
+            Tensor::zeros((1, 512, 1), self.dtype, &self.device)?
         };
 
         let quantized = self.quantizer.decode(&codes)?;
@@ -308,7 +318,7 @@ impl SoVITSModel {
         let text_lengths = vec![text.dims()[1] as i64];
 
         let time_len = quantized_up.dims()[2];
-        let y_mask = build_sequence_mask(&y_lengths, time_len, 1, &self.device)?;
+        let y_mask = build_sequence_mask_typed(&y_lengths, time_len, 1, &self.device, self.dtype)?;
 
         let (_y, m_p, logs_p, _y_mask_enc) = self.enc_p.forward(
             &quantized_up, &y_lengths, &text, &text_lengths, &ge, 1.0,
@@ -317,7 +327,7 @@ impl SoVITSModel {
         // enc_p.forward() already clamps logs to [-5.0, 2.0]
         let noise = self.sample_noise(&m_p)?;
         let logs_exp = logs_p.exp()?;
-        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(&Tensor::full(noise_scale, m_p.dims(), &self.device)?)?)?;
+        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(&Tensor::full(noise_scale, m_p.dims(), &self.device)?.to_dtype(m_p.dtype())?)?)?;
 
         let z = self.flow.forward(&z_p, &y_mask, Some(&ge), true)?;
         let z_masked = z.broadcast_mul(&y_mask)?;
@@ -394,18 +404,20 @@ impl SoVITSModel {
 
         let time = ref_audio_mel.map(|m| m.dims()[2]).unwrap_or(0);
         let refer_mask = if time > 0 {
-            Tensor::full(1.0f32, &[1, 1, time], &self.device)?
+            Tensor::full(1.0f32, &[1, 1, time], &self.device)?.to_dtype(self.dtype)?
         } else {
-            Tensor::zeros((1, 1, 1), DType::F32, &self.device)?
+            Tensor::zeros((1, 1, 1), self.dtype, &self.device)?
         };
 
         let ge = if let Some(mel) = ref_audio_mel {
-            let mel_masked = mel.broadcast_mul(&refer_mask)?;
-            let ge = self.ref_enc.forward(&mel_masked, &refer_mask)?;
+            let mel_in = mel.to_dtype(self.dtype)?;
+            let refer_mask_m = Tensor::full(1.0f32, &[1, 1, mel_in.dims()[2]], &self.device)?.to_dtype(self.dtype)?;
+            let mel_masked = mel_in.broadcast_mul(&refer_mask_m)?;
+            let ge = self.ref_enc.forward(&mel_masked, &refer_mask_m)?;
             self.save_tensor("sovits_debug_ge", &ge)?;
             ge
         } else {
-            Tensor::zeros((1, 512, 1), DType::F32, &self.device)?
+            Tensor::zeros((1, 512, 1), self.dtype, &self.device)?
         };
 
         // Quantizer
@@ -419,7 +431,7 @@ impl SoVITSModel {
         let y_lengths = vec![quantized_up.dims()[2] as i64];
         let text_lengths = vec![text.dims()[1] as i64];
         let time_len = quantized_up.dims()[2];
-        let y_mask = build_sequence_mask(&y_lengths, time_len, 1, &self.device)?;
+        let y_mask = build_sequence_mask_typed(&y_lengths, time_len, 1, &self.device, self.dtype)?;
 
         // enc_p
         let (_y, m_p, logs_p, _y_mask_enc) = self.enc_p.forward(
@@ -431,7 +443,7 @@ impl SoVITSModel {
         // Sampling - enc_p.forward() already clamps logs to [-5.0, 2.0]
         let noise = self.sample_noise(&m_p)?;
         let logs_exp = logs_p.exp()?;
-        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(&Tensor::full(noise_scale, m_p.dims(), &self.device)?)?)?;
+        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(&Tensor::full(noise_scale, m_p.dims(), &self.device)?.to_dtype(m_p.dtype())?)?)?;
         self.save_tensor("sovits_debug_zp", &z_p)?;
 
         // Flow inverse
@@ -474,7 +486,7 @@ impl SoVITSModel {
     }
 
     fn save_tensor(&self, name: &str, t: &Tensor) -> Result<()> {
-        let flat: Vec<f32> = t.flatten_all()?.to_vec1()?;
+        let flat: Vec<f32> = t.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?;
         let dims = t.dims();
         let header = dims.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(",");
         let data = flat.iter().map(|v| format!("{:.10}", v)).collect::<Vec<_>>().join("\n");

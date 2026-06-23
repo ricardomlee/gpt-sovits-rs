@@ -173,7 +173,7 @@ impl Pipeline {
     }
 
     pub fn load_gpt<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let dtype = self.config.candle_dtype();
+        let dtype = self.config.gpt_dtype();
         let model = GPTModel::load_with_device(path.as_ref().to_str().unwrap(), &self.device, dtype)?;
         self.gpt_model = Some(model);
         Ok(())

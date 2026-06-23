@@ -9,7 +9,7 @@ pub fn leaky_relu(x: &Tensor, slope: f32) -> Result<Tensor> {
     let zeros = Tensor::zeros_like(x)?;
     let positive = x.maximum(&zeros)?;
     let negative = x.minimum(&zeros)?;
-    let slope_t = Tensor::full(slope, x.dims(), x.device())?;
+    let slope_t = Tensor::full(slope, x.dims(), x.device())?.to_dtype(x.dtype())?;
     Ok(positive.add(&negative.broadcast_mul(&slope_t)?)?)
 }
 
@@ -282,7 +282,7 @@ impl Decoder {
                 }
 
                 if let Some(xs) = xs_acc {
-                    let divisor = Tensor::full((resblock_end - resblock_start) as f32, xs.dims(), xs.device())?;
+                    let divisor = Tensor::full((resblock_end - resblock_start) as f32, xs.dims(), xs.device())?.to_dtype(xs.dtype())?;
                     x = xs.broadcast_div(&divisor)?;
                 }
             }
@@ -336,7 +336,7 @@ impl Decoder {
                     });
                 }
                 if let Some(xs) = xs_acc {
-                    let divisor = Tensor::full((resblock_end - resblock_start) as f32, xs.dims(), xs.device())?;
+                    let divisor = Tensor::full((resblock_end - resblock_start) as f32, xs.dims(), xs.device())?.to_dtype(xs.dtype())?;
                     x = xs.broadcast_div(&divisor)?;
                 }
                 self.save_tensor(&format!("debug_resblock{}", i), &x)?;
@@ -367,7 +367,7 @@ impl Decoder {
         let zeros = Tensor::zeros_like(x)?;
         let positive = x.maximum(&zeros)?;
         let negative = x.minimum(&zeros)?;
-        let slope_t = Tensor::full(slope, x.dims(), x.device())?;
+        let slope_t = Tensor::full(slope, x.dims(), x.device())?.to_dtype(x.dtype())?;
         Ok(positive.add(&negative.broadcast_mul(&slope_t)?)?)
     }
 

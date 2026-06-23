@@ -976,9 +976,9 @@ impl GPTModel {
             }
         }
 
-        // output = x + alpha * pe
-        let pe_tensor = Tensor::from_vec(pe, (1, seq, hidden), &self.device)?;
-        let scaled_pe = pe_tensor.broadcast_mul(&Tensor::full(alpha, x.dims(), &self.device)?)?;
+        // output = x + alpha * pe  (cast pe to match x dtype for FP16 compatibility)
+        let pe_tensor = Tensor::from_vec(pe, (1, seq, hidden), &self.device)?.to_dtype(x.dtype())?;
+        let scaled_pe = pe_tensor.broadcast_mul(&Tensor::full(alpha, x.dims(), &self.device)?.to_dtype(x.dtype())?)?;
         Ok(x.broadcast_add(&scaled_pe)?)
     }
 
