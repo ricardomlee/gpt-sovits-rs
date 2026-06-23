@@ -44,18 +44,24 @@ RUN cargo build --release --locked --features http-api,cuda,onnx && \
     cp -L docker-ort-libs/cuda/libonnxruntime_providers_cuda.so /app/
 
 # ============================================================
-# Runtime stage — minimal CUDA runtime
+# Runtime stage — ubuntu:24.04 + only required CUDA libs
 # ============================================================
-FROM nvidia/cuda:13.2.0-runtime-ubuntu24.04
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+# Required for nvidia-container-runtime to inject libcuda.so.1 from host driver
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-WORKDIR /app
-
-# libcublas/libcurand already included in nvidia/cuda:12.6.0-runtime base image
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libssl3 ca-certificates libsoxr0 \
+    libssl3 ca-certificates libsoxr0 libstdc++6 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
+
+# Copy only the 4 CUDA libs our binary actually links against (ldd verified)
+COPY --from=builder /usr/local/cuda/lib64/libcudart.so.13.2.51   /usr/local/lib/
+COPY --from=builder /usr/local/cuda/lib64/libcublas.so.13.3.0.5  /usr/local/lib/
+COPY --from=builder /usr/local/cuda/lib64/libcublasLt.so.13.3.0.5 /usr/local/lib/
+COPY --from=builder /usr/local/cuda/lib64/libcurand.so.10.4.2.51 /usr/local/lib/
 
 COPY --from=builder /app/gpt-sovits /usr/local/bin/gpt-sovits
 COPY --from=builder /app/libonnxruntime_providers_shared.so /usr/local/lib/
