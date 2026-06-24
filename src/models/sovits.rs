@@ -397,17 +397,23 @@ impl SoVITSModel {
         noise_scale: f32,
     ) -> Result<()> {
         let codes_vec: Vec<i64> = semantic_tokens.iter().map(|&x| x as i64).collect();
-        let codes = Tensor::from_vec(codes_vec, (1, semantic_tokens.len()), &self.device)?;
+        let codes = Tensor::from_vec(codes_vec.clone(), (1, semantic_tokens.len()), &self.device)?;
 
         let text_vec: Vec<i64> = text_tokens.iter().map(|&x| x as i64).collect();
-        let text = Tensor::from_vec(text_vec, (1, text_tokens.len()), &self.device)?;
+        let text = Tensor::from_vec(text_vec.clone(), (1, text_tokens.len()), &self.device)?;
 
-        let time = ref_audio_mel.map(|m| m.dims()[2]).unwrap_or(0);
-        let refer_mask = if time > 0 {
-            Tensor::full(1.0f32, &[1, 1, time], &self.device)?.to_dtype(self.dtype)?
-        } else {
-            Tensor::zeros((1, 1, 1), self.dtype, &self.device)?
-        };
+        // Save tokens to files for Python comparison
+        {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::File::create("sovits_debug_semantic_tokens.txt") {
+                writeln!(f, "{}", codes_vec.len()).ok();
+                for t in &codes_vec { writeln!(f, "{}", t).ok(); }
+            }
+            if let Ok(mut f) = std::fs::File::create("sovits_debug_text_tokens.txt") {
+                writeln!(f, "{}", text_vec.len()).ok();
+                for t in &text_vec { writeln!(f, "{}", t).ok(); }
+            }
+        }
 
         let ge = if let Some(mel) = ref_audio_mel {
             let mel_in = mel.to_dtype(self.dtype)?;
@@ -515,7 +521,7 @@ impl crate::models::Model for SoVITSModel {
 
     fn to_device(&mut self, device: &str) -> Result<()> {
         let new_device = match device {
-            "cuda" => Device::new_cuda(0),
+            "cuda" => Device::new_cuda_with_stream(0),
             "mps" => Device::new_metal(0),
             _ => Ok(Device::Cpu),
         }

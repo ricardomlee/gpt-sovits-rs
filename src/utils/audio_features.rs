@@ -119,15 +119,16 @@ impl SpectrogramExtractor {
             // FFT
             fft.process(&mut fft_buf);
 
-            // Compute magnitude: sqrt(re^2 + im^2 + 1e-8)  (matches Python exactly)
+            // Store in bin-major order: magnitudes[bin * n_frames + frame_idx]
+            // so that Tensor::from_vec with shape (n_bins, n_frames) is correct.
             for bin in 0..n_bins {
                 let re = fft_buf[bin].re;
                 let im = fft_buf[bin].im;
-                magnitudes[frame_idx * n_bins + bin] = (re * re + im * im + 1e-8).sqrt();
+                magnitudes[bin * n_frames + frame_idx] = (re * re + im * im + 1e-8).sqrt();
             }
         }
 
-        // Create tensor: [n_bins, n_frames]
+        // Create tensor: [n_bins, n_frames] — data is stored bin-major
         Tensor::from_vec(magnitudes, (n_bins, n_frames), device)
             .map_err(|e| Error::AudioError(format!("Failed to create spectrogram tensor: {}", e)))
     }

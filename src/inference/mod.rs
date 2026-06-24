@@ -133,8 +133,6 @@ struct CachedSpeaker {
     ref_mel: Option<Tensor>,
     /// Phone IDs for reference text
     ref_phoneme_ids: Vec<usize>,
-    /// Word-to-phone mapping for reference text (for BERT alignment)
-    ref_word2ph: Vec<usize>,
     /// BERT features aligned to reference phone level
     ref_bert_aligned: Option<Tensor>,
 }
@@ -190,23 +188,13 @@ impl Pipeline {
     }
 
     pub fn load_bert<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let device_str = match self.device {
-            Device::Cpu => "cpu",
-            Device::Cuda(_) => "cuda",
-            Device::Metal(_) => "mps",
-        };
-        let model = BertModel::load_with_device(path.as_ref().to_str().unwrap(), device_str)?;
+        let model = BertModel::load_with_device(path.as_ref().to_str().unwrap(), &self.device)?;
         self.bert_model = Some(model);
         Ok(())
     }
 
     pub fn load_hubert<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let device_str = match self.device {
-            Device::Cpu => "cpu",
-            Device::Cuda(_) => "cuda",
-            Device::Metal(_) => "mps",
-        };
-        let model = HubertModel::load_with_device(path.as_ref().to_str().unwrap(), device_str)?;
+        let model = HubertModel::load_with_device(path.as_ref().to_str().unwrap(), &self.device)?;
         self.hubert_model = Some(model);
         Ok(())
     }
@@ -365,7 +353,6 @@ impl Pipeline {
             prompt_tokens,
             ref_mel,
             ref_phoneme_ids,
-            ref_word2ph,
             ref_bert_aligned,
         })
     }
@@ -415,12 +402,12 @@ impl Pipeline {
         reference_text: &str,
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
-        let gpt = self.gpt_model.as_ref().ok_or_else(|| {
-            Error::ModelLoadError("GPT model not loaded".to_string())
-        })?;
-        let sovits = self.sovits_model.as_ref().ok_or_else(|| {
-            Error::ModelLoadError("SoVITS model not loaded".to_string())
-        })?;
+        if self.gpt_model.is_none() {
+            return Err(Error::ModelLoadError("GPT model not loaded".to_string()));
+        }
+        if self.sovits_model.is_none() {
+            return Err(Error::ModelLoadError("SoVITS model not loaded".to_string()));
+        }
 
         // Target text features (not cached — depend on synthesis text)
         let (target_phoneme_ids, target_word2ph) =
@@ -429,7 +416,6 @@ impl Pipeline {
         // Reference features (cached after first call)
         let ref_feats = self.get_ref_features(&reference_audio, reference_text, options.language)?;
 
-        // Re-borrow gpt/sovits after mut borrow of self is done
         let gpt = self.gpt_model.as_ref().unwrap();
         let sovits = self.sovits_model.as_ref().unwrap();
 
@@ -496,11 +482,11 @@ impl Pipeline {
         // Reference features (cached after first call)
         let ref_feats = self.get_ref_features(&reference_audio, reference_text, options.language)?;
 
+        if self.sovits_model.is_none() {
+            return Err(Error::ModelLoadError("SoVITS model not loaded".to_string()));
+        }
         let gpt = self.gpt_model.as_ref().ok_or_else(|| {
             Error::ModelLoadError("GPT model not loaded".to_string())
-        })?;
-        let sovits = self.sovits_model.as_ref().ok_or_else(|| {
-            Error::ModelLoadError("SoVITS model not loaded".to_string())
         })?;
 
         // Target BERT aligned
@@ -545,6 +531,84 @@ impl Pipeline {
         };
 
         tracing::info!("Generated {} semantic tokens (kv_cache)", semantic_tokens.len());
+
+        let audio_samples = sovits.synthesize(
+            &semantic_tokens, &target_phoneme_ids, ref_feats.ref_mel.as_ref(), 0.5,
+        )?;
+
+        Ok(AudioBuffer::new(audio_samples, sovits.sampling_rate(), 1))
+    }
+
+    /// Like `inference_kv_cache` but accelerated with a CUDA graph for the decode loop.
+    ///
+    /// On CUDA devices this replaces ~160 kernel launches per decode step with a single
+    /// graph replay, reducing kernel-launch overhead significantly for long sequences.
+    /// Falls back to static-KV (no graph overhead) on non-CUDA devices.
+    pub fn inference_cuda_graph<P: AsRef<Path>>(
+        &mut self,
+        text: &str,
+        reference_audio: P,
+        reference_text: &str,
+        options: &InferenceOptions,
+    ) -> Result<AudioBuffer> {
+        let (target_phoneme_ids, target_word2ph) =
+            self.text_frontend.process_with_word2ph(text, options.language)?;
+        let ref_feats = self.get_ref_features(&reference_audio, reference_text, options.language)?;
+
+        if self.sovits_model.is_none() {
+            return Err(Error::ModelLoadError("SoVITS model not loaded".to_string()));
+        }
+        let gpt = self.gpt_model.as_ref().ok_or_else(|| {
+            Error::ModelLoadError("GPT model not loaded".to_string())
+        })?;
+
+        let target_bert_aligned = if let Some(bert) = self.bert_model.as_mut() {
+            bert.extract(text).ok()
+                .and_then(|f| f.to_device(&self.device).ok().or(Some(f)))
+                .and_then(|tb| {
+                    gpt.project_and_align_bert(&tb, &target_word2ph, target_phoneme_ids.len()).ok()
+                })
+        } else { None };
+
+        let gpt = self.gpt_model.as_ref().unwrap();
+        let sovits = self.sovits_model.as_ref().unwrap();
+
+        let phoneme_ids: Vec<usize> = ref_feats.ref_phoneme_ids.iter()
+            .chain(target_phoneme_ids.iter()).cloned().collect();
+
+        let combined_bert = match (ref_feats.ref_bert_aligned.as_ref(), target_bert_aligned.as_ref()) {
+            (Some(ra), Some(ta)) => Tensor::cat(&[ra, ta], 1).ok(),
+            (None, Some(ta)) => Some(ta.clone()),
+            _ => None,
+        };
+
+        // max_kv_len covers prefill + all generated tokens with a small safety margin
+        let max_kv_len = phoneme_ids.len() + ref_feats.prompt_tokens.len() + options.max_tokens + 32;
+
+        let semantic_tokens = if !ref_feats.prompt_tokens.is_empty() {
+            gpt.generate_with_cuda_graph(
+                &phoneme_ids,
+                &ref_feats.prompt_tokens,
+                combined_bert.as_ref(),
+                options.top_k, options.top_p, options.temperature,
+                options.repetition_penalty, options.max_tokens,
+                max_kv_len,
+            )?
+        } else {
+            gpt.generate_with_features(
+                &phoneme_ids,
+                combined_bert.as_ref(),
+                None,
+                options.top_k, options.top_p, options.temperature,
+                options.repetition_penalty, options.max_tokens,
+            )?
+        };
+
+        tracing::info!("Generated {} semantic tokens (cuda-graph)", semantic_tokens.len());
+
+        if std::env::var("SOVITS_DEBUG").is_ok() {
+            sovits.debug_pipeline(&semantic_tokens, &target_phoneme_ids, ref_feats.ref_mel.as_ref(), 0.5)?;
+        }
 
         let audio_samples = sovits.synthesize(
             &semantic_tokens, &target_phoneme_ids, ref_feats.ref_mel.as_ref(), 0.5,

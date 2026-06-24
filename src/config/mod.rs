@@ -84,7 +84,18 @@ impl Config {
     /// Get the Candle device type
     pub fn candle_device(&self) -> candle_core::Device {
         match self.device {
-            Device::Cuda => candle_core::Device::new_cuda(0).unwrap_or(candle_core::Device::Cpu),
+            Device::Cuda => {
+                let dev = candle_core::Device::new_cuda_with_stream(0)
+                    .unwrap_or(candle_core::Device::Cpu);
+                // Disable cudarc event tracking — we use a single dedicated stream so
+                // cross-stream synchronization events are unnecessary, and they cause
+                // error-state cascade failures when stream wait events fail after ORT init.
+                if let candle_core::Device::Cuda(ref cuda_dev) = dev {
+                    #[cfg(feature = "cuda")]
+                    unsafe { cuda_dev.disable_event_tracking() };
+                }
+                dev
+            },
             Device::Cpu => candle_core::Device::Cpu,
             Device::Mps => candle_core::Device::new_metal(0).unwrap_or(candle_core::Device::Cpu),
         }
