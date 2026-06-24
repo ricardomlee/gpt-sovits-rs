@@ -1,137 +1,53 @@
-//! Hubert Feature Extractor with ONNX Runtime (optional)
+//! HuBERT feature extractor — pure candle (Wav2Vec2) implementation.
 
-#[cfg(feature = "onnx")]
-use ort::{ep, session::Session, value::Value, inputs};
-
-#[cfg(not(feature = "onnx"))]
 use candle_core::{Device, Tensor};
-#[cfg(feature = "onnx")]
-use candle_core::{Tensor, Device};
 use crate::Result;
 use std::path::Path;
 
-/// Hubert model for audio feature extraction
+fn device_str(dev: &Device) -> &'static str {
+    match dev {
+        Device::Cpu => "cpu",
+        Device::Cuda(_) => "cuda",
+        Device::Metal(_) => "mps",
+    }
+}
+
 pub struct HubertModel {
-    #[cfg(feature = "onnx")]
-    session: Session,
-    #[cfg(not(feature = "onnx"))]
-    _marker: std::marker::PhantomData<()>,
-    device: String,
+    model: super::wav2vec2::Wav2Vec2Model,
+    device: &'static str,
     sampling_rate: u32,
+    candle_device: Device,
 }
 
 impl HubertModel {
-    /// Load Hubert model from ONNX file
-    #[cfg(feature = "onnx")]
     pub fn load(path: &str) -> Result<Self> {
-        Self::load_with_device(path, "cpu")
+        Self::load_with_device(path, &Device::Cpu)
     }
 
-    #[cfg(feature = "onnx")]
-    pub fn load_with_device(path: &str, device: &str) -> Result<Self> {
-        let session = if device == "cuda" {
-            Session::builder()?
-                .with_execution_providers([ep::CUDA::default().build()])
-                .map_err(|e| crate::Error::ModelLoadError(format!("Failed to configure CUDA EP: {}", e)))?
-                .commit_from_file(path)
-        } else {
-            Session::builder()?
-                .commit_from_file(path)
-        }
-        .map_err(|e| crate::Error::ModelLoadError(format!("Failed to load ONNX: {}", e)))?;
-
-        Ok(Self {
-            session,
-            device: device.to_string(),
-            sampling_rate: 16000,
-        })
+    pub fn load_with_device(path: &str, device: &Device) -> Result<Self> {
+        Self::load_with_dtype(path, device, candle_core::DType::F32)
     }
 
-    #[cfg(not(feature = "onnx"))]
-    pub fn load(_path: &str) -> Result<Self> {
-        Self::load_with_device(_path, "cpu")
+    pub fn load_bf16(path: &str, device: &Device) -> Result<Self> {
+        Self::load_with_dtype(path, device, candle_core::DType::BF16)
     }
 
-    #[cfg(not(feature = "onnx"))]
-    pub fn load_with_device(_path: &str, device: &str) -> Result<Self> {
-        Ok(Self {
-            _marker: std::marker::PhantomData,
-            device: device.to_string(),
-            sampling_rate: 16000,
-        })
+    fn load_with_dtype(path: &str, device: &Device, dtype: candle_core::DType) -> Result<Self> {
+        let model = super::wav2vec2::Wav2Vec2Model::load_from_file_with_dtype(Path::new(path), device, dtype)?;
+        Ok(Self { model, device: device_str(device), sampling_rate: 16000, candle_device: device.clone() })
     }
 
-    /// Extract Hubert features from audio file
-    #[cfg(feature = "onnx")]
     pub fn extract<P: AsRef<Path>>(&mut self, audio_path: P) -> Result<Tensor> {
-        let audio_data = self.load_audio(audio_path)?;
-        let seq_len = audio_data.len();
-        let input_array = (vec![1i64, seq_len as i64], audio_data);
-
-        let inputs = inputs! {
-            "input_values" => Value::from_array(input_array)?,
-        };
-
-        let outputs = self.session.run(inputs)
-            .map_err(|e| crate::Error::InferenceError(format!("ONNX run error: {}", e)))?;
-
-        let output_value = outputs.get("last_hidden_state")
-            .or_else(|| outputs.get("output"))
-            .or_else(|| outputs.get("features"))
-            .or_else(|| outputs.get("hidden_states"))
-            .ok_or_else(|| crate::Error::InferenceError("No output from Hubert".to_string()))?;
-
-        let (shape, data) = output_value.try_extract_tensor::<f32>()
-            .map_err(|e| crate::Error::InferenceError(format!("Extract error: {}", e)))?;
-
-        let candle_shape: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
-
-        Tensor::from_vec(data.to_vec(), candle_shape.as_slice(), &Device::Cpu)
-            .map_err(|e| e.into())
+        let samples = self.load_audio(audio_path)?;
+        self.extract_from_samples(&samples)
     }
 
-    #[cfg(not(feature = "onnx"))]
-    pub fn extract<P: AsRef<Path>>(&mut self, _audio_path: P) -> Result<Tensor> {
-        // Return dummy features: [batch=1, time=100, hidden=768]
-        Tensor::zeros((1, 100, 768), candle_core::DType::F32, &Device::Cpu)
-            .map_err(|e| e.into())
-    }
-
-    /// Extract features from raw audio samples
-    #[cfg(feature = "onnx")]
     pub fn extract_from_samples(&mut self, samples: &[f32]) -> Result<Tensor> {
-        let seq_len = samples.len();
-        let input_array = (vec![1i64, seq_len as i64], samples.to_vec());
-
-        let inputs = inputs! {
-            "input_values" => Value::from_array(input_array)?,
-        };
-
-        let outputs = self.session.run(inputs)
-            .map_err(|e| crate::Error::InferenceError(format!("ONNX run error: {}", e)))?;
-
-        let output_value = outputs.get("last_hidden_state")
-            .or_else(|| outputs.get("output"))
-            .or_else(|| outputs.get("features"))
-            .or_else(|| outputs.get("hidden_states"))
-            .ok_or_else(|| crate::Error::InferenceError("No output from Hubert".to_string()))?;
-
-        let (shape, data) = output_value.try_extract_tensor::<f32>()
-            .map_err(|e| crate::Error::InferenceError(format!("Extract error: {}", e)))?;
-
-        let candle_shape: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
-
-        Tensor::from_vec(data.to_vec(), candle_shape.as_slice(), &Device::Cpu)
-            .map_err(|e| e.into())
+        let n = samples.len();
+        let audio = Tensor::from_vec(samples.to_vec(), (1, n), &self.candle_device)?;
+        self.model.forward(&audio).map_err(|e| e.into())
     }
 
-    #[cfg(not(feature = "onnx"))]
-    pub fn extract_from_samples(&mut self, _samples: &[f32]) -> Result<Tensor> {
-        Tensor::zeros((1, 100, 768), candle_core::DType::F32, &Device::Cpu)
-            .map_err(|e| e.into())
-    }
-
-    #[cfg(feature = "onnx")]
     fn load_audio<P: AsRef<Path>>(&self, path: P) -> Result<Vec<f32>> {
         use hound::WavReader;
 
@@ -141,7 +57,6 @@ impl HubertModel {
         let spec = reader.spec();
         tracing::debug!("HuBERT load_audio sr={}, channels={}, bits={}", spec.sample_rate, spec.channels, spec.bits_per_sample);
 
-        // Load as float32, mixing down to mono if needed
         let all_samples: Vec<f32> = match spec.sample_format {
             hound::SampleFormat::Int => match spec.bits_per_sample {
                 32 => reader.samples::<i32>()
@@ -158,7 +73,6 @@ impl HubertModel {
                 .collect(),
         };
 
-        // Mix down to mono by averaging channels
         let channels = spec.channels as usize;
         let samples: Vec<f32> = if channels > 1 {
             all_samples.chunks_exact(channels)
@@ -168,8 +82,8 @@ impl HubertModel {
             all_samples
         };
 
-        // Python always appends 0.3s at 32kHz (= 9600 samples) as a zero-pad, which at 16kHz
-        // is equivalent to 0.6s. We match this exactly so VQ prompt tokens align with Python.
+        // Python always appends 0.3s at 32kHz (= 9600 samples) as a zero-pad,
+        // which at 16kHz is equivalent to 0.6s. Match this exactly.
         let pad = (self.sampling_rate as f32 * 0.6) as usize;
         if spec.sample_rate != self.sampling_rate {
             let mut resampled = self.resample_sinc(&samples, spec.sample_rate, self.sampling_rate)?;
@@ -182,8 +96,6 @@ impl HubertModel {
         }
     }
 
-    /// Resample using libsoxr (HQ quality), matching librosa's default resampler exactly.
-    #[cfg(feature = "onnx")]
     fn resample_sinc(&self, samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>> {
         use soxr::{Soxr, format::Mono};
 
@@ -206,32 +118,18 @@ impl HubertModel {
         Ok(output)
     }
 
-    pub fn device(&self) -> &str {
-        &self.device
-    }
-
-    pub fn sampling_rate(&self) -> u32 {
-        self.sampling_rate
-    }
+    pub fn device(&self) -> &str { self.device }
+    pub fn sampling_rate(&self) -> u32 { self.sampling_rate }
 }
 
 impl crate::models::Model for HubertModel {
-    #[cfg(feature = "onnx")]
     fn load(path: &str) -> Result<Self> {
         Self::load(path)
     }
 
-    #[cfg(not(feature = "onnx"))]
-    fn load(_path: &str) -> Result<Self> {
-        Self::load("placeholder")
-    }
+    fn device(&self) -> &str { self.device }
 
-    fn device(&self) -> &str {
-        &self.device
-    }
-
-    fn to_device(&mut self, device: &str) -> Result<()> {
-        self.device = device.to_string();
+    fn to_device(&mut self, _device: &str) -> Result<()> {
         Ok(())
     }
 }

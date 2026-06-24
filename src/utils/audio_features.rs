@@ -61,7 +61,7 @@ impl SpectrogramExtractor {
             for frame_idx in 0..n_frames {
                 let mut sum = 0.0f32;
                 for bin in 0..n_bins {
-                    sum += self.mel_basis[mel_idx * n_bins + bin] * spec_flat[frame_idx * n_bins + bin];
+                    sum += self.mel_basis[mel_idx * n_bins + bin] * spec_flat[bin * n_frames + frame_idx];
                 }
                 mel_spec[mel_idx * n_frames + frame_idx] = sum;
             }

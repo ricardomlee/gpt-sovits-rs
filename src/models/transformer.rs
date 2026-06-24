@@ -4,7 +4,7 @@
 
 use candle_core::{Tensor, Device, D, DType};
 use crate::Result;
-use crate::utils::{StateDict, Embedding, Linear, LayerNorm, KvCacheManager};
+use crate::utils::{StateDict, Embedding, Linear, LayerNorm, KvCacheManager, StaticKvLayer, StaticKvManager};
 
 /// Multi-head attention mechanism
 #[derive(Debug, Clone)]
@@ -205,6 +205,101 @@ impl MultiHeadAttention {
         // Output projection
         self.wo.forward(&attn_output)
     }
+
+    /// Decode one token using a pre-allocated static KV cache (no dynamic tensor::cat).
+    /// - `x`: [batch=1, seq=1, hidden]
+    /// - `static_cache`: mutable ref to the layer's pre-allocated K/V buffers
+    /// The mask is built AFTER append so the new token can attend to its own K (causal-correct).
+    pub fn forward_kv_static(
+        &self,
+        x: &Tensor,
+        static_cache: &mut StaticKvLayer,
+    ) -> Result<Tensor> {
+        let (batch, seq, _) = x.dims3()?;
+
+        let (q, k, v) = self.project_qkv(x)?;
+        let q = self.split_heads(&q, batch, seq)?;  // [1, n_heads, 1, head_dim]
+        let k = self.split_heads(&k, batch, seq)?;
+        let v = self.split_heads(&v, batch, seq)?;
+
+        // Write K, V into the pre-allocated buffer at position `static_cache.len`
+        // Mask is built AFTER this so the new token's K is included in valid positions.
+        static_cache.append(&k, &v)?;
+
+        let k_full = static_cache.k();  // [1, n_heads, max_len, head_dim]
+        let v_full = static_cache.v();
+
+        // Q @ K^T: [1, n_heads, 1, max_len] — shape is FIXED regardless of cache length
+        let k_t = k_full.transpose(D::Minus2, D::Minus1)?.contiguous()?;
+        let attn_weights = q.contiguous()?.matmul(&k_t)?;
+        let attn_weights = attn_weights.affine(self.scale, 0.0)?;
+
+        // Build mask after append: positions 0..len-1 valid (includes the just-written token).
+        let attn_mask = static_cache.make_mask()?;
+        let max_len = static_cache.max_len();
+        let mask_exp = attn_mask
+            .expand((batch, self.n_heads, 1, max_len))?
+            .to_dtype(attn_weights.dtype())?;
+        let attn_weights = attn_weights.add(&mask_exp)?;
+
+        let attn_probs = candle_nn::ops::softmax(&attn_weights, D::Minus1)?;
+        let attn_output = attn_probs.contiguous()?.matmul(&v_full.contiguous()?)?;  // [1, n_heads, 1, head_dim]
+
+        let attn_output = attn_output
+            .transpose(1, 2)?
+            .contiguous()?
+            .reshape((batch, seq, self.n_heads * self.head_dim))?;
+
+        self.wo.forward(&attn_output)
+    }
+
+    /// Like `forward_kv_static` but uses the pre-allocated `static_cache.pos_idx` for
+    /// scatter_set instead of creating a new index tensor each call.
+    /// This variant is safe to run inside a CUDA graph capture region because all
+    /// tensor addresses are stable (pre-allocated before capture).
+    ///
+    /// `attn_mask` must be pre-expanded to [1, n_heads, 1, max_len] and contiguous
+    /// (NOT a broadcast expand view). A contiguous mask avoids the strides-buffer
+    /// cuMemAllocAsync allocation that `expand()` would introduce inside the graph,
+    /// which causes CUDA_ERROR_ILLEGAL_ADDRESS on second replay.
+    pub fn forward_kv_graphable(
+        &self,
+        x: &Tensor,
+        static_cache: &StaticKvLayer,  // immutable: caller updated pos_idx externally
+        attn_mask: &Tensor,            // [1, n_heads, 1, max_len] — pre-expanded, contiguous
+    ) -> Result<Tensor> {
+        let (batch, seq, _) = x.dims3()?;
+
+        let (q, k, v) = self.project_qkv(x)?;
+        let q = self.split_heads(&q, batch, seq)?;
+        let k = self.split_heads(&k, batch, seq)?;
+        let v = self.split_heads(&v, batch, seq)?;
+
+        // Write at position pos_idx (pre-allocated, stable address)
+        static_cache.append_with_fixed_idx(&k, &v)?;
+
+        let k_full = static_cache.k();
+        let v_full = static_cache.v();
+
+        // Pass transpose view directly — candle's gemm_config detects rhs_m1==k && rhs_m2==1
+        // and uses CUBLAS_OP_T, avoiding a ucopy_f32 inside the CUDA graph.
+        let attn_weights = q.matmul(&k_full.transpose(D::Minus2, D::Minus1)?)?;
+        let attn_weights = attn_weights.affine(self.scale, 0.0)?;
+
+        // attn_mask is [1, n_heads, 1, max_len] — same shape as attn_weights, contiguous.
+        // Both tensors contiguous → SlicePtrOrNull::Null → no strides-buffer pool alloc.
+        let attn_weights = attn_weights.add(attn_mask)?;
+
+        let attn_probs = candle_nn::ops::softmax(&attn_weights, D::Minus1)?;
+        // v_full is [1, n_heads, max_kv_len, head_dim], pre-allocated contiguous buffer.
+        let attn_output = attn_probs.matmul(&v_full)?;
+
+        // attn_output is [1, n_heads, 1, head_dim], already contiguous — reshape directly
+        // without transpose+contiguous (data order is identical: n_heads * head_dim consecutive).
+        let attn_output = attn_output.reshape((batch, seq, self.n_heads * self.head_dim))?;
+
+        self.wo.forward(&attn_output)
+    }
 }
 
 /// Feed-forward network with SwiGLU activation
@@ -270,6 +365,31 @@ impl TransformerBlock {
         let x = self.attn_norm.forward(&x.add(&attn_output)?)?;
         let ff_output = self.feed_forward.forward(&x)?;
         Ok(self.ffn_norm.forward(&x.add(&ff_output)?)?)
+    }
+
+    /// Forward with a pre-allocated static KV cache (fixed-shape decode).
+    pub fn forward_kv_static(
+        &self,
+        x: &Tensor,
+        static_cache: &mut StaticKvLayer,
+    ) -> Result<Tensor> {
+        let attn_output = self.attention.forward_kv_static(x, static_cache)?;
+        let x = self.attn_norm.forward(&x.add(&attn_output)?)?;
+        let ff_output = self.feed_forward.forward(&x)?;
+        self.ffn_norm.forward(&x.add(&ff_output)?)
+    }
+
+    /// CUDA-graph-safe variant: uses pre-allocated pos_idx (caller updates externally).
+    pub fn forward_kv_graphable(
+        &self,
+        x: &Tensor,
+        static_cache: &StaticKvLayer,
+        attn_mask: &Tensor,
+    ) -> Result<Tensor> {
+        let attn_output = self.attention.forward_kv_graphable(x, static_cache, attn_mask)?;
+        let x = self.attn_norm.forward(&x.add(&attn_output)?)?;
+        let ff_output = self.feed_forward.forward(&x)?;
+        self.ffn_norm.forward(&x.add(&ff_output)?)
     }
 
     /// Forward with debug intermediates: returns (attn_out, norm1_out, linear1_out, relu_out, final_out)
@@ -725,6 +845,36 @@ impl TransformerGPTSoVITS {
             x = layer.forward_kv(&x, mask, Some(cache), true)?;
         }
 
+        Ok(x)
+    }
+
+    /// Single-token decode using a pre-allocated static KV cache (no dynamic tensor::cat).
+    /// All K/V shapes are fixed at [1, n_heads, max_len, head_dim] for CUDA graph compatibility.
+    /// The mask is [1, 1, 1, max_len] with 0.0 for valid and -1e9 for padding positions.
+    pub fn forward_from_embedding_static(
+        &self,
+        embeddings: &Tensor,
+        static_kv: &mut StaticKvManager,
+    ) -> Result<Tensor> {
+        let mut x = embeddings.clone();
+        for (layer, cache) in self.layers.iter().zip(static_kv.layers.iter_mut()) {
+            x = layer.forward_kv_static(&x, cache)?;
+        }
+        Ok(x)
+    }
+
+    /// CUDA-graph-safe decode: caller pre-updates `static_kv.pos_idx[l]` and the mask
+    /// externally (via H2D copy), then calls this inside the capture region.
+    pub fn forward_from_embedding_graphable(
+        &self,
+        embeddings: &Tensor,
+        static_kv: &StaticKvManager,
+        attn_mask: &Tensor,
+    ) -> Result<Tensor> {
+        let mut x = embeddings.clone();
+        for (layer, cache) in self.layers.iter().zip(static_kv.layers.iter()) {
+            x = layer.forward_kv_graphable(&x, cache, attn_mask)?;
+        }
         Ok(x)
     }
 

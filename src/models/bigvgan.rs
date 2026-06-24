@@ -555,7 +555,7 @@ impl crate::models::Model for BigVGAN {
 
     fn to_device(&mut self, device: &str) -> Result<()> {
         let new_device = match device {
-            "cuda" => Device::new_cuda(0),
+            "cuda" => Device::new_cuda_with_stream(0),
             "mps" => Device::new_metal(0),
             _ => Ok(Device::Cpu),
         }

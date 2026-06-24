@@ -49,10 +49,6 @@ candle-transformers = "0.10"
 # candle-onnx = "0.10"  # requires protoc
 half = { version = "2.4", features = ["num-traits", "zerocopy"] }
 
-# ONNX Runtime (optional, for BERT/Hubert if needed)
-# ort 2.x uses Execution Providers - cuda EP enabled via the cuda feature flag (see [features])
-ort = { version = "2.0.0-rc.12", features = ["half"], optional = true }
-
 # Audio Processing
 hound = "3.5"                    # WAV I/O
 symphonia = { version = "0.5", features = ["all"] }
@@ -80,6 +76,7 @@ tokio = { version = "1.40", features = ["full"], optional = true }
 tokio-stream = { version = "0.1", optional = true }
 axum = { version = "0.7", optional = true }
 tower-http = { version = "0.5", features = ["cors", "trace"], optional = true }
+base64 = { version = "0.22", optional = true }
 
 # CLI & Utilities
 clap = { version = "4.5", features = ["derive"] }
@@ -97,10 +94,9 @@ tempfile = "3.14"
 
 [features]
 default = []
-cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "ort?/cuda"]
-http-api = ["tokio", "tokio-stream", "axum", "tower-http"]
+cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda"]
+http-api = ["tokio", "tokio-stream", "axum", "tower-http", "base64"]
 mkl = ["candle-core/mkl"]
-onnx = ["ort"]
 
 [profile.release]
 lto = "thin"
@@ -110,6 +106,14 @@ opt-level = 3
 [profile.release-fast]
 inherits = "release"
 lto = false
+
+# Fast dev builds: ~3-5x faster compile, GPU perf unchanged (bottleneck is CUDA kernels)
+[profile.dev-gpu]
+inherits = "release"
+codegen-units = 16
+opt-level = 2
+lto = false
+debug = false
 
 [[example]]
 name = "test_resblock0"
@@ -142,7 +146,7 @@ path = "examples/benchmark_kv_cache.rs"
 [[example]]
 name = "benchmark_speaker_cache"
 path = "examples/benchmark_speaker_cache.rs"
-required-features = ["cuda", "onnx"]
+required-features = ["cuda"]
 
 [[example]]
 name = "e2e_quick"
@@ -163,17 +167,17 @@ path = "examples/sovits_audio_test.rs"
 [[example]]
 name = "compare_stages"
 path = "examples/compare_stages.rs"
-required-features = ["cuda", "onnx"]
+required-features = ["cuda"]
 
 [[example]]
 name = "benchmark_fp16_vs_fp32"
 path = "examples/benchmark_fp16_vs_fp32.rs"
-required-features = ["cuda", "onnx"]
+required-features = ["cuda"]
 
 [[example]]
 name = "benchmark_fused_qkv"
 path = "examples/benchmark_fused_qkv.rs"
-required-features = ["cuda", "onnx"]
+required-features = ["cuda"]
 
 [[bench]]
 name = "inference_bench"

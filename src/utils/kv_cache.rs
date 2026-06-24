@@ -43,7 +43,7 @@
 //! - 有 Cache: 500 次 KV 计算
 //! - 理论加速：250x (实际 5-10x，因为有内存开销)
 
-use candle_core::Tensor;
+use candle_core::{DType, Tensor};
 use crate::Result;
 
 /// KV Cache for a single transformer layer
@@ -112,6 +112,11 @@ impl KvCache {
         };
 
         Ok((k_out, v_out))
+    }
+
+    /// Consume the cache, returning the raw K and V tensors.
+    pub fn into_tensors(self) -> (Option<Tensor>, Option<Tensor>) {
+        (self.k_cache, self.v_cache)
     }
 
     /// Reset the cache
@@ -189,6 +194,167 @@ impl KvCacheManager {
 impl Default for KvCacheManager {
     fn default() -> Self {
         Self::new(0)
+    }
+}
+
+impl KvCacheManager {
+    /// Consume the manager and return the raw per-layer caches.
+    pub fn into_caches(self) -> Vec<KvCache> {
+        self.caches
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Static (pre-allocated) KV cache for fixed-shape decode
+// ---------------------------------------------------------------------------
+
+/// Pre-allocated KV cache for a single transformer layer.
+/// Eliminates per-step tensor allocations during autoregressive decode.
+/// K/V are stored in fixed-size buffers; new tokens are written via `scatter_set`.
+pub struct StaticKvLayer {
+    /// [1, n_heads, max_len, head_dim]
+    k_buf: Tensor,
+    /// [1, n_heads, max_len, head_dim]
+    v_buf: Tensor,
+    /// Number of filled positions (0..max_len)
+    pub len: usize,
+    pub max_len: usize,
+    pub n_heads: usize,
+    pub head_dim: usize,
+    /// Pre-allocated position-index tensor [1, n_heads, 1, head_dim] (i64).
+    /// During normal decode: filled with `len` by `append()`.
+    /// During CUDA graph: filled externally via H2D copy before each graph replay,
+    /// then `append_with_fixed_idx()` uses it directly (stable CUDA address).
+    pub pos_idx: Tensor,
+}
+
+impl StaticKvLayer {
+    /// Create from the dynamic KV tensors accumulated during prefill.
+    /// Allocates buffers of size `max_len` and copies prefill data in.
+    pub fn from_dynamic(k: Tensor, v: Tensor, max_len: usize) -> Result<Self> {
+        let (batch, n_heads, cur_len, head_dim) = k.dims4()?;
+        assert!(
+            cur_len <= max_len,
+            "static KV max_len ({max_len}) must be >= prefill length ({cur_len})"
+        );
+        let device = k.device().clone();
+        let dtype = k.dtype();
+
+        // Pre-allocate full-length zero buffers
+        let k_zeros = Tensor::zeros((batch, n_heads, max_len, head_dim), dtype, &device)?;
+        let v_zeros = Tensor::zeros((batch, n_heads, max_len, head_dim), dtype, &device)?;
+
+        // Copy prefill K/V into the first cur_len positions (one-time init)
+        let k_buf = k_zeros.slice_assign(&[0..batch, 0..n_heads, 0..cur_len, 0..head_dim], &k)?;
+        let v_buf = v_zeros.slice_assign(&[0..batch, 0..n_heads, 0..cur_len, 0..head_dim], &v)?;
+
+        // Pre-allocate position-index tensor (stable address for CUDA graph capture)
+        let pos_idx = Tensor::full(cur_len as i64, (batch, n_heads, 1usize, head_dim), &device)?
+            .to_dtype(DType::I64)?;
+
+        Ok(Self { k_buf, v_buf, len: cur_len, max_len, n_heads, head_dim, pos_idx })
+    }
+
+    /// Append a single decode token's K and V (in-place via `scatter_set`).
+    /// Used in eager (non-graph) decode mode.
+    pub fn append(&mut self, k_new: &Tensor, v_new: &Tensor) -> Result<()> {
+        if self.len >= self.max_len {
+            return Err(candle_core::Error::Msg(
+                format!("StaticKvLayer: KV cache full ({}/{})", self.len, self.max_len)
+            ).into());
+        }
+        // Overwrite pos_idx in-place so it contains the current `len` value.
+        // (For graph mode this is done externally via H2D copy; for eager mode this allocates
+        //  a tiny i64 tensor — the main savings still come from k_buf/v_buf not reallocating.)
+        let idx = Tensor::full(self.len as i64, self.pos_idx.shape(), k_new.device())?
+            .to_dtype(DType::I64)?;
+        self.k_buf.scatter_set(&idx, k_new, 2)?;
+        self.v_buf.scatter_set(&idx, v_new, 2)?;
+        self.len += 1;
+        Ok(())
+    }
+
+    /// Append using the pre-allocated `self.pos_idx` tensor (stable CUDA address).
+    /// Caller MUST have updated `pos_idx` to the current position via an H2D copy
+    /// before calling this — this is the path used inside a captured CUDA graph.
+    pub fn append_with_fixed_idx(&self, k_new: &Tensor, v_new: &Tensor) -> Result<()> {
+        self.k_buf.scatter_set(&self.pos_idx, k_new, 2)?;
+        self.v_buf.scatter_set(&self.pos_idx, v_new, 2)?;
+        // NOTE: `self.len` is intentionally NOT incremented here.
+        //        The caller increments `static_kv.len` (via StaticKvManager) after replay.
+        Ok(())
+    }
+
+    /// Full K buffer [1, n_heads, max_len, head_dim] — includes padding zeros beyond `len`.
+    pub fn k(&self) -> &Tensor { &self.k_buf }
+    /// Full V buffer [1, n_heads, max_len, head_dim] — includes padding zeros beyond `len`.
+    pub fn v(&self) -> &Tensor { &self.v_buf }
+    pub fn len(&self) -> usize { self.len }
+    pub fn is_empty(&self) -> bool { self.len == 0 }
+    pub fn max_len(&self) -> usize { self.max_len }
+
+    /// Build an attention mask: 0.0 for valid positions, -1e9 for padding.
+    /// Shape: [1, 1, 1, max_len] — broadcast to [batch, n_heads, 1, max_len] in attention.
+    pub fn make_mask(&self) -> Result<Tensor> {
+        let device = self.k_buf.device();
+        let dtype = self.k_buf.dtype();
+        let mut vals = vec![0f32; self.max_len];
+        // Positions from self.len onward are unused — mask them out
+        for v in vals.iter_mut().take(self.max_len).skip(self.len) {
+            *v = -1e9f32;
+        }
+        Ok(Tensor::from_slice(&vals, (1usize, 1usize, 1usize, self.max_len), device)?
+            .to_dtype(dtype)?)
+    }
+}
+
+/// Pre-allocated KV cache manager for all transformer layers.
+pub struct StaticKvManager {
+    pub layers: Vec<StaticKvLayer>,
+    pub max_len: usize,
+}
+
+impl StaticKvManager {
+    /// Build from a dynamic `KvCacheManager` produced by prefill.
+    pub fn from_dynamic(dynamic: KvCacheManager, max_len: usize) -> Result<Self> {
+        let layers = dynamic.into_caches()
+            .into_iter()
+            .map(|cache| {
+                let (k_opt, v_opt) = cache.into_tensors();
+                let k = k_opt.ok_or_else(|| {
+                    candle_core::Error::Msg("StaticKvManager: missing K tensor in prefill cache".into())
+                })?;
+                let v = v_opt.ok_or_else(|| {
+                    candle_core::Error::Msg("StaticKvManager: missing V tensor in prefill cache".into())
+                })?;
+                StaticKvLayer::from_dynamic(k, v, max_len)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self { layers, max_len })
+    }
+
+    /// Current valid sequence length (same for all layers after prefill).
+    pub fn len(&self) -> usize {
+        self.layers.first().map(|l| l.len).unwrap_or(0)
+    }
+
+    pub fn is_empty(&self) -> bool { self.len() == 0 }
+    pub fn num_layers(&self) -> usize { self.layers.len() }
+
+    /// Increment each layer's `len` by 1 (called after a graph-replay decode step).
+    pub fn step(&mut self) {
+        for layer in &mut self.layers {
+            layer.len += 1;
+        }
+    }
+
+    /// Build a fresh mask for the current cache length.
+    /// Returns `None` when all positions are valid (no padding yet — impossible since we always
+    /// have padding beyond the prefill length).
+    pub fn make_mask(&self) -> Result<Tensor> {
+        self.layers.first()
+            .ok_or_else(|| candle_core::Error::Msg("StaticKvManager: no layers".into()))?
+            .make_mask()
     }
 }
 

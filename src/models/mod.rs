@@ -3,9 +3,11 @@
 //! Neural network models for GPT-SoVITS
 
 pub mod bert;
+pub mod bert_candle;
 pub mod bigvgan;
 pub mod gpt;
 pub mod hubert;
+pub mod wav2vec2;
 pub mod mrte;
 pub mod sovits;
 pub mod sovits_encp;
@@ -17,9 +19,11 @@ pub mod transformer;
 pub mod semantic_tokenizer;
 
 pub use bert::BertModel;
+pub use bert_candle::BertCandleModel;
 pub use bigvgan::BigVGAN;
 pub use gpt::GPTModel;
 pub use hubert::HubertModel;
+pub use wav2vec2::Wav2Vec2Model;
 pub use mrte::MRTE;
 pub use sovits::SoVITSModel;
 pub use sovits_encq::EncQ;

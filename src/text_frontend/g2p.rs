@@ -260,26 +260,91 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map
 }
 
+/// CMUdict data embedded at compile time (123 K entries, ARPABET format).
+const CMUDICT_TXT: &str = include_str!("cmudict.txt");
+
 /// G2P Converter for multiple languages
 pub struct G2PConverter {
     pinyin_map: HashMap<&'static str, (&'static str, &'static str)>,
     jieba: Jieba,
     tone_sandhi: ToneSandhi,
+    /// CMU Pronouncing Dictionary: UPPERCASE_WORD → space-separated ARPABET phonemes
+    cmudict: HashMap<String, String>,
 }
 
 impl std::fmt::Debug for G2PConverter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("G2PConverter").finish()
+        f.debug_struct("G2PConverter")
+            .field("cmudict_entries", &self.cmudict.len())
+            .finish()
     }
 }
 
 impl G2PConverter {
     pub fn new() -> Result<Self> {
+        let cmudict = Self::load_cmudict();
         Ok(Self {
             pinyin_map: pinyin_split(),
             jieba: Jieba::new(),
             tone_sandhi: ToneSandhi::new(),
+            cmudict,
         })
+    }
+
+    fn load_cmudict() -> HashMap<String, String> {
+        let mut map = HashMap::with_capacity(125_000);
+        for line in CMUDICT_TXT.lines() {
+            if let Some((word, phones)) = line.split_once('\t') {
+                map.insert(word.to_string(), phones.to_string());
+            }
+        }
+        map
+    }
+
+    /// Look up a word in CMUdict, trying common normalizations.
+    /// Returns space-separated ARPABET phonemes, or None if not found.
+    fn cmudict_lookup(&self, word: &str) -> Option<&str> {
+        let upper = word.to_uppercase();
+        // Direct lookup
+        if let Some(ph) = self.cmudict.get(&upper) {
+            return Some(ph);
+        }
+        // Strip trailing punctuation
+        let stripped = upper.trim_end_matches(|c: char| !c.is_alphabetic());
+        if stripped != upper {
+            if let Some(ph) = self.cmudict.get(stripped) {
+                return Some(ph);
+            }
+        }
+        // Strip 's possessive
+        if let Some(base) = upper.strip_suffix("'S") {
+            if let Some(ph) = self.cmudict.get(base) {
+                return Some(ph);
+            }
+        }
+        None
+    }
+
+    /// Spell out an unknown word letter-by-letter using ARPABET.
+    /// Each letter maps to its English name pronunciation.
+    fn spell_arpabet(word: &str) -> String {
+        const LETTER_PHONES: [(&str, &str); 26] = [
+            ("A", "EY1"), ("B", "B IY1"), ("C", "S IY1"), ("D", "D IY1"),
+            ("E", "IY1"), ("F", "EH1 F"), ("G", "JH IY1"), ("H", "EY1 CH"),
+            ("I", "AY1"), ("J", "JH EY1"), ("K", "K EY1"), ("L", "EH1 L"),
+            ("M", "EH1 M"), ("N", "EH1 N"), ("O", "OW1"), ("P", "P IY1"),
+            ("Q", "K Y UW1"), ("R", "AA1 R"), ("S", "EH1 S"), ("T", "T IY1"),
+            ("U", "Y UW1"), ("V", "V IY1"), ("W", "D AH1 B AH0 L Y UW1"),
+            ("X", "EH1 K S"), ("Y", "W AY1"), ("Z", "Z IY1"),
+        ];
+        word.to_uppercase()
+            .chars()
+            .filter_map(|c| {
+                let idx = (c as u8).wrapping_sub(b'A') as usize;
+                LETTER_PHONES.get(idx).map(|(_, ph)| *ph)
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
     }
 
     /// Convert Chinese text to phonemes with per-character phoneme counts (word2ph).
@@ -306,7 +371,41 @@ impl G2PConverter {
         let mut word2ph: Vec<usize> = Vec::new();
 
         for (word, pos) in &merged {
-            // Collect (base_pinyin, raw_tone) for each character in this word
+            // English words (jieba POS "eng" or all ASCII letters): use English G2P.
+            // In mixed Chinese-English text, English words would otherwise produce no
+            // phonemes because to_pinyin() returns None for ASCII characters.
+            let is_english = pos == "eng"
+                || (!word.is_empty() && word.chars().all(|c| c.is_ascii_alphabetic() || c == '\''));
+
+            if is_english {
+                let eng_ph_str = self.english_word_to_phonemes(word);
+                let eng_phonemes: Vec<String> = eng_ph_str
+                    .split_whitespace()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string())
+                    .collect();
+                let n_chars = word.chars().count().max(1);
+                let n_ph = eng_phonemes.len();
+
+                if n_ph == 0 {
+                    // No phonemes produced (e.g. single punctuation): all chars contribute 0
+                    word2ph.extend(std::iter::repeat(0).take(n_chars));
+                } else {
+                    for ph in eng_phonemes {
+                        phonemes.push(ph);
+                    }
+                    // Distribute phoneme count across characters.
+                    // First char carries the bulk; BERT alignment handles any length mismatch.
+                    let per_char = n_ph / n_chars;
+                    let remainder = n_ph % n_chars;
+                    for i in 0..n_chars {
+                        word2ph.push(per_char + if i < remainder { 1 } else { 0 });
+                    }
+                }
+                continue;
+            }
+
+            // Chinese: Collect (base_pinyin, raw_tone) for each character in this word
             let char_data: Vec<Option<(String, u32)>> = word.as_str()
                 .to_pinyin()
                 .map(|opt| match opt {
@@ -386,78 +485,51 @@ impl G2PConverter {
         Ok(phonemes)
     }
 
-    /// Convert English text to phonemes using rules
+    /// Convert English text to ARPABET phonemes via CMUdict lookup.
+    /// Words not found in CMUdict are spelled letter-by-letter.
     fn convert_english(&self, text: &str) -> Result<String> {
-        let mut phonemes = Vec::new();
-
-        for word in text.split_whitespace() {
-            let word_phonemes = self.english_word_to_phonemes(word);
-            phonemes.push(word_phonemes);
-        }
-
+        let phonemes: Vec<String> = text
+            .split_whitespace()
+            .map(|word| self.english_word_to_phonemes(word))
+            .collect();
         Ok(phonemes.join(" "))
     }
 
-    /// Convert a single English word to phonemes
+    /// Convert one English word to space-separated ARPABET phonemes.
+    ///
+    /// Strategy (in order):
+    /// 1. CMUdict lookup (covers ~124K words)
+    /// 2. Try hyphen-split parts individually (e.g. "state-of-the-art")
+    /// 3. Spell letter-by-letter as fallback for abbreviations / proper nouns
     fn english_word_to_phonemes(&self, word: &str) -> String {
-        let lower = word.to_lowercase();
-
-        let mut result = String::new();
-        let chars: Vec<char> = lower.chars().collect();
-        let mut i = 0;
-
-        while i < chars.len() {
-            let c = chars[i];
-            let next = chars.get(i + 1).copied();
-            let _next2 = chars.get(i + 2).copied();
-
-            let phoneme = match (c, next) {
-                ('t', Some('h')) => { i += 1; "θ" }
-                ('s', Some('h')) => { i += 1; "ʃ" }
-                ('c', Some('h')) => { i += 1; "tʃ" }
-                ('w', Some('h')) => { i += 1; "w" }
-                ('p', Some('h')) => { i += 1; "f" }
-                ('a', Some('i')) => { i += 1; "eɪ" }
-                ('a', Some('u')) => { i += 1; "ɔ" }
-                ('e', Some('i')) => { i += 1; "i" }
-                ('e', Some('a')) => { i += 1; "ɛ" }
-                ('o', Some('i')) => { i += 1; "ɔɪ" }
-                ('o', Some('u')) => { i += 1; "aʊ" }
-                ('e', Some('r')) => { i += 1; "ɜː" }
-                ('e', None) if i > 0 => { i += 1; continue; }
-                ('b', _) => "b",
-                ('d', _) => "d",
-                ('f', _) => "f",
-                ('g', _) => "g",
-                ('h', _) => "h",
-                ('j', _) => "dʒ",
-                ('k', _) => "k",
-                ('l', _) => "l",
-                ('m', _) => "m",
-                ('n', _) => "n",
-                ('p', _) => "p",
-                ('q', _) => "kw",
-                ('r', _) => "ɹ",
-                ('s', _) => "s",
-                ('t', _) => "t",
-                ('v', _) => "v",
-                ('w', _) => "w",
-                ('x', _) => "ks",
-                ('y', _) => "j",
-                ('z', _) => "z",
-                ('a', _) => "æ",
-                ('e', _) => "ɛ",
-                ('i', _) => "ɪ",
-                ('o', _) => "ɑ",
-                ('u', _) => "ʌ",
-                _ => &c.to_string(),
-            };
-
-            result.push_str(phoneme);
-            i += 1;
+        // Strip surrounding punctuation for lookup, but remember to not lose it
+        let alpha_word: String = word.chars().filter(|c| c.is_alphabetic() || *c == '\'').collect();
+        if alpha_word.is_empty() {
+            return String::new();
         }
 
-        result
+        // Direct CMUdict lookup
+        if let Some(phones) = self.cmudict_lookup(&alpha_word) {
+            return phones.to_string();
+        }
+
+        // Hyphenated compound: look up each part
+        if alpha_word.contains('-') {
+            let parts: Vec<String> = alpha_word
+                .split('-')
+                .map(|part| {
+                    self.cmudict_lookup(part)
+                        .map(|p| p.to_string())
+                        .unwrap_or_else(|| Self::spell_arpabet(part))
+                })
+                .collect();
+            if !parts.is_empty() {
+                return parts.join(" ");
+            }
+        }
+
+        // OOV fallback: spell letter-by-letter
+        Self::spell_arpabet(&alpha_word)
     }
 
     /// Convert Japanese text to phonemes
