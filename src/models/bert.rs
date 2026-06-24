@@ -39,7 +39,7 @@ impl BertModel {
         let tokenizer_path = if tokenizer_path.exists() {
             tokenizer_path
         } else {
-            std::path::PathBuf::from("models/onnx/tokenizer.json")
+            std::path::PathBuf::from("models/bert/tokenizer.json")
         };
         let model = super::bert_candle::BertCandleModel::load_with_dtype(weights_path, &tokenizer_path, device, dtype)?;
         Ok(Self { model, device: device_str(device), max_length: 512 })

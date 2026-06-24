@@ -31,11 +31,11 @@ struct Args {
     #[arg(long)]
     bigvgan_model: Option<PathBuf>,
 
-    /// Path to BERT ONNX model file (optional, improves quality)
+    /// Path to BERT safetensors model file (optional, improves quality)
     #[arg(long)]
     bert_model: Option<PathBuf>,
 
-    /// Path to Hubert ONNX model file (optional, improves quality)
+    /// Path to HuBERT/Wav2Vec2 safetensors model file (optional, improves quality)
     #[arg(long)]
     hubert_model: Option<PathBuf>,
 

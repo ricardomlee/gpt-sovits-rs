@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# CPU-only build (ONNX Runtime for BERT/HuBERT via ort, no CUDA)
+# CPU-only build (pure Candle — no ONNX Runtime dependency)
 
 # ============================================================
 # Stage 1: Builder
@@ -17,15 +17,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /app
 
 # Copy entire project (.dockerignore excludes target/, .git/, models/, etc.)
-# Includes .cargo/config.toml which redirects crate downloads to rsproxy.cn (CN mirror)
 COPY . .
 
-# ORT_LIB_LOCATION: skip cdn.pyke.io download, use pre-bundled libonnxruntime.a
-ENV ORT_LIB_LOCATION=/app/docker-ort-libs/cpu
-
-# Build binary — onnx enables BERT/HuBERT via ort
-# For CPU-only ort, libonnxruntime.a is statically linked; no runtime provider .so needed.
-RUN cargo build --release --locked --features http-api,onnx && \
+# Build binary — no ONNX/ORT dependency; BERT and HuBERT use native Candle
+RUN cargo build --release --locked --features http-api && \
     cp target/release/gpt-sovits /app/gpt-sovits
 
 # ============================================================

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# CUDA GPU build (Candle CUDA + ONNX Runtime CUDA EP for BERT/HuBERT)
+# CUDA GPU build (Candle CUDA — no ONNX Runtime dependency)
 
 # ============================================================
 # Builder stage — CUDA toolkit + Rust toolchain
@@ -27,21 +27,11 @@ ENV PATH=${CUDA_HOME}/bin:${PATH}
 ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
 
 # Copy entire project (.dockerignore excludes target/, .git/, models/, etc.)
-# Includes .cargo/config.toml which redirects crate downloads to rsproxy.cn (CN mirror)
 COPY . .
 
-# ORT_LIB_LOCATION: skip cdn.pyke.io download, use pre-bundled CUDA 13 libonnxruntime.a + provider .so.
-# ORT CUDA EP requires cuDNN (libcudnn.so.9) which is not included here to keep image size small.
-# BERT/HuBERT preprocessing runs on ORT CPU EP (fast, runs once); GPT+SoVITS uses Candle CUDA.
-ENV ORT_LIB_LOCATION=/app/docker-ort-libs/cuda
-
-# Build binary — cuda enables Candle CUDA backend; onnx enables BERT/HuBERT via ort
-RUN cargo build --release --locked --features http-api,cuda,onnx && \
-    cp target/release/gpt-sovits /app/gpt-sovits && \
-    # ort statically links libonnxruntime.a but loads CUDA EP and shared provider via dlopen at runtime.
-    # Use the pre-bundled .so files from docker-ort-libs/cuda/ (same ones used for linking).
-    cp -L docker-ort-libs/cuda/libonnxruntime_providers_shared.so /app/ && \
-    cp -L docker-ort-libs/cuda/libonnxruntime_providers_cuda.so /app/
+# Build binary — cuda enables Candle CUDA; BERT/HuBERT use native Candle (no ORT)
+RUN cargo build --release --locked --features http-api,cuda && \
+    cp target/release/gpt-sovits /app/gpt-sovits
 
 # ============================================================
 # Runtime stage — ubuntu:24.04 + only required CUDA libs
@@ -57,22 +47,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl3 ca-certificates libsoxr0 libstdc++6 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy only the 4 CUDA libs our binary actually links against (ldd verified)
-COPY --from=builder /usr/local/cuda/lib64/libcudart.so.13.2.51   /usr/local/lib/
-COPY --from=builder /usr/local/cuda/lib64/libcublas.so.13.3.0.5  /usr/local/lib/
+# Copy only the CUDA libs our binary actually links against (ldd verified)
+COPY --from=builder /usr/local/cuda/lib64/libcudart.so.13.2.51    /usr/local/lib/
+COPY --from=builder /usr/local/cuda/lib64/libcublas.so.13.3.0.5   /usr/local/lib/
 COPY --from=builder /usr/local/cuda/lib64/libcublasLt.so.13.3.0.5 /usr/local/lib/
-COPY --from=builder /usr/local/cuda/lib64/libcurand.so.10.4.2.51 /usr/local/lib/
+COPY --from=builder /usr/local/cuda/lib64/libcurand.so.10.4.2.51  /usr/local/lib/
 
 COPY --from=builder /app/gpt-sovits /usr/local/bin/gpt-sovits
-COPY --from=builder /app/libonnxruntime_providers_shared.so /usr/local/lib/
-COPY --from=builder /app/libonnxruntime_providers_cuda.so /usr/local/lib/
 
-RUN ldconfig && \
-    mkdir -p /app && \
-    ln -s /usr/local/lib/libonnxruntime_providers_shared.so /app/libonnxruntime_providers_shared.so && \
-    ln -s /usr/local/lib/libonnxruntime_providers_cuda.so /app/libonnxruntime_providers_cuda.so
-
-RUN mkdir -p /app/models
+RUN ldconfig && mkdir -p /app/models
 
 WORKDIR /app
 
