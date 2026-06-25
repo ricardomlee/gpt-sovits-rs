@@ -1,7 +1,7 @@
 //! GPT-SoVITS CLI - Command line interface for TTS inference
 
 use clap::Parser;
-use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
+use gpt_sovits_rs::{split_sentences, AudioBuffer, Config, InferenceOptions, Language, Pipeline};
 use std::path::PathBuf;
 use tracing::{error, info};
 
@@ -27,7 +27,7 @@ struct Args {
     #[arg(long)]
     sovits_model: Option<PathBuf>,
 
-    /// Path to BigVGAN model file
+    /// Path to BigVGAN model file (experimental; not used by the main SoVITS decoder path yet)
     #[arg(long)]
     bigvgan_model: Option<PathBuf>,
 
@@ -70,6 +70,34 @@ struct Args {
     /// Speed multiplier
     #[arg(long, default_value = "1.0")]
     speed: f32,
+
+    /// Maximum semantic tokens to generate. Use higher values for long sentences.
+    #[arg(long, default_value = "500")]
+    max_tokens: usize,
+
+    /// Repetition penalty applied during GPT sampling.
+    #[arg(long, default_value = "1.35")]
+    repetition_penalty: f32,
+
+    /// Inference mode
+    #[arg(long, default_value = "cuda-graph", value_parser = ["plain", "kv", "cuda-graph"])]
+    mode: String,
+
+    /// Split long text by sentence and concatenate audio chunks.
+    #[arg(long)]
+    split_sentences: bool,
+
+    /// Minimum characters per sentence chunk when --split-sentences is enabled.
+    #[arg(long, default_value = "12")]
+    min_sentence_chars: usize,
+
+    /// Silence inserted between sentence chunks.
+    #[arg(long, default_value = "120")]
+    sentence_gap_ms: u32,
+
+    /// Fade in/out each sentence chunk before concatenation.
+    #[arg(long, default_value = "8")]
+    sentence_fade_ms: u32,
 
     /// Enable half-precision (FP16)
     #[arg(long)]
@@ -216,15 +244,16 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Load BigVGAN model (optional but recommended for proper audio synthesis)
+    // BigVGAN loading is experimental. The current SoVITS synthesis path still uses
+    // the decoder embedded in the SoVITS weights.
     if let Some(ref bigvgan_path) = args.bigvgan_model {
-        info!("Loading BigVGAN model...");
+        info!("Loading BigVGAN model (experimental; not used by main synthesis path yet)...");
         if let Err(e) = pipeline.load_bigvgan(bigvgan_path) {
             error!("Failed to load BigVGAN model: {}", e);
             std::process::exit(1);
         }
     } else {
-        info!("BigVGAN model not specified, using fallback synthesis");
+        info!("BigVGAN model not specified; using SoVITS decoder");
     }
 
     // Load BERT model (optional, significantly improves quality)
@@ -265,6 +294,8 @@ fn main() {
         .temperature(args.temperature)
         .speed(args.speed)
         .language(language)
+        .max_tokens(args.max_tokens)
+        .repetition_penalty(args.repetition_penalty)
         .build();
 
     // Run inference
@@ -273,7 +304,30 @@ fn main() {
     info!("  Reference: {:?}", reference_audio);
     info!("  Language: {:?}", language);
 
-    match pipeline.inference_cuda_graph(&text, &reference_audio, &reference_text, &options) {
+    let result = if args.split_sentences {
+        run_split_inference(
+            &mut pipeline,
+            &text,
+            &reference_audio,
+            &reference_text,
+            &options,
+            &args.mode,
+            args.min_sentence_chars,
+            args.sentence_gap_ms,
+            args.sentence_fade_ms,
+        )
+    } else {
+        run_inference(
+            &mut pipeline,
+            &text,
+            &reference_audio,
+            &reference_text,
+            &options,
+            &args.mode,
+        )
+    };
+
+    match result {
         Ok(audio) => {
             info!("Saving output to {:?}", output);
             if let Err(e) = audio.save(&output) {
@@ -287,6 +341,83 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+fn run_inference(
+    pipeline: &mut Pipeline,
+    text: &str,
+    reference_audio: &PathBuf,
+    reference_text: &str,
+    options: &InferenceOptions,
+    mode: &str,
+) -> gpt_sovits_rs::Result<AudioBuffer> {
+    match mode {
+        "plain" => pipeline.inference(text, reference_audio, reference_text, options),
+        "kv" => pipeline.inference_kv_cache(text, reference_audio, reference_text, options),
+        "cuda-graph" => {
+            pipeline.inference_cuda_graph(text, reference_audio, reference_text, options)
+        }
+        _ => unreachable!("validated by clap"),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_split_inference(
+    pipeline: &mut Pipeline,
+    text: &str,
+    reference_audio: &PathBuf,
+    reference_text: &str,
+    options: &InferenceOptions,
+    mode: &str,
+    min_sentence_chars: usize,
+    gap_ms: u32,
+    fade_ms: u32,
+) -> gpt_sovits_rs::Result<AudioBuffer> {
+    let chunks = split_sentences(text, min_sentence_chars);
+    info!(
+        "Split text into {} sentence chunk(s), mode={}, gap={}ms, fade={}ms",
+        chunks.len(),
+        mode,
+        gap_ms,
+        fade_ms
+    );
+    pipeline.preload_speaker(reference_audio, reference_text, options.language)?;
+
+    let mut output: Option<AudioBuffer> = None;
+    for (idx, chunk) in chunks.iter().enumerate() {
+        info!("Synthesizing chunk {}/{}: {}", idx + 1, chunks.len(), chunk);
+        let mut audio = run_inference(
+            pipeline,
+            chunk,
+            reference_audio,
+            reference_text,
+            options,
+            mode,
+        )?;
+        if fade_ms > 0 {
+            audio.fade_in(fade_ms);
+            audio.fade_out(fade_ms);
+        }
+
+        if let Some(out) = output.as_mut() {
+            if gap_ms > 0 {
+                let gap_samples = (gap_ms as f32 * out.sample_rate as f32 / 1000.0) as usize
+                    * out.channels as usize;
+                out.concat(&AudioBuffer::new(
+                    vec![0.0; gap_samples],
+                    out.sample_rate,
+                    out.channels,
+                ))?;
+            }
+            out.concat(&audio)?;
+        } else {
+            output = Some(audio);
+        }
+    }
+
+    output.ok_or_else(|| {
+        gpt_sovits_rs::Error::InferenceError("No sentence chunks generated".to_string())
+    })
 }
 
 /// Inspect model file

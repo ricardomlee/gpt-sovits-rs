@@ -191,6 +191,27 @@ cargo run --release --features cuda --bin gpt-sovits -- \
     --output output.wav
 ```
 
+长文本建议开启分句合成，复用同一参考音频特征并逐句拼接，稳定性通常比一次性生成整段更好：
+
+```bash
+cargo run --release --features cuda --bin gpt-sovits -- \
+    --device cuda --mode cuda-graph --split-sentences \
+    --min-sentence-chars 12 --sentence-gap-ms 120 --sentence-fade-ms 8 \
+    --max-tokens 500 --repetition-penalty 1.35 \
+    --gpt-model models/gpt-model.safetensors \
+    --sovits-model models/sovits-model.safetensors \
+    --bert-model models/bert/bert.safetensors \
+    --hubert-model models/hubert/hubert.safetensors \
+    --text "第一句话。第二句话。第三句话。" \
+    --reference-audio ref.wav \
+    --reference-text "参考音频对应的文字" \
+    --output output_long.wav
+```
+
+`--mode` 可选 `plain`、`kv`、`cuda-graph`。CLI 日志会输出 `profile mode=... target=... ref=... target_bert=... gpt=... sovits=... total=...`，用于定位瓶颈。
+
+> BigVGAN 当前仍是实验加载入口，主推理路径使用 SoVITS 权重内置 decoder；普通 mel-to-waveform BigVGAN 不能直接替换 SoVITS latent decoder。
+
 ## Rust API
 
 ```rust

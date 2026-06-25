@@ -83,6 +83,12 @@ mod tests {
         let pipeline = pipeline.unwrap();
         assert!(!pipeline.is_ready()); // No models loaded
     }
+
+    #[test]
+    fn test_split_sentences_merges_short_chunks() {
+        let chunks = split_sentences("你好。世界。今天测试长文本。", 5);
+        assert_eq!(chunks, vec!["你好。世界。", "今天测试长文本。"]);
+    }
 }
 
 /// Test module for text frontend
@@ -156,15 +162,21 @@ mod text_frontend_tests {
 /// Test module for model weights
 #[cfg(test)]
 mod weights_tests {
+    use candle_core::{DType, Device, Tensor};
     use gpt_sovits_rs::utils::weights::*;
-    use candle_core::{Tensor, DType, Device};
 
     #[test]
     fn test_state_dict() {
         let device = Device::Cpu;
         let mut data = std::collections::HashMap::new();
-        data.insert("layer.weight".to_string(), Tensor::ones((10, 5), DType::F32, &device).unwrap());
-        data.insert("layer.bias".to_string(), Tensor::zeros(5, DType::F32, &device).unwrap());
+        data.insert(
+            "layer.weight".to_string(),
+            Tensor::ones((10, 5), DType::F32, &device).unwrap(),
+        );
+        data.insert(
+            "layer.bias".to_string(),
+            Tensor::zeros(5, DType::F32, &device).unwrap(),
+        );
 
         let sd = StateDict::new(data);
         assert!(sd.contains("layer.weight"));
@@ -224,10 +236,10 @@ mod transformer_tests {
 
         // Check causal property using direct 2D indexing
         let mask_2d: Vec<Vec<f32>> = mask.to_vec2().unwrap();
-        assert_eq!(mask_2d[0][0], 1.0);  // (0,0) = 1
-        assert_eq!(mask_2d[0][1], 0.0);  // (0,1) = 0
-        assert_eq!(mask_2d[1][0], 1.0);  // (1,0) = 1
-        assert_eq!(mask_2d[1][1], 1.0);  // (1,1) = 1
+        assert_eq!(mask_2d[0][0], 1.0); // (0,0) = 1
+        assert_eq!(mask_2d[0][1], 0.0); // (0,1) = 0
+        assert_eq!(mask_2d[1][0], 1.0); // (1,0) = 1
+        assert_eq!(mask_2d[1][1], 1.0); // (1,1) = 1
     }
 
     #[test]
