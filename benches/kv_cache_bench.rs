@@ -1,4 +1,4 @@
-/// Benchmark comparing inference() vs inference_kv_cache() on GPU
+/// Benchmark comparing inference() vs inference_kv_cache() on GPU.
 ///
 /// Measures wall-clock time for full end-to-end synthesis with and without KV cache.
 /// Uses multiple text lengths to show how speedup scales with sequence length.

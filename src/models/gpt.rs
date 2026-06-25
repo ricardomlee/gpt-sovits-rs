@@ -1443,7 +1443,7 @@ impl GPTModel {
 
     /// Project and align raw BERT features to phone level.
     ///
-    /// Takes raw ONNX BERT output [1, seq+2, 1024] (includes CLS/SEP), applies bert_proj,
+    /// Takes raw BERT output [1, seq+2, 1024] (includes CLS/SEP), applies bert_proj,
     /// strips CLS/SEP, and expands to phone level via word2ph.
     /// Returns [1, n_phones, 512].
     ///
@@ -1469,7 +1469,7 @@ impl GPTModel {
         self.align_bert_to_phonemes(&projected, n_phones, word2ph)
     }
 
-    /// Align BERT features (from ONNX model including CLS/SEP) to phoneme sequence.
+    /// Align BERT features (including CLS/SEP) to phoneme sequence.
     ///
     /// Python's pipeline:
     ///   1. Extract BERT hidden states (char-level, includes CLS/SEP tokens)

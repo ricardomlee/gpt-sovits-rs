@@ -265,7 +265,7 @@ audio.save("output.wav")?;
 | **要求** | — | — | `cuda` feature |
 | **音质** | 相同 | 相同 | 相同 |
 
-RTX 4060 Ti 实测（`cargo run --example benchmark_gpu_kv_cache`）：
+RTX 4060 Ti 实测（`cargo bench --features cuda --bench kv_cache_bench`）：
 
 | 文本长度 | plain | kv cache | 加速比 |
 |----------|-------|----------|--------|
@@ -361,7 +361,10 @@ src/
 cargo run --features cuda --example e2e_quick
 
 # GPU KV Cache 基准对比
-cargo run --features cuda --example benchmark_gpu_kv_cache
+cargo bench --features cuda --bench kv_cache_bench
+
+# FP16 / FP32 推理基准对比
+cargo bench --features cuda --bench fp16_vs_fp32_bench
 
 # 全流程时间分析
 cargo run --features cuda --example profile_kv_cache

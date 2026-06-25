@@ -20,14 +20,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Note: In a real application, you would load actual model files:
     // pipeline.load_gpt("models/gpt-model.safetensors")?;
     // pipeline.load_sovits("models/sovits-model.safetensors")?;
-    // pipeline.load_bert("models/bert.onnx")?;
-    // pipeline.load_hubert("models/hubert.onnx")?;
+    // pipeline.load_bert("models/bert/bert.safetensors")?;
+    // pipeline.load_hubert("models/hubert/hubert.safetensors")?;
     // pipeline.load_bigvgan("models/bigvgan.safetensors")?;
 
     // For this example, we'll show the API usage with placeholder data
     println!("\nAPI Usage Example:");
     println!("------------------");
-    println!(r#"
+    println!(
+        r#"
     // Load models
     pipeline.load_gpt("models/gpt-model.safetensors")?;
     pipeline.load_sovits("models/sovits-model.safetensors")?;
@@ -50,7 +51,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Save output
     audio.save("output.wav")?;
-    "#);
+    "#
+    );
 
     // Inference options example
     let options = InferenceOptions::builder()
