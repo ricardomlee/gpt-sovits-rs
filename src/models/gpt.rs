@@ -31,6 +31,47 @@ pub struct GPTModel {
     num_layers: usize,           // Number of transformer layers for KV cache
 }
 
+struct SamplingScratch {
+    sorted_logits: Vec<f32>,
+    idx_probs: Vec<(usize, f32)>,
+    seen_tokens: Vec<u32>,
+    seen_stamp: u32,
+}
+
+impl SamplingScratch {
+    fn new(vocab_size: usize) -> Self {
+        Self {
+            sorted_logits: Vec::with_capacity(vocab_size),
+            idx_probs: Vec::with_capacity(vocab_size),
+            seen_tokens: vec![0; vocab_size],
+            seen_stamp: 1,
+        }
+    }
+
+    fn reset_seen(&mut self, vocab_size: usize) {
+        if self.seen_tokens.len() < vocab_size {
+            self.seen_tokens.resize(vocab_size, 0);
+        }
+        self.seen_stamp = self.seen_stamp.wrapping_add(1);
+        if self.seen_stamp == 0 {
+            self.seen_tokens.fill(0);
+            self.seen_stamp = 1;
+        }
+    }
+
+    fn mark_seen(&mut self, token: usize) -> bool {
+        if token >= self.seen_tokens.len() {
+            return false;
+        }
+        if self.seen_tokens[token] == self.seen_stamp {
+            false
+        } else {
+            self.seen_tokens[token] = self.seen_stamp;
+            true
+        }
+    }
+}
+
 /// Lookup embeddings handling both text and audio tokens
 fn mixed_embedding_lookup(
     text_emb: &Tensor,
@@ -230,7 +271,25 @@ impl GPTModel {
         prompt_tokens: &[usize],
         generated_tokens: &[usize],
     ) -> Result<(usize, usize)> {
-        let logits_vec: Vec<f32> = logits.to_dtype(DType::F32)?.to_vec1()?;
+        let mut scratch = SamplingScratch::new(logits.dims().last().copied().unwrap_or(0));
+        Self::sample_token_with_scratch(
+            logits, top_k, top_p, temperature, repetition_penalty,
+            prompt_tokens, generated_tokens, &mut scratch,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn sample_token_with_scratch(
+        logits: &Tensor,
+        top_k: usize,
+        top_p: f32,
+        temperature: f32,
+        repetition_penalty: f32,
+        prompt_tokens: &[usize],
+        generated_tokens: &[usize],
+        scratch: &mut SamplingScratch,
+    ) -> Result<(usize, usize)> {
+        let mut logits_vec: Vec<f32> = logits.to_dtype(DType::F32)?.to_vec1()?;
         let n = logits_vec.len();
 
         // Compute argmax of raw logits (before any filtering) — Python: torch.argmax(logits)
@@ -239,13 +298,11 @@ impl GPTModel {
             .map(|(i, _)| i)
             .unwrap_or(0);
 
-        let mut logits_vec = logits_vec;
-
         // 1. Repetition penalty — Python uses set(y.flatten()) so each unique token is penalized once
         if repetition_penalty != 1.0 {
-            let mut seen = std::collections::HashSet::new();
+            scratch.reset_seen(n);
             for &token in prompt_tokens.iter().chain(generated_tokens.iter()) {
-                if token < n && seen.insert(token) {
+                if token < n && scratch.mark_seen(token) {
                     if logits_vec[token] > 0.0 {
                         logits_vec[token] /= repetition_penalty;
                     } else {
@@ -257,9 +314,12 @@ impl GPTModel {
 
         // 2. top_k: find the k-th largest logit value, set all below to -inf
         if top_k > 0 && top_k < n {
-            let mut sorted = logits_vec.clone();
-            sorted.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-            let pivot = sorted[top_k - 1];
+            scratch.sorted_logits.clear();
+            scratch.sorted_logits.extend_from_slice(&logits_vec);
+            scratch.sorted_logits.select_nth_unstable_by(top_k - 1, |a, b| {
+                b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            let pivot = scratch.sorted_logits[top_k - 1];
             for v in logits_vec.iter_mut() {
                 if *v < pivot {
                     *v = f32::NEG_INFINITY;
@@ -270,34 +330,43 @@ impl GPTModel {
         // 3. top_p: cumulative prob filter on UNTEMPERATURE-SCALED softmax (matches Python)
         if top_p < 1.0 {
             let max_l = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-            let exp_vals: Vec<f32> = logits_vec.iter().map(|&x| (x - max_l).exp()).collect();
-            let exp_sum: f32 = exp_vals.iter().sum();
-            let probs_unit: Vec<f32> = exp_vals.iter().map(|&e| e / exp_sum).collect();
+            let exp_sum: f32 = logits_vec.iter().map(|&x| (x - max_l).exp()).sum();
+            if exp_sum.is_finite() && exp_sum > 0.0 {
+                scratch.idx_probs.clear();
+                scratch.idx_probs.extend(
+                    logits_vec.iter().enumerate().map(|(idx, &x)| (idx, (x - max_l).exp() / exp_sum)),
+                );
+                scratch.idx_probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-            let mut idx_probs: Vec<(usize, f32)> = probs_unit.iter()
-                .copied().enumerate().collect();
-            idx_probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-
-            let mut cumsum = 0.0f32;
-            for &(idx, prob) in &idx_probs {
-                if cumsum > top_p {
-                    logits_vec[idx] = f32::NEG_INFINITY;
+                let mut cumsum = 0.0f32;
+                for &(idx, prob) in &scratch.idx_probs {
+                    if cumsum > top_p {
+                        logits_vec[idx] = f32::NEG_INFINITY;
+                    }
+                    cumsum += prob;
                 }
-                cumsum += prob;
             }
         }
 
         // 4. Temperature + softmax → final probs
         let t = if temperature > 0.0 { temperature } else { 1.0 };
         let max_l = logits_vec.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        let exp_vals: Vec<f32> = logits_vec.iter().map(|&x| ((x - max_l) / t).exp()).collect();
-        let exp_sum: f32 = exp_vals.iter().sum();
-        let final_probs: Vec<f32> = exp_vals.iter().map(|&e| e / exp_sum).collect();
+        let exp_sum: f32 = logits_vec.iter().map(|&x| ((x - max_l) / t).exp()).sum();
+        if !exp_sum.is_finite() || exp_sum <= 0.0 {
+            return Ok((argmax, argmax));
+        }
 
         // 5. Multinomial sample
         let rand_val = rand::random::<f32>();
         let mut cumsum = 0.0f32;
-        for (i, &prob) in final_probs.iter().enumerate() {
+        let mut best = 0usize;
+        let mut best_prob = f32::NEG_INFINITY;
+        for (i, &logit) in logits_vec.iter().enumerate() {
+            let prob = ((logit - max_l) / t).exp() / exp_sum;
+            if prob > best_prob {
+                best = i;
+                best_prob = prob;
+            }
             cumsum += prob;
             if rand_val <= cumsum {
                 return Ok((i, argmax));
@@ -305,10 +374,6 @@ impl GPTModel {
         }
 
         // Fallback: argmax of final probs
-        let best = final_probs.iter().enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(i, _)| i)
-            .unwrap_or(0);
         Ok((best, argmax))
     }
 
@@ -749,14 +814,15 @@ impl GPTModel {
 
         // ── Convert dynamic KV → static pre-allocated KV ────────────────────────
         let mut static_kv = StaticKvManager::from_dynamic(dyn_kv, max_kv_len)?;
+        let mut sampling_scratch = SamplingScratch::new(audio_vocab_size);
 
         // ── First token from prefill logits ─────────────────────────────────────
         let last_hidden = prefill_out.narrow(1, total_prefill - 1, 1)?.squeeze(0)?;
         let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?;
         let logits_for_sampling = logits.narrow(0, 0, audio_vocab_size - 1)?;
-        let (next_token, _) = Self::sample_token(
+        let (next_token, _) = Self::sample_token_with_scratch(
             &logits_for_sampling, top_k, top_p, temperature, repetition_penalty,
-            prompt_tokens, &[],
+            prompt_tokens, &[], &mut sampling_scratch,
         )?;
         if next_token >= audio_vocab_size - 1 {
             return Ok(vec![]);
@@ -781,9 +847,9 @@ impl GPTModel {
             let effective_vocab = if is_eos_masked { audio_vocab_size - 1 } else { audio_vocab_size };
             let logits_for_sampling = logits.narrow(0, 0, effective_vocab)?;
 
-            let (next_token, argmax) = Self::sample_token(
+            let (next_token, argmax) = Self::sample_token_with_scratch(
                 &logits_for_sampling, top_k, top_p, temperature, repetition_penalty,
-                prompt_tokens, &generated_tokens,
+                prompt_tokens, &generated_tokens, &mut sampling_scratch,
             )?;
 
             let argmax_eos = !is_eos_masked && argmax == audio_vocab_size - 1;
@@ -903,13 +969,14 @@ impl GPTModel {
                 &prefill_input, Some(&hybrid_mask), &mut dyn_kv,
             )?;
             let mut static_kv = StaticKvManager::from_dynamic(dyn_kv, max_kv_len)?;
+            let mut sampling_scratch = SamplingScratch::new(audio_vocab_size);
 
             // ── First token ───────────────────────────────────────────────────────
             let last_hidden = prefill_out.narrow(1, total_prefill - 1, 1)?.squeeze(0)?;
             let first_logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?;
-            let (next_token, _) = Self::sample_token(
+            let (next_token, _) = Self::sample_token_with_scratch(
                 &first_logits.narrow(0, 0, audio_vocab_size - 1)?,
-                top_k, top_p, temperature, repetition_penalty, prompt_tokens, &[],
+                top_k, top_p, temperature, repetition_penalty, prompt_tokens, &[], &mut sampling_scratch,
             )?;
             if next_token >= audio_vocab_size - 1 { return Ok(vec![]); }
             let mut generated = vec![next_token];
@@ -1084,7 +1151,10 @@ impl GPTModel {
                 update_mask_raw(pos_before)?;
                 let is_eos = step < 11;
                 let ev = if is_eos { audio_vocab_size - 1 } else { audio_vocab_size };
-                let (tok, ag) = Self::sample_token(&logits.narrow(0, 0, ev)?, top_k, top_p, temperature, repetition_penalty, prompt_tokens, &generated)?;
+                let (tok, ag) = Self::sample_token_with_scratch(
+                    &logits.narrow(0, 0, ev)?, top_k, top_p, temperature, repetition_penalty,
+                    prompt_tokens, &generated, &mut sampling_scratch,
+                )?;
                 if tok >= audio_vocab_size - 1 || (!is_eos && ag == audio_vocab_size - 1) { break; }
                 generated.push(tok);
             }
@@ -1164,7 +1234,10 @@ impl GPTModel {
                     let logits = eager_step(&generated, &mut static_kv)?;
                     let is_eos = step < 11;
                     let ev = if is_eos { audio_vocab_size - 1 } else { audio_vocab_size };
-                    let (tok, ag) = Self::sample_token(&logits.narrow(0, 0, ev)?, top_k, top_p, temperature, repetition_penalty, prompt_tokens, &generated)?;
+                    let (tok, ag) = Self::sample_token_with_scratch(
+                        &logits.narrow(0, 0, ev)?, top_k, top_p, temperature, repetition_penalty,
+                        prompt_tokens, &generated, &mut sampling_scratch,
+                    )?;
                     if tok >= audio_vocab_size - 1 || (!is_eos && ag == audio_vocab_size - 1) { break; }
                     generated.push(tok);
                 }
@@ -1182,9 +1255,10 @@ impl GPTModel {
                 let step = generated.len();
                 let is_eos = step < 11;
                 let ev = if is_eos { audio_vocab_size - 1 } else { audio_vocab_size };
-                let (tok, ag) = Self::sample_token(
+                let (tok, ag) = Self::sample_token_with_scratch(
                     &logits_out.narrow(0, 0, ev)?,
                     top_k, top_p, temperature, repetition_penalty, prompt_tokens, &generated,
+                    &mut sampling_scratch,
                 )?;
                 if tok >= audio_vocab_size - 1 || (!is_eos && ag == audio_vocab_size - 1) {
                     tracing::info!("[GPT cuda-graph] EOS at capture step");
@@ -1230,9 +1304,10 @@ impl GPTModel {
                 // 6. Sample (D2H; logits_out is stable pre-allocated buffer written by graph)
                 let is_eos = step < 11;
                 let ev = if is_eos { audio_vocab_size - 1 } else { audio_vocab_size };
-                let (tok, ag) = Self::sample_token(
+                let (tok, ag) = Self::sample_token_with_scratch(
                     &logits_out.narrow(0, 0, ev)?,
                     top_k, top_p, temperature, repetition_penalty, prompt_tokens, &generated,
+                    &mut sampling_scratch,
                 )?;
                 if tok >= audio_vocab_size - 1 || (!is_eos && ag == audio_vocab_size - 1) { break; }
                 generated.push(tok);
@@ -1712,4 +1787,3 @@ impl crate::models::Model for GPTModel {
         Ok(())
     }
 }
-
