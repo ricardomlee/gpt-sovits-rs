@@ -1,6 +1,5 @@
 /// Full GPU E2E test: GPT → SoVITS with reference audio
 /// Tests complete pipeline on GPU with KV cache
-
 use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
 
 fn main() {
@@ -26,18 +25,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     pipeline.load_sovits("models/sovits-model.safetensors")?;
     println!("  [OK] SoVITS");
 
-    match pipeline.load_bert("models/onnx/bert.onnx") {
-        Ok(_) => println!("  [OK] BERT (ONNX)"),
+    match pipeline.load_bert("models/bert/bert.safetensors") {
+        Ok(_) => println!("  [OK] BERT"),
         Err(e) => println!("  [SKIP] BERT: {}", e),
     }
-    match pipeline.load_hubert("models/onnx/hubert.onnx") {
-        Ok(_) => println!("  [OK] HuBERT (ONNX)"),
+    match pipeline.load_hubert("models/hubert/hubert.safetensors") {
+        Ok(_) => println!("  [OK] HuBERT"),
         Err(e) => println!("  [SKIP] HuBERT: {}", e),
     }
 
     let input_text = "你好世界";
-    let ref_audio = "/home/ric/gpt-sovits-rs/test_zh_py_wav16k.wav";  // Python's exact wav16k+silence
-    let ref_text = "先帝创业未半而中道崩殂";  // transcription of reference audio
+    let ref_audio = "ref.wav";
+    let ref_text = "先帝创业未半而中道崩殂"; // transcription of reference audio
 
     let options = InferenceOptions::builder()
         .top_k(15)
@@ -62,15 +61,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let t2 = start2.elapsed();
 
     println!("\n=== Results ===");
-    println!("inference()         {:>4} tokens, {:.2}s audio, {:.2?} time",
+    println!(
+        "inference()         {:>4} tokens, {:.2}s audio, {:.2?} time",
         audio.samples.len() / (audio.sample_rate as usize / 25),
-        audio.duration(), t1);
-    println!("inference_kv_cache() {:>4} tokens, {:.2}s audio, {:.2?} time",
+        audio.duration(),
+        t1
+    );
+    println!(
+        "inference_kv_cache() {:>4} tokens, {:.2}s audio, {:.2?} time",
         audio_kv.samples.len() / (audio_kv.sample_rate as usize / 25),
-        audio_kv.duration(), t2);
+        audio_kv.duration(),
+        t2
+    );
 
-    let rms1 = (audio.samples.iter().map(|s| s * s).sum::<f32>() / audio.samples.len() as f32).sqrt();
-    let rms2 = (audio_kv.samples.iter().map(|s| s * s).sum::<f32>() / audio_kv.samples.len() as f32).sqrt();
+    let rms1 =
+        (audio.samples.iter().map(|s| s * s).sum::<f32>() / audio.samples.len() as f32).sqrt();
+    let rms2 = (audio_kv.samples.iter().map(|s| s * s).sum::<f32>()
+        / audio_kv.samples.len() as f32)
+        .sqrt();
     println!("RMS: inference={:.4}, inference_kv_cache={:.4}", rms1, rms2);
 
     let output_path = "out_e2e_gpu_full.wav";
@@ -85,7 +93,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn save_wav(audio: &gpt_sovits_rs::AudioBuffer, path: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn save_wav(
+    audio: &gpt_sovits_rs::AudioBuffer,
+    path: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     let spec = hound::WavSpec {
         channels: audio.channels,
         sample_rate: audio.sample_rate,

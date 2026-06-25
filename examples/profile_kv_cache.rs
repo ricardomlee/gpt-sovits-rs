@@ -1,10 +1,9 @@
 /// Profile inference_kv_cache() end-to-end timing
 ///
 /// Runs inference() and inference_kv_cache() back-to-back for comparison.
-
-use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline, AudioBuffer};
+use gpt_sovits_rs::{AudioBuffer, Config, InferenceOptions, Language, Pipeline};
+use hound::{SampleFormat, WavSpec, WavWriter};
 use std::time::Instant;
-use hound::{WavSpec, SampleFormat, WavWriter};
 
 fn main() {
     if let Err(e) = run_profile() {
@@ -31,17 +30,20 @@ fn run_profile() -> Result<(), Box<dyn std::error::Error>> {
     let t0 = Instant::now();
     pipeline.load_gpt("models/gpt-model.safetensors")?;
     pipeline.load_sovits("models/sovits-model.safetensors")?;
-    let _ = pipeline.load_bert("models/onnx/bert.onnx");
-    let _ = pipeline.load_hubert("models/onnx/hubert.onnx");
+    let _ = pipeline.load_bert("models/bert/bert.safetensors");
+    let _ = pipeline.load_hubert("models/hubert/hubert.safetensors");
     println!("Model load: {:.2?}\n", t0.elapsed());
 
     let input_text = "你好，世界！";
-    let ref_audio = "/home/ric/gpt-sovits-rs/test_zh_py_wav16k.wav";
+    let ref_audio = "ref.wav";
     let ref_text = "先帝创业未半而中道崩殂";
 
     let options = InferenceOptions::builder()
-        .top_k(15).top_p(0.95).temperature(0.8)
-        .language(Language::Chinese).max_tokens(500)
+        .top_k(15)
+        .top_p(0.95)
+        .temperature(0.8)
+        .language(Language::Chinese)
+        .max_tokens(500)
         .build();
 
     println!("Input: \"{}\"", input_text);
@@ -52,7 +54,12 @@ fn run_profile() -> Result<(), Box<dyn std::error::Error>> {
     let audio1 = pipeline.inference(input_text, ref_audio, ref_text, &options)?;
     let t1e = t1.elapsed();
     let rms1 = rms(&audio1.samples);
-    println!("inference():          {:.2?}  {:.2}s audio  RMS={:.4}", t1e, audio1.duration(), rms1);
+    println!(
+        "inference():          {:.2?}  {:.2}s audio  RMS={:.4}",
+        t1e,
+        audio1.duration(),
+        rms1
+    );
     save_wav(&audio1, "out_profile_plain.wav")?;
 
     // inference_kv_cache()
@@ -60,7 +67,12 @@ fn run_profile() -> Result<(), Box<dyn std::error::Error>> {
     let audio2 = pipeline.inference_kv_cache(input_text, ref_audio, ref_text, &options)?;
     let t2e = t2.elapsed();
     let rms2 = rms(&audio2.samples);
-    println!("inference_kv_cache(): {:.2?}  {:.2}s audio  RMS={:.4}", t2e, audio2.duration(), rms2);
+    println!(
+        "inference_kv_cache(): {:.2?}  {:.2}s audio  RMS={:.4}",
+        t2e,
+        audio2.duration(),
+        rms2
+    );
     save_wav(&audio2, "out_profile_kv.wav")?;
 
     println!("\nSaved: out_profile_plain.wav, out_profile_kv.wav");

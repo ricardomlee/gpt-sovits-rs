@@ -71,7 +71,11 @@ impl Config {
 
     /// Dtype for SoVITS decoder/encoder/flow models (supports F16 safely)
     pub fn candle_dtype(&self) -> candle_core::DType {
-        if self.half_precision { candle_core::DType::F16 } else { candle_core::DType::F32 }
+        if self.half_precision {
+            candle_core::DType::F16
+        } else {
+            candle_core::DType::F32
+        }
     }
 
     /// Dtype for the GPT autoregressive model — always F32.
@@ -90,12 +94,12 @@ impl Config {
                 // Disable cudarc event tracking — we use a single dedicated stream so
                 // cross-stream synchronization events are unnecessary, and they cause
                 // error-state cascade failures when stream wait events fail after ORT init.
+                #[cfg(feature = "cuda")]
                 if let candle_core::Device::Cuda(ref cuda_dev) = dev {
-                    #[cfg(feature = "cuda")]
                     unsafe { cuda_dev.disable_event_tracking() };
                 }
                 dev
-            },
+            }
             Device::Cpu => candle_core::Device::Cpu,
             Device::Mps => candle_core::Device::new_metal(0).unwrap_or(candle_core::Device::Cpu),
         }

@@ -7,7 +7,7 @@
 //! Weight key compat: our safetensors uses `layer_norm` (lowercase) while
 //! candle-transformers expects `LayerNorm`. Keys are renamed at load time.
 
-use candle_core::{DType, Device, Result, Tensor};
+use candle_core::{DType, Device, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config, HiddenAct, PositionEmbeddingType};
 use tokenizers::Tokenizer;
@@ -44,11 +44,19 @@ pub struct BertCandleModel {
 }
 
 impl BertCandleModel {
-    pub fn load(weights_path: &std::path::Path, tokenizer_path: &std::path::Path, device: &Device) -> crate::Result<Self> {
+    pub fn load(
+        weights_path: &std::path::Path,
+        tokenizer_path: &std::path::Path,
+        device: &Device,
+    ) -> crate::Result<Self> {
         Self::load_with_dtype(weights_path, tokenizer_path, device, DType::F32)
     }
 
-    pub fn load_bf16(weights_path: &std::path::Path, tokenizer_path: &std::path::Path, device: &Device) -> crate::Result<Self> {
+    pub fn load_bf16(
+        weights_path: &std::path::Path,
+        tokenizer_path: &std::path::Path,
+        device: &Device,
+    ) -> crate::Result<Self> {
         Self::load_with_dtype(weights_path, tokenizer_path, device, DType::BF16)
     }
 
@@ -71,12 +79,19 @@ impl BertCandleModel {
         let tokenizer = Tokenizer::from_file(tokenizer_path)
             .map_err(|e| crate::Error::ModelLoadError(format!("tokenizer: {e}")))?;
 
-        Ok(Self { model, tokenizer, device: device.clone(), dtype })
+        Ok(Self {
+            model,
+            tokenizer,
+            device: device.clone(),
+            dtype,
+        })
     }
 
     /// Returns [1, seq_len, 1024] in F32 (caller always expects F32).
     pub fn extract(&self, text: &str) -> crate::Result<Tensor> {
-        let enc = self.tokenizer.encode(text, true)
+        let enc = self
+            .tokenizer
+            .encode(text, true)
             .map_err(|e| crate::Error::InferenceError(format!("tokenize: {e}")))?;
 
         let ids: Vec<u32> = enc.get_ids().to_vec();
@@ -87,10 +102,18 @@ impl BertCandleModel {
         let token_type_ids = Tensor::zeros((1, seq), DType::U32, &self.device)?;
         let attn_mask = Tensor::from_vec(mask, (1, seq), &self.device)?;
 
-        let out = self.model.forward(&input_ids, &token_type_ids, Some(&attn_mask))?;
+        let out = self
+            .model
+            .forward(&input_ids, &token_type_ids, Some(&attn_mask))?;
 
-        if self.dtype != DType::F32 { Ok(out.to_dtype(DType::F32)?) } else { Ok(out) }
+        if self.dtype != DType::F32 {
+            Ok(out.to_dtype(DType::F32)?)
+        } else {
+            Ok(out)
+        }
     }
 
-    pub fn dtype(&self) -> DType { self.dtype }
+    pub fn dtype(&self) -> DType {
+        self.dtype
+    }
 }

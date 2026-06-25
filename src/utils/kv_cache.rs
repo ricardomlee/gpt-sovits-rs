@@ -43,8 +43,8 @@
 //! - 有 Cache: 500 次 KV 计算
 //! - 理论加速：250x (实际 5-10x，因为有内存开销)
 
-use candle_core::{DType, Tensor};
 use crate::Result;
+use candle_core::{DType, Tensor};
 
 /// KV Cache for a single transformer layer
 #[derive(Debug, Clone)]
@@ -252,16 +252,26 @@ impl StaticKvLayer {
         let pos_idx = Tensor::full(cur_len as i64, (batch, n_heads, 1usize, head_dim), &device)?
             .to_dtype(DType::I64)?;
 
-        Ok(Self { k_buf, v_buf, len: cur_len, max_len, n_heads, head_dim, pos_idx })
+        Ok(Self {
+            k_buf,
+            v_buf,
+            len: cur_len,
+            max_len,
+            n_heads,
+            head_dim,
+            pos_idx,
+        })
     }
 
     /// Append a single decode token's K and V (in-place via `scatter_set`).
     /// Used in eager (non-graph) decode mode.
     pub fn append(&mut self, k_new: &Tensor, v_new: &Tensor) -> Result<()> {
         if self.len >= self.max_len {
-            return Err(candle_core::Error::Msg(
-                format!("StaticKvLayer: KV cache full ({}/{})", self.len, self.max_len)
-            ).into());
+            return Err(candle_core::Error::Msg(format!(
+                "StaticKvLayer: KV cache full ({}/{})",
+                self.len, self.max_len
+            ))
+            .into());
         }
         // Overwrite pos_idx in-place so it contains the current `len` value.
         // (For graph mode this is done externally via H2D copy; for eager mode this allocates
@@ -286,12 +296,22 @@ impl StaticKvLayer {
     }
 
     /// Full K buffer [1, n_heads, max_len, head_dim] — includes padding zeros beyond `len`.
-    pub fn k(&self) -> &Tensor { &self.k_buf }
+    pub fn k(&self) -> &Tensor {
+        &self.k_buf
+    }
     /// Full V buffer [1, n_heads, max_len, head_dim] — includes padding zeros beyond `len`.
-    pub fn v(&self) -> &Tensor { &self.v_buf }
-    pub fn len(&self) -> usize { self.len }
-    pub fn is_empty(&self) -> bool { self.len == 0 }
-    pub fn max_len(&self) -> usize { self.max_len }
+    pub fn v(&self) -> &Tensor {
+        &self.v_buf
+    }
+    pub fn len(&self) -> usize {
+        self.len
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+    pub fn max_len(&self) -> usize {
+        self.max_len
+    }
 
     /// Build an attention mask: 0.0 for valid positions, -1e9 for padding.
     /// Shape: [1, 1, 1, max_len] — broadcast to [batch, n_heads, 1, max_len] in attention.
@@ -303,8 +323,10 @@ impl StaticKvLayer {
         for v in vals.iter_mut().take(self.max_len).skip(self.len) {
             *v = -1e9f32;
         }
-        Ok(Tensor::from_slice(&vals, (1usize, 1usize, 1usize, self.max_len), device)?
-            .to_dtype(dtype)?)
+        Ok(
+            Tensor::from_slice(&vals, (1usize, 1usize, 1usize, self.max_len), device)?
+                .to_dtype(dtype)?,
+        )
     }
 }
 
@@ -317,15 +339,20 @@ pub struct StaticKvManager {
 impl StaticKvManager {
     /// Build from a dynamic `KvCacheManager` produced by prefill.
     pub fn from_dynamic(dynamic: KvCacheManager, max_len: usize) -> Result<Self> {
-        let layers = dynamic.into_caches()
+        let layers = dynamic
+            .into_caches()
             .into_iter()
             .map(|cache| {
                 let (k_opt, v_opt) = cache.into_tensors();
                 let k = k_opt.ok_or_else(|| {
-                    candle_core::Error::Msg("StaticKvManager: missing K tensor in prefill cache".into())
+                    candle_core::Error::Msg(
+                        "StaticKvManager: missing K tensor in prefill cache".into(),
+                    )
                 })?;
                 let v = v_opt.ok_or_else(|| {
-                    candle_core::Error::Msg("StaticKvManager: missing V tensor in prefill cache".into())
+                    candle_core::Error::Msg(
+                        "StaticKvManager: missing V tensor in prefill cache".into(),
+                    )
                 })?;
                 StaticKvLayer::from_dynamic(k, v, max_len)
             })
@@ -338,8 +365,12 @@ impl StaticKvManager {
         self.layers.first().map(|l| l.len).unwrap_or(0)
     }
 
-    pub fn is_empty(&self) -> bool { self.len() == 0 }
-    pub fn num_layers(&self) -> usize { self.layers.len() }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+    pub fn num_layers(&self) -> usize {
+        self.layers.len()
+    }
 
     /// Increment each layer's `len` by 1 (called after a graph-replay decode step).
     pub fn step(&mut self) {
@@ -352,7 +383,8 @@ impl StaticKvManager {
     /// Returns `None` when all positions are valid (no padding yet — impossible since we always
     /// have padding beyond the prefill length).
     pub fn make_mask(&self) -> Result<Tensor> {
-        self.layers.first()
+        self.layers
+            .first()
             .ok_or_else(|| candle_core::Error::Msg("StaticKvManager: no layers".into()))?
             .make_mask()
     }
@@ -375,6 +407,7 @@ mod tests {
 
         let (k_out, v_out) = cache.update(k1, v1)?;
         assert_eq!(k_out.dims(), &[1, 8, 1, 64]);
+        assert_eq!(v_out.dims(), &[1, 8, 1, 64]);
         assert_eq!(cache.len(), 1);
 
         // Second token
@@ -383,6 +416,7 @@ mod tests {
 
         let (k_out, v_out) = cache.update(k2, v2)?;
         assert_eq!(k_out.dims(), &[1, 8, 2, 64]);
+        assert_eq!(v_out.dims(), &[1, 8, 2, 64]);
         assert_eq!(cache.len(), 2);
 
         // Third token
@@ -391,6 +425,7 @@ mod tests {
 
         let (k_out, v_out) = cache.update(k3, v3)?;
         assert_eq!(k_out.dims(), &[1, 8, 3, 64]);
+        assert_eq!(v_out.dims(), &[1, 8, 3, 64]);
         assert_eq!(cache.len(), 3);
 
         Ok(())

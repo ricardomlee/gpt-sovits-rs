@@ -48,7 +48,7 @@ Rust 实现位于 `src/inference/mod.rs::inference()`。缺少这一步时，GPT
 
 ### BERT 对齐（project_and_align_bert）
 
-ONNX BERT 输出 `[1, seq+2, 1024]`（含 CLS/SEP）：
+纯 Candle BERT 输出 `[1, seq+2, 1024]`（含 CLS/SEP）：
 1. 去除 CLS（第 0 位）和 SEP（最后一位）
 2. 线性投影 1024 → 512（`bert_proj` 权重）
 3. 按 `word2ph` 展开到音素级（每个汉字对应若干音素）
@@ -118,7 +118,7 @@ step >= 11: argmax(logits) == EOS  OR  sampled == EOS → 停止
 | 步骤 | Python 参考 | Rust 状态 |
 |------|------------|-----------|
 | G2P 音素 | `symbols_v2.json` 732 符号 | 完全一致 |
-| BERT 特征 | ONNX 同模型 | 数值一致 |
+| BERT 特征 | Candle chinese-roberta-wwm-ext-large | 数值一致 |
 | HuBERT 重采样 | librosa (soxr HQ) | VQ tokens 20/20（32kHz 和 16kHz 输入均一致） |
 | VQ prompt tokens | Python softmax + argmin | 129/129 一致 |
 | GPT 生成 token 数 | 83–123 个 | 同范围（受采样随机性影响） |
@@ -130,7 +130,6 @@ step >= 11: argmax(logits) == EOS  OR  sampled == EOS → 停止
 | crate | 版本 | 用途 |
 |-------|------|------|
 | `candle-core` | 0.10 | Tensor + CUDA |
-| `ort` | 2.0-rc.12 | ONNX Runtime（BERT / HuBERT） |
 | `soxr` | 0.6 | 音频重采样（需要系统包 `libsoxr-dev`） |
 | `hound` | 3.5 | WAV I/O |
 | `jieba-rs` | 0.6 | 中文分词 |

@@ -8,7 +8,7 @@ fn main() {
 
     let weights_map = load_safetensors("models/sovits-model.safetensors").unwrap();
     let state_dict = StateDict::new(weights_map);
-    let decoder = Decoder::load(&state_dict, &device).unwrap();
+    let decoder = Decoder::load(&state_dict, &device, DType::F32).unwrap();
 
     // Load decoder input from Rust pipeline
     let dec_input_data = load_tensor_file("sovits_dec_input.txt", &device).unwrap();

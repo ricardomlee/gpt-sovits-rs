@@ -75,6 +75,7 @@ docker run --rm \
   -v /path/to/models:/app/models \
   -v /path/to/audio:/audio \
   gpt-sovits-rs:cpu \
+    --device cpu \
     --gpt-model /app/models/gpt-model.safetensors \
     --sovits-model /app/models/sovits-model.safetensors \
     --bert-model /app/models/bert/bert.safetensors \
@@ -113,6 +114,7 @@ docker run --rm --gpus all \
 docker run -d --gpus all \
   -p 9880:9880 \
   -v /path/to/models:/app/models \
+  -v /path/to/audio:/audio \
   --name gpt-sovits \
   gpt-sovits-rs:cuda \
     --http --port 9880 --device cuda \
@@ -165,10 +167,20 @@ models/
     └── hubert.safetensors     # HuBERT/Wav2Vec2 特征提取
 ```
 
+GPT 和 SoVITS 需要分别转换：
+
+```bash
+python3 convert_gpt_weights.py /path/to/s1bert25hz-*.ckpt models/gpt-model.safetensors
+python3 convert_sovits_weights.py /path/to/s2G*.pth models/sovits-model.safetensors
+```
+
+BERT 权重需使用 Hugging Face safetensors 格式，并把对应的 `tokenizer.json` 放在同一目录；若同目录缺失，程序会回退查找 `models/bert/tokenizer.json`。HuBERT 也使用 safetensors，不再加载 `models/onnx/*.onnx`。
+
 ### 运行推理
 
 ```bash
-cargo run --release --features cuda -- \
+cargo run --release --features cuda --bin gpt-sovits -- \
+    --device cuda \
     --gpt-model models/gpt-model.safetensors \
     --sovits-model models/sovits-model.safetensors \
     --bert-model models/bert/bert.safetensors \
@@ -245,10 +257,12 @@ RTX 4060 Ti 实测（`cargo run --example benchmark_gpu_kv_cache`）：
 ## HTTP API
 
 ```bash
-cargo run --release --features "cuda,http-api" -- \
-    --http --port 9880 \
+cargo run --release --features "cuda,http-api" --bin gpt-sovits -- \
+    --http --port 9880 --device cuda \
     --gpt-model models/gpt-model.safetensors \
-    --sovits-model models/sovits-model.safetensors
+    --sovits-model models/sovits-model.safetensors \
+    --bert-model models/bert/bert.safetensors \
+    --hubert-model models/hubert/hubert.safetensors
 ```
 
 服务启动后提供三个端点：
@@ -346,7 +360,7 @@ cargo install sccache
 
 # 开发时使用 dev-gpu profile
 cargo build --profile dev-gpu --features cuda
-cargo run --profile dev-gpu --features cuda -- --text "你好" ...
+cargo run --profile dev-gpu --features cuda --bin gpt-sovits -- --text "你好" ...
 ```
 
 ### 中间张量调试
@@ -354,7 +368,7 @@ cargo run --profile dev-gpu --features cuda -- --text "你好" ...
 设置环境变量 `SOVITS_DEBUG=1` 可在当前目录生成各阶段中间张量文件（`sovits_debug_*.txt`），用于与 Python 实现对比验证：
 
 ```bash
-SOVITS_DEBUG=1 cargo run --profile dev-gpu --features cuda -- ...
+SOVITS_DEBUG=1 cargo run --profile dev-gpu --features cuda --bin gpt-sovits -- ...
 # 生成: sovits_debug_ge.txt, sovits_debug_encp_m.txt, sovits_debug_flow_z.txt, 等
 ```
 

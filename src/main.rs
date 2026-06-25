@@ -3,7 +3,7 @@
 use clap::Parser;
 use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
 use std::path::PathBuf;
-use tracing::{info, error};
+use tracing::{error, info};
 
 #[derive(Parser, Debug)]
 #[command(name = "gpt-sovits")]
@@ -114,6 +114,8 @@ fn main() {
         {
             if let Err(e) = http_api::run(
                 args.port,
+                &args.device,
+                args.half,
                 args.gpt_model.as_deref(),
                 args.sovits_model.as_deref(),
                 args.bigvgan_model.as_deref(),
@@ -271,12 +273,7 @@ fn main() {
     info!("  Reference: {:?}", reference_audio);
     info!("  Language: {:?}", language);
 
-    match pipeline.inference_cuda_graph(
-        &text,
-        &reference_audio,
-        &reference_text,
-        &options,
-    ) {
+    match pipeline.inference_cuda_graph(&text, &reference_audio, &reference_text, &options) {
         Ok(audio) => {
             info!("Saving output to {:?}", output);
             if let Err(e) = audio.save(&output) {
@@ -294,9 +291,9 @@ fn main() {
 
 /// Inspect model file
 fn inspect_model(path: &PathBuf) {
+    use safetensors::SafeTensors;
     use std::fs::File;
     use std::io::Read;
-    use safetensors::SafeTensors;
 
     let mut file = File::open(path).unwrap();
     let mut buffer = Vec::new();
@@ -323,15 +320,15 @@ mod http_api {
         routing::{get, post},
         Json, Router,
     };
+    use base64::Engine as _;
+    use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
     use serde::Deserialize;
+    use serde::Serialize;
     use std::sync::Arc;
     use tokio::sync::{mpsc, Mutex};
     use tokio_stream::{wrappers::ReceiverStream, StreamExt as _};
     use tower_http::trace::TraceLayer;
-    use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
-    use tracing::{info, error, warn};
-    use base64::Engine as _;
-    use serde::Serialize;
+    use tracing::{error, info, warn};
 
     #[derive(Clone)]
     pub struct AppState {
@@ -402,8 +399,8 @@ mod http_api {
         h.extend_from_slice(&riff_size.to_le_bytes());
         h.extend_from_slice(b"WAVE");
         h.extend_from_slice(b"fmt ");
-        h.extend_from_slice(&16u32.to_le_bytes());      // chunk size
-        h.extend_from_slice(&1u16.to_le_bytes());        // PCM
+        h.extend_from_slice(&16u32.to_le_bytes()); // chunk size
+        h.extend_from_slice(&1u16.to_le_bytes()); // PCM
         h.extend_from_slice(&channels.to_le_bytes());
         h.extend_from_slice(&sample_rate.to_le_bytes());
         h.extend_from_slice(&byte_rate.to_le_bytes());
@@ -430,7 +427,8 @@ mod http_api {
         State(state): State<AppState>,
         Json(req): Json<TtsRequest>,
     ) -> Result<Response<Body>, StatusCode> {
-        let language = req.text_language
+        let language = req
+            .text_language
             .as_deref()
             .and_then(Language::from_str)
             .unwrap_or(Language::Chinese);
@@ -468,7 +466,9 @@ mod http_api {
             }
 
             // Stream each sentence
-            for result in pipeline.inference_sentences(&text, &refer_path, &prompt_text, &options, 5) {
+            for result in
+                pipeline.inference_sentences(&text, &refer_path, &prompt_text, &options, 5)
+            {
                 match result {
                     Ok(audio) => {
                         let pcm = samples_to_pcm(&audio.samples);
@@ -485,9 +485,7 @@ mod http_api {
             }
         });
 
-        let stream = ReceiverStream::new(rx).map(|item| {
-            item.map_err(|e| std::io::Error::other(e))
-        });
+        let stream = ReceiverStream::new(rx).map(|item| item.map_err(|e| std::io::Error::other(e)));
 
         Ok(Response::builder()
             .status(StatusCode::OK)
@@ -501,7 +499,8 @@ mod http_api {
         State(state): State<AppState>,
         Json(req): Json<TtsRequest>,
     ) -> Result<Response<Body>, StatusCode> {
-        let language = req.text_language
+        let language = req
+            .text_language
             .as_deref()
             .and_then(Language::from_str)
             .unwrap_or(Language::Chinese);
@@ -542,7 +541,10 @@ mod http_api {
                 Ok(Response::builder()
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, "audio/wav")
-                    .header(header::CONTENT_DISPOSITION, "attachment; filename=\"tts_output.wav\"")
+                    .header(
+                        header::CONTENT_DISPOSITION,
+                        "attachment; filename=\"tts_output.wav\"",
+                    )
                     .body(Body::from(wav_bytes))
                     .unwrap())
             }
@@ -582,7 +584,8 @@ mod http_api {
                 .unwrap());
         }
 
-        let language = req.text_language
+        let language = req
+            .text_language
             .as_deref()
             .and_then(Language::from_str)
             .unwrap_or(Language::Chinese);
@@ -616,7 +619,8 @@ mod http_api {
 
             for (idx, text) in texts.iter().enumerate() {
                 let t = std::time::Instant::now();
-                let inference_result = pipeline.inference_cuda_graph(text, &refer_path, &prompt_text, &options);
+                let inference_result =
+                    pipeline.inference_cuda_graph(text, &refer_path, &prompt_text, &options);
                 let inference_ms = t.elapsed().as_millis() as u64;
 
                 let item = match inference_result {
@@ -625,7 +629,8 @@ mod http_api {
                         let sample_rate = audio.sample_rate;
                         match audio.to_wav_bytes() {
                             Ok(wav_bytes) => {
-                                let wav_b64 = base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
+                                let wav_b64 =
+                                    base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
                                 BatchItemResult {
                                     index: idx,
                                     wav_base64: Some(wav_b64),
@@ -664,13 +669,18 @@ mod http_api {
                     break; // client disconnected
                 }
 
-                info!("batch[{}/{}] done: {:.0}ms, {:.2}s audio",
-                    idx + 1, texts.len(), inference_ms, dur);
+                info!(
+                    "batch[{}/{}] done: {:.0}ms, {:.2}s audio",
+                    idx + 1,
+                    texts.len(),
+                    inference_ms,
+                    dur
+                );
             }
         });
 
-        let stream = ReceiverStream::new(rx)
-            .map(|bytes| -> Result<axum::body::Bytes, std::io::Error> {
+        let stream =
+            ReceiverStream::new(rx).map(|bytes| -> Result<axum::body::Bytes, std::io::Error> {
                 Ok(axum::body::Bytes::from(bytes))
             });
 
@@ -684,13 +694,18 @@ mod http_api {
 
     pub fn run(
         port: u16,
+        device: &str,
+        half_precision: bool,
         gpt_model: Option<&std::path::Path>,
         sovits_model: Option<&std::path::Path>,
         bigvgan_model: Option<&std::path::Path>,
         bert_model: Option<&std::path::Path>,
         hubert_model: Option<&std::path::Path>,
     ) -> Result<(), String> {
-        let config = Config::builder().with_half_precision(false).build();
+        let config = Config::builder()
+            .with_device(device)
+            .with_half_precision(half_precision)
+            .build();
         let mut pipeline = Pipeline::new(config.clone())
             .map_err(|e| format!("Failed to initialize pipeline: {}", e))?;
 
@@ -753,7 +768,9 @@ mod http_api {
         println!("Endpoints:");
         println!("  GET  /health        - Health check");
         println!("  POST /tts           - Single text → audio/wav");
-        println!("  POST /tts/stream    - Single text → streaming audio/wav (sentence by sentence)");
+        println!(
+            "  POST /tts/stream    - Single text → streaming audio/wav (sentence by sentence)"
+        );
         println!("  POST /tts/batch     - Multiple texts → NDJSON stream (one result per line)");
         println!();
         println!("Example:");

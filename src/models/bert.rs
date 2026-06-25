@@ -24,7 +24,7 @@ impl BertModel {
     }
 
     /// Load from safetensors path. Tokenizer is looked up as `{dir}/tokenizer.json`
-    /// or `models/onnx/tokenizer.json` as fallback.
+    /// or `models/bert/tokenizer.json` as fallback.
     pub fn load_with_device(path: &str, device: &Device) -> Result<Self> {
         Self::load_with_dtype(path, device, candle_core::DType::F32)
     }

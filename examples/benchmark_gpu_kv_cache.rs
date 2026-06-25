@@ -2,7 +2,6 @@
 ///
 /// Measures wall-clock time for full end-to-end synthesis with and without KV cache.
 /// Uses multiple text lengths to show how speedup scales with sequence length.
-
 use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
 use std::time::Instant;
 
@@ -29,11 +28,11 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     let mut pipeline = Pipeline::new(config)?;
     pipeline.load_gpt("models/gpt-model.safetensors")?;
     pipeline.load_sovits("models/sovits-model.safetensors")?;
-    let _ = pipeline.load_bert("models/onnx/bert.onnx");
-    let _ = pipeline.load_hubert("models/onnx/hubert.onnx");
+    let _ = pipeline.load_bert("models/bert/bert.safetensors");
+    let _ = pipeline.load_hubert("models/hubert/hubert.safetensors");
     println!("Models loaded.\n");
 
-    let ref_audio = "/home/ric/gpt-sovits-rs/test_zh_py_wav16k.wav";
+    let ref_audio = "ref.wav";
     let ref_text = "先帝创业未半而中道崩殂";
 
     // Test with different text lengths to show KV cache scaling
@@ -44,11 +43,17 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     let options = InferenceOptions::builder()
-        .top_k(15).top_p(1.0).temperature(1.0)
-        .language(Language::Chinese).max_tokens(1000)
+        .top_k(15)
+        .top_p(1.0)
+        .temperature(1.0)
+        .language(Language::Chinese)
+        .max_tokens(1000)
         .build();
 
-    println!("{:<8} {:<8} {:<10} {:<10} {:<8}", "length", "tokens", "plain(s)", "kv(s)", "speedup");
+    println!(
+        "{:<8} {:<8} {:<10} {:<10} {:<8}",
+        "length", "tokens", "plain(s)", "kv(s)", "speedup"
+    );
     println!("{}", "-".repeat(52));
 
     for (label, input_text) in test_cases {
@@ -76,8 +81,10 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
         let avg_kv = t_kv / 2.0;
         let speedup = avg_plain / avg_kv;
 
-        println!("{:<8} {:<8} {:<10.2} {:<10.2} {:.2}x",
-            label, token_count, avg_plain, avg_kv, speedup);
+        println!(
+            "{:<8} {:<8} {:<10.2} {:<10.2} {:.2}x",
+            label, token_count, avg_plain, avg_kv, speedup
+        );
     }
 
     println!("\nNote: speedup grows with sequence length (O(n²) vs O(n) attention cost).");

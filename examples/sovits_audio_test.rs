@@ -1,6 +1,6 @@
 /// Test: Compare Rust vs Python SoVITS decoder output using same inputs
 /// Uses real semantic tokens from a previous GPT run
-use candle_core::Device;
+use candle_core::{DType, Device};
 use gpt_sovits_rs::models::sovits::SoVITSModel;
 use gpt_sovits_rs::utils::audio_features::SpectrogramExtractor;
 use std::fs;
@@ -11,7 +11,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device = Device::new_cuda(0).unwrap_or(Device::Cpu);
 
     // Load SoVITS
-    let sovits = SoVITSModel::load_with_device("models/sovits-model.safetensors", &device)?;
+    let sovits =
+        SoVITSModel::load_with_device("models/sovits-model.safetensors", &device, DType::F32)?;
     println!("[OK] SoVITS");
 
     // Load reference audio

@@ -1,8 +1,8 @@
 //! Numerical verification: F32 vs BF16 for HuBERT and BERT.
 //! Run: cargo run --release --features cuda --bin verify_models
 
-use candle_core::{Device, DType, Tensor};
-use gpt_sovits_rs::models::{Wav2Vec2Model, BertCandleModel};
+use candle_core::{Device, Tensor};
+use gpt_sovits_rs::models::{BertCandleModel, Wav2Vec2Model};
 use std::path::Path;
 use std::time::Instant;
 
@@ -17,12 +17,20 @@ fn load_npy_f32(path: &str) -> Vec<f32> {
 
 fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
     let n = a.len().min(b.len());
-    a[..n].iter().zip(b[..n].iter()).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
+    a[..n]
+        .iter()
+        .zip(b[..n].iter())
+        .map(|(x, y)| (x - y).abs())
+        .fold(0.0f32, f32::max)
 }
 
 fn mean_abs_diff(a: &[f32], b: &[f32]) -> f32 {
     let n = a.len().min(b.len()) as f32;
-    a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()).sum::<f32>() / n
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x - y).abs())
+        .sum::<f32>()
+        / n
 }
 
 fn main() -> anyhow::Result<()> {
@@ -46,7 +54,8 @@ fn main() -> anyhow::Result<()> {
     let flat_f32: Vec<f32> = out_f32.flatten_all()?.to_vec1()?;
 
     let t0 = Instant::now();
-    let hub_bf16 = Wav2Vec2Model::load_from_file_bf16(Path::new("models/hubert.safetensors"), &device)?;
+    let hub_bf16 =
+        Wav2Vec2Model::load_from_file_bf16(Path::new("models/hubert.safetensors"), &device)?;
     let load_bf16 = t0.elapsed();
     let t0 = Instant::now();
     let out_bf16 = hub_bf16.forward(&audio)?;
@@ -56,13 +65,29 @@ fn main() -> anyhow::Result<()> {
 
     // vs ONNX reference (if available)
     let onnx_path = "scripts/hubert_onnx_output.npy";
-    let onnx_flat = if Path::new(onnx_path).exists() { load_npy_f32(onnx_path) } else { flat_f32.clone() };
+    let onnx_flat = if Path::new(onnx_path).exists() {
+        load_npy_f32(onnx_path)
+    } else {
+        flat_f32.clone()
+    };
 
     println!("  F32 : load={:.2?}  infer={:.2?}", load_f32, infer_f32);
     println!("  BF16: load={:.2?}  infer={:.2?}", load_bf16, infer_bf16);
-    println!("  F32  vs ONNX:  maxdiff={:.6}  meandiff={:.6}", max_abs_diff(&flat_f32, &onnx_flat), mean_abs_diff(&flat_f32, &onnx_flat));
-    println!("  BF16 vs ONNX:  maxdiff={:.6}  meandiff={:.6}", max_abs_diff(&flat_bf16, &onnx_flat), mean_abs_diff(&flat_bf16, &onnx_flat));
-    println!("  BF16 vs F32:   maxdiff={:.6}  meandiff={:.6}", max_abs_diff(&flat_bf16, &flat_f32), mean_abs_diff(&flat_bf16, &flat_f32));
+    println!(
+        "  F32  vs ONNX:  maxdiff={:.6}  meandiff={:.6}",
+        max_abs_diff(&flat_f32, &onnx_flat),
+        mean_abs_diff(&flat_f32, &onnx_flat)
+    );
+    println!(
+        "  BF16 vs ONNX:  maxdiff={:.6}  meandiff={:.6}",
+        max_abs_diff(&flat_bf16, &onnx_flat),
+        mean_abs_diff(&flat_bf16, &onnx_flat)
+    );
+    println!(
+        "  BF16 vs F32:   maxdiff={:.6}  meandiff={:.6}",
+        max_abs_diff(&flat_bf16, &flat_f32),
+        mean_abs_diff(&flat_bf16, &flat_f32)
+    );
 
     // ── BERT F32 vs BF16 ────────────────────────────────────────────────────
     println!("\n═══ BERT ═══");
@@ -94,13 +119,29 @@ fn main() -> anyhow::Result<()> {
     let flat_bf16: Vec<f32> = out_bf16.flatten_all()?.to_vec1()?;
 
     let onnx_path = "scripts/bert_onnx_output_f32.npy";
-    let onnx_flat = if Path::new(onnx_path).exists() { load_npy_f32(onnx_path) } else { flat_f32.clone() };
+    let onnx_flat = if Path::new(onnx_path).exists() {
+        load_npy_f32(onnx_path)
+    } else {
+        flat_f32.clone()
+    };
 
     println!("  F32 : load={:.2?}  infer={:.2?}", load_f32, infer_f32);
     println!("  BF16: load={:.2?}  infer={:.2?}", load_bf16, infer_bf16);
-    println!("  F32  vs ONNX:  maxdiff={:.6}  meandiff={:.6}", max_abs_diff(&flat_f32, &onnx_flat), mean_abs_diff(&flat_f32, &onnx_flat));
-    println!("  BF16 vs ONNX:  maxdiff={:.6}  meandiff={:.6}", max_abs_diff(&flat_bf16, &onnx_flat), mean_abs_diff(&flat_bf16, &onnx_flat));
-    println!("  BF16 vs F32:   maxdiff={:.6}  meandiff={:.6}", max_abs_diff(&flat_bf16, &flat_f32), mean_abs_diff(&flat_bf16, &flat_f32));
+    println!(
+        "  F32  vs ONNX:  maxdiff={:.6}  meandiff={:.6}",
+        max_abs_diff(&flat_f32, &onnx_flat),
+        mean_abs_diff(&flat_f32, &onnx_flat)
+    );
+    println!(
+        "  BF16 vs ONNX:  maxdiff={:.6}  meandiff={:.6}",
+        max_abs_diff(&flat_bf16, &onnx_flat),
+        mean_abs_diff(&flat_bf16, &onnx_flat)
+    );
+    println!(
+        "  BF16 vs F32:   maxdiff={:.6}  meandiff={:.6}",
+        max_abs_diff(&flat_bf16, &flat_f32),
+        mean_abs_diff(&flat_bf16, &flat_f32)
+    );
 
     // Warm inference (second run, no load overhead)
     println!("\n  Warm inference (3 runs average):");

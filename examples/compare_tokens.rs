@@ -14,10 +14,16 @@ fn main() {
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Python first 20 tokens for test_zh.wav (with silence padding):
-    let py_tokens: Vec<usize> = vec![54, 234, 234, 405, 320, 807, 552, 369, 0, 21, 306, 434, 504, 320, 320, 59, 422, 173, 805, 190];
+    let py_tokens: Vec<usize> = vec![
+        54, 234, 234, 405, 320, 807, 552, 369, 0, 21, 306, 434, 504, 320, 320, 59, 422, 173, 805,
+        190,
+    ];
 
     // Load HuBERT
-    let mut hubert = HubertModel::load_with_device("models/onnx/hubert.onnx", "cpu")?;
+    let mut hubert = HubertModel::load_with_device(
+        "models/hubert/hubert.safetensors",
+        &candle_core::Device::Cpu,
+    )?;
     println!("[OK] HuBERT loaded");
 
     // Load semantic tokenizer
@@ -36,8 +42,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let tokens = tokenizer.extract(&hubert_t)?;
         println!("[32kHz] Tokens: {} total", tokens.len());
         println!("[32kHz] First 20: {:?}", &tokens[..tokens.len().min(20)]);
-        let matches = tokens.iter().zip(py_tokens.iter()).filter(|(a, b)| a == b).count();
-        println!("[32kHz] Match vs Python: {}/{}", matches, 20.min(tokens.len()));
+        let matches = tokens
+            .iter()
+            .zip(py_tokens.iter())
+            .filter(|(a, b)| a == b)
+            .count();
+        println!(
+            "[32kHz] Match vs Python: {}/{}",
+            matches,
+            20.min(tokens.len())
+        );
     }
 
     // Test 2: test_zh_py_wav16k.wav (already 16kHz — must also get silence padded)
@@ -49,8 +63,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let tokens = tokenizer.extract(&hubert_t)?;
         println!("[16kHz] Tokens: {} total", tokens.len());
         println!("[16kHz] First 20: {:?}", &tokens[..tokens.len().min(20)]);
-        let matches = tokens.iter().zip(py_tokens.iter()).filter(|(a, b)| a == b).count();
-        println!("[16kHz] Match vs Python: {}/{}", matches, 20.min(tokens.len()));
+        let matches = tokens
+            .iter()
+            .zip(py_tokens.iter())
+            .filter(|(a, b)| a == b)
+            .count();
+        println!(
+            "[16kHz] Match vs Python: {}/{}",
+            matches,
+            20.min(tokens.len())
+        );
     }
 
     println!("\nPython first 20: {:?}", py_tokens);
