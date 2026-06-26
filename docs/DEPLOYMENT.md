@@ -1,21 +1,24 @@
-# Deployment
+# 部署
 
-The intended deployment shape is a local HTTP TTS service with three mounted folders:
+这个服务按本地 HTTP TTS 来部署。建议挂载三个目录：
 
 ```text
-models/   model weights
-voices/   voice profiles and reference audio
-outputs/  optional generated files and reports
+models/   模型权重
+voices/   音色配置和参考音频
+outputs/  输出文件和测试报告，可选
 ```
 
-Copy `.env.example` to `.env` and edit paths or model names if your layout differs.
+先复制 `.env.example`：
 
-For a starter voice profile, copy `voices.example/mao` to `voices/mao` and put the matching reference audio at `voices/mao/ref.wav`.
+```bash
+cp .env.example .env
+```
+
+如果模型路径或文件名不一样，改 `.env`。想试 voice profile，可以把 `voices.example/mao` 复制到 `voices/mao`，再把对应参考音频放到 `voices/mao/ref.wav`。
 
 ## CPU
 
 ```bash
-cp .env.example .env
 docker compose -f compose.cpu.yml up -d --build
 curl http://localhost:9880/health
 curl http://localhost:9880/voices
@@ -23,18 +26,17 @@ curl http://localhost:9880/voices
 
 ## CUDA
 
-Set `CUDA_COMPUTE_CAP` in `.env` for your GPU, then start:
+先在 `.env` 里设置 `CUDA_COMPUTE_CAP`，再启动：
 
 ```bash
-cp .env.example .env
 docker compose -f compose.cuda.yml up -d --build
 curl http://localhost:9880/health
 curl http://localhost:9880/voices
 ```
 
-## Voice Layout
+## 音色目录
 
-Each voice lives under `voices/<name>/voice.json`. Paths inside `voice.json` are resolved relative to that voice directory.
+每个音色放在 `voices/<name>/voice.json`。`voice.json` 里的相对路径按该目录解析。
 
 ```text
 voices/
@@ -43,7 +45,7 @@ voices/
     ref.wav
 ```
 
-Example request for assistants:
+助手调用示例：
 
 ```bash
 curl -X POST http://localhost:9880/tts \
@@ -52,7 +54,7 @@ curl -X POST http://localhost:9880/tts \
   --output output.wav
 ```
 
-Legacy request fields remain available for debugging:
+也可以直接传参考音频和参考文本，主要用于调试：
 
 ```json
 {

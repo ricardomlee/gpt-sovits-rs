@@ -1,4 +1,4 @@
-# GPT-SoVITS-RS 技术实现说明
+# GPT-SoVITS-RS 实现说明
 
 ## 推理流程（与 Python 原版对齐）
 
@@ -23,9 +23,9 @@ GPT(phoneme_ids, prompt_tokens, combined_bert) ──→ semantic_tokens
 SoVITS(semantic_tokens, target_phoneme_ids, ref_mel) ──→ 波形
 ```
 
-## 关键实现细节
+## 实现细节
 
-### ref_text 拼接（最关键）
+### ref_text 拼接
 
 Python 原版在调用 GPT 前拼接参考文本和目标文本的音素序列和 BERT 特征：
 ```python
@@ -33,18 +33,18 @@ phones = phones1 + phones2          # ref_phones + target_phones
 bert = torch.cat([bert1, bert2], 1) # 分别对齐后拼接
 ```
 
-Rust 实现位于 `src/inference/mod.rs::inference()`。缺少这一步时，GPT 只生成约 11–14 个 token（~0.5 秒静音）。
+Rust 实现位于 `src/inference/mod.rs::inference()`。缺少这一步时，GPT 通常只生成约 11-14 个 token，输出接近 0.5 秒静音。
 
 ### HuBERT 重采样与静音填充
 
-使用 `soxr = "0.6"`（libsoxr HQ），与 librosa 默认 soxr_hq 完全一致：
+使用 `soxr = "0.6"`（libsoxr HQ），对齐 librosa 默认 soxr_hq：
 - 输入任意采样率 → 16kHz
 - 重采样后追加 9600 个零样本（0.6s 静音，匹配 Python 预处理）
-- **无论输入是否已为 16kHz，静音填充均须执行**（`src/models/hubert.rs::load_audio()`）
+- 无论输入是否已为 16kHz，静音填充都要执行（`src/models/hubert.rs::load_audio()`）
 
-> **根因说明**：Python 在调用 HuBERT 前无条件追加 9600 样本，不区分是否重采样。若 16kHz 音频跳过此步骤，VQ prompt tokens 会变短，导致 GPT 把参考音频末尾内容（如"而中道崩殂"）当作目标内容生成，即输出音频前缀混入参考音频语义。
+Python 在调用 HuBERT 前无条件追加 9600 样本，不区分是否重采样。若 16kHz 音频跳过此步骤，VQ prompt tokens 会变短，GPT 可能把参考音频末尾内容（如"而中道崩殂"）当作目标内容生成，输出前缀会混入参考音频语义。
 
-实现位于 `src/models/hubert.rs`。VQ prompt tokens 与 Python 计算结果 **20/20 一致**（包含 32kHz 和 16kHz 输入）。
+实现位于 `src/models/hubert.rs`。目前测试集中，VQ prompt tokens 与 Python 计算结果 20/20 对齐（包含 32kHz 和 16kHz 输入）。
 
 ### BERT 对齐（project_and_align_bert）
 
@@ -55,7 +55,7 @@ Rust 实现位于 `src/inference/mod.rs::inference()`。缺少这一步时，GPT
 
 实现位于 `src/models/gpt.rs::project_and_align_bert()`。
 
-### GPT 生成——两种模式
+### GPT 生成的两种模式
 
 **`generate_with_prompts_aligned_bert()`（标准模式）**
 - 每步对完整序列 `[text_emb + prompt_emb + generated_emb]` 做 forward
@@ -68,23 +68,23 @@ Rust 实现位于 `src/inference/mod.rs::inference()`。缺少这一步时，GPT
 - **embedding 查表**：`lookup_tokens()` 使用 `embedding.embedding(&ids_flat)` 纯 GPU 执行（`index_select`），无 D2H transfer；ids 须先 flatten 为 1D 再传入（Candle 0.10 要求）
 - **D2H transfer 控制**：`sample_token()` 返回 `(sampled_token, argmax)`，两个值从同一次 `to_vec1()` 得到，避免为 argmax EOS 检查再做一次重复 transfer
 
-### SoVITS enc_p——Post-norm 顺序
+### SoVITS enc_p 的 post-norm 顺序
 
-`src/models/sovits_encp.rs` 中 attention 和 FFN 均使用 **post-norm**（与 Python 一致）：
+`src/models/sovits_encp.rs` 中 attention 和 FFN 都使用 post-norm，和 Python 一致：
 ```
 x = LayerNorm(x + Attn(x))   # 先残差加，后 norm
 x = LayerNorm(x + FFN(x))
 ```
-Pre-norm（先 norm 再 attention）是常见误写，会导致音质明显下降。
+Pre-norm（先 norm 再 attention）会改变模型行为，音质会下降。
 
-### SoVITS Flow——Fused Gate
+### SoVITS Flow 的 fused gate
 
 `src/models/sovits_flow.rs` 中 `fused_add_tanh_sigmoid_multiply` 的正确实现：
 ```
 in_act = a + b
 result = tanh(in_act[:n]) * sigmoid(in_act[n:])
 ```
-错误写法 `tanh(a)*sigmoid(a) + tanh(b)*sigmoid(b)` 与此数学上不等价，会破坏 Flow 解码。
+写成 `tanh(a)*sigmoid(a) + tanh(b)*sigmoid(b)` 数学上不等价，会破坏 Flow 解码。
 
 ### EOS 停止条件（与 Python 匹配）
 
@@ -113,11 +113,11 @@ step >= 11: argmax(logits) == EOS  OR  sampled == EOS → 停止
 
 **轻声（`neural_sandhi`）**：叠词（名词/动词/形容词）、语气词（吧/呢/啊…）、的/地/得、了/着/过、们/子、方位词（上/下/里）、"来/去"趋向补语、量词"个"等
 
-## 数值对齐状态
+## 数值对齐
 
 | 步骤 | Python 参考 | Rust 状态 |
 |------|------------|-----------|
-| G2P 音素 | `symbols_v2.json` 732 符号 | 完全一致 |
+| G2P 音素 | `symbols_v2.json` 732 符号 | 对齐 |
 | BERT 特征 | Candle chinese-roberta-wwm-ext-large | 数值一致 |
 | HuBERT 重采样 | librosa (soxr HQ) | VQ tokens 20/20（32kHz 和 16kHz 输入均一致） |
 | VQ prompt tokens | Python softmax + argmin | 129/129 一致 |
@@ -138,4 +138,4 @@ step >= 11: argmax(logits) == EOS  OR  sampled == EOS → 停止
 
 ## 已知限制
 
-- 三声链超过4字时未进一步细化（但词边界内已结构感知处理）
+- 三声链超过 4 字时还没有继续细分；词边界内已经按结构处理。
