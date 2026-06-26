@@ -334,6 +334,13 @@ cargo run --release --features "cuda,http-api" --bin gpt-sovits -- \
 
 服务启动后提供三个端点：
 
+**`GET /voices`** — 列出 `voices/` 下可用的 voice profile
+
+```bash
+curl http://localhost:9880/voices
+# {"voices":["mao","character_a"]}
+```
+
 **`POST /tts`** — 单条文本，返回完整 WAV 文件
 
 ```bash

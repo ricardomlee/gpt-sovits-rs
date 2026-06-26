@@ -98,6 +98,7 @@ Command-line values override profile defaults.
 ### Phase 2: Assistant-Friendly HTTP
 
 - Add `voice` to `/tts`, `/tts/stream`, and `/tts/batch`.
+- Add `GET /voices` so assistant clients can discover available voice profiles.
 - Load voice profiles at server start or lazily on first use.
 - Preload/cache selected voice features.
 - Return structured errors for missing voices and invalid profiles.

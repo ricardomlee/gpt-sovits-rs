@@ -9,7 +9,7 @@ use axum::{
     Json, Router,
 };
 use base64::Engine as _;
-use gpt_sovits_rs::voice::{LoadedVoiceProfile, VoiceDefaults};
+use gpt_sovits_rs::voice::{list_voice_profiles, LoadedVoiceProfile, VoiceDefaults};
 use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
 use serde::Deserialize;
 use serde::Serialize;
@@ -83,6 +83,20 @@ struct BatchItemResult {
 
 async fn health_handler() -> &'static str {
     "OK"
+}
+
+async fn voices_handler(State(state): State<AppState>) -> Result<Response<Body>, StatusCode> {
+    match list_voice_profiles(&state.voices_dir) {
+        Ok(voices) => {
+            let body = serde_json::json!({ "voices": voices });
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap())
+        }
+        Err(e) => Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
+    }
 }
 
 /// Build a streaming WAV header for unknown-length audio (size=0xFFFFFFFF).
@@ -522,6 +536,7 @@ pub fn run(
         .route("/tts/stream", post(tts_stream_handler))
         .route("/tts/batch", post(tts_batch_handler))
         .route("/health", get(health_handler))
+        .route("/voices", get(voices_handler))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
@@ -531,6 +546,7 @@ pub fn run(
     println!();
     println!("Endpoints:");
     println!("  GET  /health        - Health check");
+    println!("  GET  /voices        - List available voice profiles");
     println!("  POST /tts           - Single text → audio/wav");
     println!("  POST /tts/stream    - Single text → streaming audio/wav (sentence by sentence)");
     println!("  POST /tts/batch     - Multiple texts → NDJSON stream (one result per line)");

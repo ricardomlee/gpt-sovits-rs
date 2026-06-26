@@ -77,6 +77,26 @@ pub fn load_optional_voice_profile(
     }
 }
 
+pub fn list_voice_profiles(voices_dir: &Path) -> Result<Vec<String>, String> {
+    if !voices_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let entries = std::fs::read_dir(voices_dir)
+        .map_err(|e| format!("Failed to read voices directory {:?}: {}", voices_dir, e))?;
+    let mut voices = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read voices directory entry: {}", e))?;
+        let path = entry.path();
+        if path.is_dir() && path.join("voice.json").is_file() {
+            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
+                voices.push(name.to_string());
+            }
+        }
+    }
+    voices.sort();
+    Ok(voices)
+}
+
 pub fn validate_mode(mode: &str) -> Result<(), String> {
     match mode {
         "plain" | "kv" | "cuda-graph" => Ok(()),
@@ -198,5 +218,26 @@ mod tests {
             voice_dir.join("ref.wav")
         );
         assert_eq!(loaded.profile.mode.as_deref(), Some("kv"));
+    }
+
+    #[test]
+    fn lists_only_directories_with_voice_json() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("b_voice")).unwrap();
+        std::fs::write(temp.path().join("b_voice").join("voice.json"), "{}").unwrap();
+        std::fs::create_dir(temp.path().join("a_voice")).unwrap();
+        std::fs::write(temp.path().join("a_voice").join("voice.json"), "{}").unwrap();
+        std::fs::create_dir(temp.path().join("missing_config")).unwrap();
+        std::fs::write(temp.path().join("file.txt"), "").unwrap();
+
+        let voices = list_voice_profiles(temp.path()).unwrap();
+        assert_eq!(voices, vec!["a_voice", "b_voice"]);
+    }
+
+    #[test]
+    fn missing_voice_dir_lists_empty() {
+        let temp = tempfile::tempdir().unwrap();
+        let voices = list_voice_profiles(&temp.path().join("missing")).unwrap();
+        assert!(voices.is_empty());
     }
 }
