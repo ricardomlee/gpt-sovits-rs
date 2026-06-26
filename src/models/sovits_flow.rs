@@ -2,9 +2,9 @@
 //!
 //! Implementation matching the actual model structure
 
-use candle_core::{Device, DType, Tensor};
+use crate::utils::{Conv1dWeightNorm, StateDict};
 use crate::Result;
-use crate::utils::{StateDict, Conv1dWeightNorm};
+use candle_core::{DType, Device, Tensor};
 
 /// WaveNet Encoder for Flow-based models
 #[derive(Debug, Clone)]
@@ -17,7 +17,12 @@ pub struct WN {
 
 impl WN {
     /// Load WN from state dict
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
+    pub fn load(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
         let mut in_layers = Vec::new();
         let mut res_skip_layers = Vec::new();
 
@@ -28,7 +33,12 @@ impl WN {
             if !state_dict.contains(&key) {
                 break;
             }
-            in_layers.push(Self::load_conv(state_dict, &format!("{}.in_layers.{}", prefix, i), device, dtype)?);
+            in_layers.push(Self::load_conv(
+                state_dict,
+                &format!("{}.in_layers.{}", prefix, i),
+                device,
+                dtype,
+            )?);
             i += 1;
         }
 
@@ -39,13 +49,23 @@ impl WN {
             if !state_dict.contains(&key) {
                 break;
             }
-            res_skip_layers.push(Self::load_conv(state_dict, &format!("{}.res_skip_layers.{}", prefix, i), device, dtype)?);
+            res_skip_layers.push(Self::load_conv(
+                state_dict,
+                &format!("{}.res_skip_layers.{}", prefix, i),
+                device,
+                dtype,
+            )?);
             i += 1;
         }
 
         // Load condition layer (optional)
         let cond_layer = if state_dict.contains(&format!("{}.cond_layer.weight_v", prefix)) {
-            Some(Self::load_conv(state_dict, &format!("{}.cond_layer", prefix), device, dtype)?)
+            Some(Self::load_conv(
+                state_dict,
+                &format!("{}.cond_layer", prefix),
+                device,
+                dtype,
+            )?)
         } else {
             None
         };
@@ -60,12 +80,22 @@ impl WN {
         })
     }
 
-    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Conv1dWeightNorm> {
-        let weight_g = state_dict.get(&format!("{}.weight_g", prefix))?
-            .to_device(device)?.to_dtype(dtype)?;
-        let weight_v = state_dict.get(&format!("{}.weight_v", prefix))?
-            .to_device(device)?.to_dtype(dtype)?;
-        let bias = state_dict.get(&format!("{}.bias", prefix))
+    fn load_conv(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Conv1dWeightNorm> {
+        let weight_g = state_dict
+            .get(&format!("{}.weight_g", prefix))?
+            .to_device(device)?
+            .to_dtype(dtype)?;
+        let weight_v = state_dict
+            .get(&format!("{}.weight_v", prefix))?
+            .to_device(device)?
+            .to_dtype(dtype)?;
+        let bias = state_dict
+            .get(&format!("{}.bias", prefix))
             .ok()
             .cloned()
             .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
@@ -79,7 +109,9 @@ impl WN {
         };
         let padding = (kernel_size - 1) / 2;
 
-        Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)?)
+        Ok(Conv1dWeightNorm::new_with_cached(
+            weight_g, weight_v, bias, 1, padding, 1,
+        )?)
     }
 
     /// Forward pass through WaveNet
@@ -141,7 +173,12 @@ impl WN {
 /// Fused add tanh-sigmoid multiply (matches Python commons.fused_add_tanh_sigmoid_multiply)
 /// Python: in_act = a + b (broadcast), then tanh(in_act[:n]) * sigmoid(in_act[n:])
 /// Note: this is NOT the same as tanh(a[:n])*sigmoid(a[n:]) + tanh(b[:n])*sigmoid(b[n:])
-fn fused_add_tanh_sigmoid_multiply(a: &Tensor, b: &Tensor, n_channels: usize, _broadcast_time: bool) -> Result<Tensor> {
+fn fused_add_tanh_sigmoid_multiply(
+    a: &Tensor,
+    b: &Tensor,
+    n_channels: usize,
+    _broadcast_time: bool,
+) -> Result<Tensor> {
     // b may be [batch, 2*n_channels, 1] while a is [batch, 2*n_channels, time] — broadcast_add handles this
     let in_act = a.broadcast_add(b)?;
     let t_act = in_act.narrow(1, 0, n_channels)?.tanh()?;
@@ -161,7 +198,13 @@ pub struct ResidualCouplingLayer {
 
 impl ResidualCouplingLayer {
     /// Load from state dict
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, mean_only: bool, dtype: DType) -> Result<Self> {
+    pub fn load(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+        mean_only: bool,
+        dtype: DType,
+    ) -> Result<Self> {
         // Load pre projection
         let pre = Self::load_conv(state_dict, &format!("{}.pre", prefix), device, dtype)?;
 
@@ -183,47 +226,81 @@ impl ResidualCouplingLayer {
         })
     }
 
-    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Conv1dWeightNorm> {
+    fn load_conv(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Conv1dWeightNorm> {
         // Try weight_norm format first, fall back to regular weight
         if state_dict.contains(&format!("{}.weight_v", prefix)) {
-            let weight_g = state_dict.get(&format!("{}.weight_g", prefix))?
-                .to_device(device)?.to_dtype(dtype)?;
-            let weight_v = state_dict.get(&format!("{}.weight_v", prefix))?
-                .to_device(device)?.to_dtype(dtype)?;
-            let bias = state_dict.get(&format!("{}.bias", prefix))
+            let weight_g = state_dict
+                .get(&format!("{}.weight_g", prefix))?
+                .to_device(device)?
+                .to_dtype(dtype)?;
+            let weight_v = state_dict
+                .get(&format!("{}.weight_v", prefix))?
+                .to_device(device)?
+                .to_dtype(dtype)?;
+            let bias = state_dict
+                .get(&format!("{}.bias", prefix))
                 .ok()
                 .cloned()
                 .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
                 .transpose()?;
 
-            let kernel_size = if weight_v.dims().len() >= 3 { weight_v.dims()[2] } else { 1 };
+            let kernel_size = if weight_v.dims().len() >= 3 {
+                weight_v.dims()[2]
+            } else {
+                1
+            };
             let padding = (kernel_size - 1) / 2;
 
-            Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)?)
+            Ok(Conv1dWeightNorm::new_with_cached(
+                weight_g, weight_v, bias, 1, padding, 1,
+            )?)
         } else {
             // Regular weight format
-            let weight = state_dict.get(&format!("{}.weight", prefix))?
-                .to_device(device)?.to_dtype(dtype)?;
-            let bias = state_dict.get(&format!("{}.bias", prefix))
+            let weight = state_dict
+                .get(&format!("{}.weight", prefix))?
+                .to_device(device)?
+                .to_dtype(dtype)?;
+            let bias = state_dict
+                .get(&format!("{}.bias", prefix))
                 .ok()
                 .cloned()
                 .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
                 .transpose()?;
 
-            let kernel_size = if weight.dims().len() >= 3 { weight.dims()[2] } else { 1 };
+            let kernel_size = if weight.dims().len() >= 3 {
+                weight.dims()[2]
+            } else {
+                1
+            };
             let padding = (kernel_size - 1) / 2;
 
             // Set weight_g = per-channel L2 norm so (w/norm)*norm = w (no spurious normalization)
             let v_sq = weight.sqr()?;
-            let v_norm = v_sq.sum(candle_core::D::Minus1)?.sum(candle_core::D::Minus1)?.sqrt()?;
+            let v_norm = v_sq
+                .sum(candle_core::D::Minus1)?
+                .sum(candle_core::D::Minus1)?
+                .sqrt()?;
             let out_ch = weight.dims()[0];
             let weight_g = v_norm.reshape((out_ch, 1, 1))?;
-            Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight, bias, 1, padding, 1)?)
+            Ok(Conv1dWeightNorm::new_with_cached(
+                weight_g, weight, bias, 1, padding, 1,
+            )?)
         }
     }
 
     /// Forward pass
-    pub fn forward(&self, x: &Tensor, x_mask: &Tensor, g: Option<&Tensor>, reverse: bool) -> Result<Tensor> {
+    pub fn forward(
+        &self,
+        x: &Tensor,
+        x_mask: &Tensor,
+        g: Option<&Tensor>,
+        reverse: bool,
+    ) -> Result<Tensor> {
         // Split input in half
         let x0 = x.narrow(1, 0, self.half_channels)?;
         let x1 = x.narrow(1, self.half_channels, x.dims()[1] - self.half_channels)?;
@@ -280,7 +357,13 @@ pub struct ResidualCouplingBlock {
 
 impl ResidualCouplingBlock {
     /// Load from state dict
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, _n_layers: usize, dtype: DType) -> Result<Self> {
+    pub fn load(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+        _n_layers: usize,
+        dtype: DType,
+    ) -> Result<Self> {
         let mut layers = Vec::new();
 
         // Flow layers may be at even indices (0, 2, 4, 6) - check up to 8
@@ -288,7 +371,8 @@ impl ResidualCouplingBlock {
         for i in 0..8 {
             let layer_prefix = format!("{}.{}", prefix, i);
             if state_dict.contains(&format!("{}.pre.weight", layer_prefix)) {
-                let layer = ResidualCouplingLayer::load(state_dict, &layer_prefix, device, false, dtype)?;
+                let layer =
+                    ResidualCouplingLayer::load(state_dict, &layer_prefix, device, false, dtype)?;
                 layers.push(layer);
             }
         }
@@ -297,7 +381,13 @@ impl ResidualCouplingBlock {
     }
 
     /// Forward pass through the block
-    pub fn forward(&self, x: &Tensor, x_mask: &Tensor, g: Option<&Tensor>, reverse: bool) -> Result<Tensor> {
+    pub fn forward(
+        &self,
+        x: &Tensor,
+        x_mask: &Tensor,
+        g: Option<&Tensor>,
+        reverse: bool,
+    ) -> Result<Tensor> {
         let mut x = x.clone();
 
         if !reverse {

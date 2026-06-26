@@ -8,9 +8,9 @@
 //! - Hann window
 //! - Magnitude: sqrt(re^2 + im^2 + 1e-8)
 
-use candle_core::{Device, Tensor};
-use rustfft::{FftPlanner, num_complex::Complex};
 use crate::{Error, Result};
+use candle_core::{Device, Tensor};
+use rustfft::{num_complex::Complex, FftPlanner};
 
 /// Spectrogram extractor matching Python's spectrogram_torch
 pub struct SpectrogramExtractor {
@@ -26,12 +26,7 @@ pub struct SpectrogramExtractor {
 
 impl SpectrogramExtractor {
     /// Create with GPT-SoVITS default parameters
-    pub fn new(
-        sample_rate: u32,
-        n_fft: usize,
-        hop_length: usize,
-        n_mels: usize,
-    ) -> Self {
+    pub fn new(sample_rate: u32, n_fft: usize, hop_length: usize, n_mels: usize) -> Self {
         let mel_basis = create_mel_basis(sample_rate as f32, n_fft, n_mels);
         let window = create_hann_window(n_fft);
 
@@ -61,7 +56,8 @@ impl SpectrogramExtractor {
             for frame_idx in 0..n_frames {
                 let mut sum = 0.0f32;
                 for bin in 0..n_bins {
-                    sum += self.mel_basis[mel_idx * n_bins + bin] * spec_flat[bin * n_frames + frame_idx];
+                    sum += self.mel_basis[mel_idx * n_bins + bin]
+                        * spec_flat[bin * n_frames + frame_idx];
                 }
                 mel_spec[mel_idx * n_frames + frame_idx] = sum;
             }
@@ -72,14 +68,16 @@ impl SpectrogramExtractor {
             *val = (*val).max(1e-5).ln();
         }
 
-        Tensor::from_vec(mel_spec, (self.n_mels, n_frames), device)
-            .map_err(|e| Error::AudioError(format!("Failed to create mel spectrogram tensor: {}", e)))
+        Tensor::from_vec(mel_spec, (self.n_mels, n_frames), device).map_err(|e| {
+            Error::AudioError(format!("Failed to create mel spectrogram tensor: {}", e))
+        })
     }
 
     /// Extract mel spectrogram as [1, n_mels, time] for model input
     pub fn extract_batched(&self, audio: &[f32], device: &Device) -> Result<Tensor> {
         let mel = self.extract(audio, device)?;
-        mel.unsqueeze(0).map_err(|e| Error::AudioError(format!("Failed to batch mel spectrogram: {}", e)))
+        mel.unsqueeze(0)
+            .map_err(|e| Error::AudioError(format!("Failed to batch mel spectrogram: {}", e)))
     }
 
     /// Extract raw STFT magnitude spectrum [n_bins, time]
@@ -136,7 +134,8 @@ impl SpectrogramExtractor {
     /// Extract STFT magnitude as [1, n_bins, time] for model input
     pub fn extract_spectrogram_batched(&self, audio: &[f32], device: &Device) -> Result<Tensor> {
         let spec = self.extract_spectrogram(audio, device)?;
-        spec.unsqueeze(0).map_err(|e| Error::AudioError(format!("Failed to batch spectrogram: {}", e)))
+        spec.unsqueeze(0)
+            .map_err(|e| Error::AudioError(format!("Failed to batch spectrogram: {}", e)))
     }
 }
 

@@ -6,8 +6,10 @@ pub mod kv_cache;
 pub mod weights;
 
 pub use audio::AudioBuffer;
-pub use audio_features::SpectrogramExtractor;
 #[allow(deprecated)]
 pub use audio_features::MelExtractor;
+pub use audio_features::SpectrogramExtractor;
 pub use kv_cache::{KvCache, KvCacheManager, StaticKvLayer, StaticKvManager};
-pub use weights::{StateDict, Embedding, Linear, LayerNorm, load_safetensors, Conv1d, Conv1dWeightNorm};
+pub use weights::{
+    load_safetensors, Conv1d, Conv1dWeightNorm, Embedding, LayerNorm, Linear, StateDict,
+};

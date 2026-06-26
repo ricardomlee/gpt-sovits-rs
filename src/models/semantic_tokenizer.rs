@@ -4,15 +4,15 @@
 //! This matches Python's `vits_model.extract_latent(hubert_feature)` which produces
 //! the prompt tokens used by the GPT for speaker conditioning.
 
+use crate::utils::{load_safetensors, StateDict};
+use crate::Result;
 use candle_core::{Device, Tensor};
 use candle_nn::{Conv1d, Conv1dConfig, Module};
-use crate::utils::{StateDict, load_safetensors};
-use crate::Result;
 
 /// Extracts semantic tokens (codebook indices) from Hubert features
 pub struct SemanticTokenizer {
     ssl_conv: Conv1d,
-    codebook: Tensor,    // Codebook [1024, 768]
+    codebook: Tensor, // Codebook [1024, 768]
 }
 
 impl SemanticTokenizer {
@@ -26,32 +26,39 @@ impl SemanticTokenizer {
         let state_dict = StateDict::new(weights_map);
 
         // SSL projection weights
-        let ssl_weight = state_dict.get("ssl_proj.weight")?
+        let ssl_weight = state_dict
+            .get("ssl_proj.weight")?
             .to_device(device)?
             .to_dtype(candle_core::DType::F32)?;
 
-        let ssl_bias = state_dict.get("ssl_proj.bias")?
+        let ssl_bias = state_dict
+            .get("ssl_proj.bias")?
             .to_device(device)?
             .to_dtype(candle_core::DType::F32)?;
 
         // Codebook from quantizer
-        let codebook = state_dict.get("quantizer.vq.layers.0._codebook.embed")?
+        let codebook = state_dict
+            .get("quantizer.vq.layers.0._codebook.embed")?
             .to_device(device)?
             .to_dtype(candle_core::DType::F32)?;
 
         // Determine stride from weight shape (kernel size)
         let weight_dims = ssl_weight.dims();
         let stride = if weight_dims.len() == 3 && weight_dims[2] == 2 {
-            2  // 25hz mode
+            2 // 25hz mode
         } else {
-            1  // 50hz mode
+            1 // 50hz mode
         };
 
         // Python: nn.Conv1d(ssl_dim, ssl_dim, 2, stride=2) uses default padding=0
         let padding = 0;
 
-        tracing::debug!("[SemanticTokenizer] ssl_weight={:?}, codebook={:?}, stride={}",
-            ssl_weight.dims(), codebook.dims(), stride);
+        tracing::debug!(
+            "[SemanticTokenizer] ssl_weight={:?}, codebook={:?}, stride={}",
+            ssl_weight.dims(),
+            codebook.dims(),
+            stride
+        );
 
         let config = Conv1dConfig {
             stride,
@@ -62,10 +69,7 @@ impl SemanticTokenizer {
         };
         let ssl_conv = Conv1d::new(ssl_weight, Some(ssl_bias), config);
 
-        Ok(Self {
-            ssl_conv,
-            codebook,
-        })
+        Ok(Self { ssl_conv, codebook })
     }
 
     /// Extract semantic tokens from Hubert features
@@ -83,15 +87,16 @@ impl SemanticTokenizer {
         // Compute distances to codebook entries
         // ||a - b||^2 = ||a||^2 + ||b||^2 - 2*a.b
         let frames_sq = frames.sqr()?;
-        let frames_norm = frames_sq.sum_keepdim(1)?;  // [T, 1]
+        let frames_norm = frames_sq.sum_keepdim(1)?; // [T, 1]
 
         let codebook_sq = self.codebook.sqr()?;
-        let codebook_norm = codebook_sq.sum_keepdim(1)?;  // [1024, 1]
+        let codebook_norm = codebook_sq.sum_keepdim(1)?; // [1024, 1]
 
-        let dot = frames.matmul(&self.codebook.t()?)?;  // [T, 1024]
+        let dot = frames.matmul(&self.codebook.t()?)?; // [T, 1024]
 
-        let dist = frames_norm.broadcast_add(&codebook_norm.t()?)?;  // [T, 1024]
-        let twice_dot = dot.broadcast_mul(&Tensor::full(2.0f32, dot.dims(), &self.codebook.device())?)?;
+        let dist = frames_norm.broadcast_add(&codebook_norm.t()?)?; // [T, 1024]
+        let twice_dot =
+            dot.broadcast_mul(&Tensor::full(2.0f32, dot.dims(), &self.codebook.device())?)?;
         let dist = dist.broadcast_sub(&twice_dot)?;
 
         // Argmin along codebook dimension

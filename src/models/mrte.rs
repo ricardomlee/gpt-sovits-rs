@@ -4,10 +4,10 @@
 //! cross-attention between content features (Hubert) and text features
 //! for prosody-aware feature fusion.
 
-use candle_core::{Device, DType, Tensor, D};
-use candle_nn::{Conv1d, Module, VarBuilder};
-use crate::Result;
 use crate::utils::StateDict;
+use crate::Result;
+use candle_core::{DType, Device, Tensor, D};
+use candle_nn::{Conv1d, Module, VarBuilder};
 
 /// Multi-Head Cross-Attention module
 #[allow(dead_code)]
@@ -31,14 +31,23 @@ impl MultiHeadAttention {
         n_heads: usize,
         vb: VarBuilder,
     ) -> Result<Self> {
-        assert!(channels % n_heads == 0, "channels must be divisible by n_heads");
+        assert!(
+            channels % n_heads == 0,
+            "channels must be divisible by n_heads"
+        );
 
         let k_channels = channels / n_heads;
 
         let conv_q = candle_nn::conv1d(channels, channels, 1, Default::default(), vb.pp("conv_q"))?;
         let conv_k = candle_nn::conv1d(channels, channels, 1, Default::default(), vb.pp("conv_k"))?;
         let conv_v = candle_nn::conv1d(channels, channels, 1, Default::default(), vb.pp("conv_v"))?;
-        let conv_o = candle_nn::conv1d(channels, out_channels, 1, Default::default(), vb.pp("conv_o"))?;
+        let conv_o = candle_nn::conv1d(
+            channels,
+            out_channels,
+            1,
+            Default::default(),
+            vb.pp("conv_o"),
+        )?;
 
         Ok(Self {
             conv_q,
@@ -87,7 +96,10 @@ impl MultiHeadAttention {
         // Apply mask if provided
         let scores = if let Some(mask) = attn_mask {
             let mask_bool = mask.eq(0.0)?;
-            scores.where_cond(&mask_bool, &Tensor::full(f32::NEG_INFINITY, scores.dims(), scores.device())?)?
+            scores.where_cond(
+                &mask_bool,
+                &Tensor::full(f32::NEG_INFINITY, scores.dims(), scores.device())?,
+            )?
         } else {
             scores
         };
@@ -108,7 +120,12 @@ impl MultiHeadAttention {
     }
 
     /// Load MultiHeadAttention from state dict
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
+    pub fn load(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
         let conv_q = Self::load_conv(state_dict, &format!("{}.conv_q", prefix), device, dtype)?;
         let conv_k = Self::load_conv(state_dict, &format!("{}.conv_k", prefix), device, dtype)?;
         let conv_v = Self::load_conv(state_dict, &format!("{}.conv_v", prefix), device, dtype)?;
@@ -133,11 +150,20 @@ impl MultiHeadAttention {
         })
     }
 
-    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Conv1d> {
-        let weight = state_dict.get(&format!("{}.weight", prefix))?
-            .to_device(device)?.to_dtype(dtype)?;
-        let bias = state_dict.get(&format!("{}.bias", prefix))?
-            .to_device(device)?.to_dtype(dtype)?;
+    fn load_conv(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Conv1d> {
+        let weight = state_dict
+            .get(&format!("{}.weight", prefix))?
+            .to_device(device)?
+            .to_dtype(dtype)?;
+        let bias = state_dict
+            .get(&format!("{}.bias", prefix))?
+            .to_device(device)?
+            .to_dtype(dtype)?;
         let config = candle_nn::Conv1dConfig {
             padding: 0,
             stride: 1,
@@ -190,9 +216,9 @@ impl LayerNorm {
 /// text features (from phoneme embeddings) for prosody-aware fusion.
 pub struct MRTE {
     cross_attention: MultiHeadAttention,
-    c_pre: Conv1d,      // content_enc_channels -> hidden_size
-    text_pre: Conv1d,   // content_enc_channels -> hidden_size
-    c_post: Conv1d,     // hidden_size -> out_channels
+    c_pre: Conv1d,    // content_enc_channels -> hidden_size
+    text_pre: Conv1d, // content_enc_channels -> hidden_size
+    c_post: Conv1d,   // hidden_size -> out_channels
 }
 
 impl MRTE {
@@ -210,12 +236,8 @@ impl MRTE {
         n_heads: usize,
         vb: VarBuilder,
     ) -> Result<Self> {
-        let cross_attention = MultiHeadAttention::new(
-            hidden_size,
-            hidden_size,
-            n_heads,
-            vb.pp("cross_attention"),
-        )?;
+        let cross_attention =
+            MultiHeadAttention::new(hidden_size, hidden_size, n_heads, vb.pp("cross_attention"))?;
 
         let c_pre = candle_nn::conv1d(
             content_enc_channels,
@@ -250,10 +272,21 @@ impl MRTE {
     }
 
     /// Load MRTE from state dict
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
-        let cross_attention = MultiHeadAttention::load(state_dict, &format!("{}.cross_attention", prefix), device, dtype)?;
+    pub fn load(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
+        let cross_attention = MultiHeadAttention::load(
+            state_dict,
+            &format!("{}.cross_attention", prefix),
+            device,
+            dtype,
+        )?;
         let c_pre = Self::load_conv1d(state_dict, &format!("{}.c_pre", prefix), device, dtype)?;
-        let text_pre = Self::load_conv1d(state_dict, &format!("{}.text_pre", prefix), device, dtype)?;
+        let text_pre =
+            Self::load_conv1d(state_dict, &format!("{}.text_pre", prefix), device, dtype)?;
         let c_post = Self::load_conv1d(state_dict, &format!("{}.c_post", prefix), device, dtype)?;
 
         Ok(Self {
@@ -264,11 +297,20 @@ impl MRTE {
         })
     }
 
-    fn load_conv1d(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Conv1d> {
-        let weight = state_dict.get(&format!("{}.weight", prefix))?
-            .to_device(device)?.to_dtype(dtype)?;
-        let bias = state_dict.get(&format!("{}.bias", prefix))?
-            .to_device(device)?.to_dtype(dtype)?;
+    fn load_conv1d(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Conv1d> {
+        let weight = state_dict
+            .get(&format!("{}.weight", prefix))?
+            .to_device(device)?
+            .to_dtype(dtype)?;
+        let bias = state_dict
+            .get(&format!("{}.bias", prefix))?
+            .to_device(device)?
+            .to_dtype(dtype)?;
         let config = candle_nn::Conv1dConfig {
             padding: 0,
             stride: 1,
@@ -301,7 +343,7 @@ impl MRTE {
     ) -> Result<Tensor> {
         // Create attention mask: [batch, 1, ssl_len, text_len]
         let attn_mask = text_mask
-            .unsqueeze(2)?      // [batch, 1, 1, text_len]
+            .unsqueeze(2)? // [batch, 1, 1, text_len]
             .broadcast_mul(&ssl_mask.unsqueeze(3)?)?; // [batch, 1, ssl_len, text_len]
 
         // Project content features

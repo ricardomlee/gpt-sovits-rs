@@ -1,8 +1,8 @@
 //! Audio Buffer utilities
 
+use crate::{Error, Result};
 use hound::{WavSpec, WavWriter};
 use std::path::Path;
-use crate::{Error, Result};
 
 /// Audio buffer representing PCM audio data
 #[derive(Debug, Clone)]
@@ -79,11 +79,7 @@ impl AudioBuffer {
             return;
         }
 
-        let max_amp = self
-            .samples
-            .iter()
-            .map(|s| s.abs())
-            .fold(0.0f32, f32::max);
+        let max_amp = self.samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
 
         if max_amp > 0.0 {
             let scale = 1.0 / max_amp;
@@ -109,8 +105,8 @@ impl AudioBuffer {
             sample_format: hound::SampleFormat::Int,
         };
 
-        let mut writer = WavWriter::create(path.as_ref(), spec)
-            .map_err(|e| Error::AudioError(e.to_string()))?;
+        let mut writer =
+            WavWriter::create(path.as_ref(), spec).map_err(|e| Error::AudioError(e.to_string()))?;
 
         for &sample in &self.samples {
             // Convert f32 [-1, 1] to i16
@@ -158,8 +154,8 @@ impl AudioBuffer {
 
     /// Load from WAV file
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let mut reader = hound::WavReader::open(path.as_ref())
-            .map_err(|e| Error::AudioError(e.to_string()))?;
+        let mut reader =
+            hound::WavReader::open(path.as_ref()).map_err(|e| Error::AudioError(e.to_string()))?;
 
         let spec = reader.spec();
         let sample_rate = spec.sample_rate;
@@ -195,14 +191,10 @@ impl AudioBuffer {
     /// Concatenate two audio buffers
     pub fn concat(&mut self, other: &Self) -> Result<()> {
         if self.sample_rate != other.sample_rate {
-            return Err(Error::AudioError(
-                "Sample rate mismatch".to_string(),
-            ));
+            return Err(Error::AudioError("Sample rate mismatch".to_string()));
         }
         if self.channels != other.channels {
-            return Err(Error::AudioError(
-                "Channel count mismatch".to_string(),
-            ));
+            return Err(Error::AudioError("Channel count mismatch".to_string()));
         }
 
         self.samples.extend_from_slice(&other.samples);

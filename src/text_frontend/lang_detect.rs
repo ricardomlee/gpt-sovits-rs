@@ -46,7 +46,12 @@ impl LanguageDetector {
             }
         }
 
-        let total = chinese_count + japanese_hiragana + japanese_katakana + korean_count + latin_count + other_count;
+        let total = chinese_count
+            + japanese_hiragana
+            + japanese_katakana
+            + korean_count
+            + latin_count
+            + other_count;
         if total == 0 {
             return Ok(Language::Chinese); // Default
         }
@@ -94,7 +99,8 @@ impl LanguageDetector {
             (latin_count, Language::English),
         ];
 
-        counts.iter()
+        counts
+            .iter()
             .max_by_key(|(count, _)| *count)
             .map(|(_, lang)| *lang)
             .or(Some(Language::Chinese))
@@ -122,13 +128,21 @@ impl LanguageDetector {
             }
         }
 
-        let total = chinese_count + japanese_hiragana + japanese_katakana + korean_count + latin_count + other_count;
+        let total = chinese_count
+            + japanese_hiragana
+            + japanese_katakana
+            + korean_count
+            + latin_count
+            + other_count;
         if total == 0 {
             return Ok((Language::Chinese, 1.0));
         }
 
         let japanese_total = japanese_hiragana + japanese_katakana;
-        let max_count = *[chinese_count, japanese_total, korean_count, latin_count].iter().max().unwrap_or(&0);
+        let max_count = *[chinese_count, japanese_total, korean_count, latin_count]
+            .iter()
+            .max()
+            .unwrap_or(&0);
         let confidence = max_count as f32 / total as f32;
 
         let lang = if japanese_total > 0 && japanese_total == max_count {

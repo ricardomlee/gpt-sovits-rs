@@ -60,7 +60,11 @@ impl TextFrontend {
     ///
     /// word2ph[i] = number of phonemes for BERT content token i.
     /// Only valid for Chinese text; for other languages returns empty word2ph (falls back to nearest-neighbor).
-    pub fn process_with_word2ph(&self, text: &str, language: Language) -> Result<(Vec<usize>, Vec<usize>)> {
+    pub fn process_with_word2ph(
+        &self,
+        text: &str,
+        language: Language,
+    ) -> Result<(Vec<usize>, Vec<usize>)> {
         let normalized = self.normalizer.normalize(text)?;
         let detected_lang = if language == Language::Auto {
             self.language_detector.detect(&normalized)?
@@ -70,7 +74,9 @@ impl TextFrontend {
 
         match detected_lang {
             Language::Chinese => {
-                let (phonemes, word2ph) = self.g2p_converter.convert_chinese_with_word2ph(&normalized)?;
+                let (phonemes, word2ph) = self
+                    .g2p_converter
+                    .convert_chinese_with_word2ph(&normalized)?;
                 let ids = self.symbol_table.encode(&phonemes)?;
                 Ok((ids, word2ph))
             }

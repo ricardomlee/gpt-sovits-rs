@@ -7,14 +7,14 @@
 //! 1. Text-driven synthesis: semantic tokens + text → enc_p → flow → decoder
 //! 2. Reference-driven synthesis: reference mel → enc_q → flow → decoder
 
-use candle_core::{Device, DType, Tensor};
-use crate::{Result, Error};
-use crate::utils::{StateDict, load_safetensors};
+use crate::utils::{load_safetensors, StateDict};
+use crate::{Error, Result};
+use candle_core::{DType, Device, Tensor};
 
+use crate::models::sovits_decoder::Decoder;
 use crate::models::sovits_encp::EncP;
 use crate::models::sovits_encq::EncQ;
 use crate::models::sovits_flow::ResidualCouplingBlock;
-use crate::models::sovits_decoder::Decoder;
 use crate::models::sovits_ref_enc::RefEnc;
 
 /// SoVITS Model for audio synthesis
@@ -58,7 +58,11 @@ pub struct Quantizer {
 
 impl Quantizer {
     pub fn new(dimension: usize, bins: usize, codebook: Tensor) -> Self {
-        Self { bins, dimension, codebook }
+        Self {
+            bins,
+            dimension,
+            codebook,
+        }
     }
 
     /// Decode codes to continuous features
@@ -79,26 +83,39 @@ impl Quantizer {
 
         let stacked = Tensor::stack(&embeddings, 0)?;
         let result = stacked.reshape((batch, seq_len, self.dimension))?;
-        Ok(result.transpose(1, 2)?)  // [batch, dimension, seq_len]
+        Ok(result.transpose(1, 2)?) // [batch, dimension, seq_len]
     }
 }
 
 /// Build sequence mask from lengths
 /// Returns [batch, 1, time] where positions < length are 1 and >= length are 0
-fn build_sequence_mask(lengths: &[i64], time: usize, batch: usize, device: &Device) -> Result<Tensor> {
+fn build_sequence_mask(
+    lengths: &[i64],
+    time: usize,
+    batch: usize,
+    device: &Device,
+) -> Result<Tensor> {
     let indices: Vec<i64> = (0..time as i64).collect();
     let idx_tensor = Tensor::from_vec(indices, (1, 1, time), device)?;
     let len_tensor = Tensor::from_vec(lengths.to_vec(), (batch, 1, 1), device)?;
     let lengths_b = len_tensor.broadcast_as((batch, 1, time))?;
     // mask = idx < length — always F32; caller casts to model dtype as needed
     let mask = idx_tensor.broadcast_lt(&lengths_b)?;
-    mask.to_dtype(DType::F32).map_err(|e| crate::Error::InferenceError(e.to_string()))
+    mask.to_dtype(DType::F32)
+        .map_err(|e| crate::Error::InferenceError(e.to_string()))
 }
 
 /// Build sequence mask with specified dtype
-fn build_sequence_mask_typed(lengths: &[i64], time: usize, batch: usize, device: &Device, dtype: DType) -> Result<Tensor> {
+fn build_sequence_mask_typed(
+    lengths: &[i64],
+    time: usize,
+    batch: usize,
+    device: &Device,
+    dtype: DType,
+) -> Result<Tensor> {
     let mask = build_sequence_mask(lengths, time, batch, device)?;
-    mask.to_dtype(dtype).map_err(|e| crate::Error::InferenceError(e.to_string()))
+    mask.to_dtype(dtype)
+        .map_err(|e| crate::Error::InferenceError(e.to_string()))
 }
 
 /// Nearest-neighbor 2x upsampling along the time dimension
@@ -149,15 +166,30 @@ impl SoVITSModel {
         let enc_out_channels = 192;
 
         // Load quantizer (dimension=768 matches codebook embedding size)
-        let codebook = state_dict.get("quantizer.vq.layers.0._codebook.embed")?
-            .to_device(device)?.to_dtype(dtype)?;
+        let codebook = state_dict
+            .get("quantizer.vq.layers.0._codebook.embed")?
+            .to_device(device)?
+            .to_dtype(dtype)?;
         let quantizer = Quantizer::new(768, 1024, codebook);
 
         // Load EncP (text + semantic token encoder)
-        let enc_p = EncP::load(&state_dict, device, hidden_channels, n_layers, enc_out_channels, dtype)?;
+        let enc_p = EncP::load(
+            &state_dict,
+            device,
+            hidden_channels,
+            n_layers,
+            enc_out_channels,
+            dtype,
+        )?;
 
         // Load EncQ (reference audio mel encoder)
-        let enc_q = EncQ::load(&state_dict, device, hidden_channels, enc_out_channels, dtype)?;
+        let enc_q = EncQ::load(
+            &state_dict,
+            device,
+            hidden_channels,
+            enc_out_channels,
+            dtype,
+        )?;
 
         // Load Flow (ResidualCouplingBlock)
         let flow = ResidualCouplingBlock::load(&state_dict, "flow.flows", device, 4, dtype)?;
@@ -224,7 +256,8 @@ impl SoVITSModel {
 
             // Build refer_mask from time dimension (all valid since we have full audio)
             let time = mel_in.dims()[2];
-            let refer_mask = Tensor::full(1.0f32, &[1, 1, time], &self.device)?.to_dtype(mel_in.dtype())?;
+            let refer_mask =
+                Tensor::full(1.0f32, &[1, 1, time], &self.device)?.to_dtype(mel_in.dtype())?;
 
             // Apply mask and compute ge
             let mel_masked = mel_in.broadcast_mul(&refer_mask)?;
@@ -249,19 +282,16 @@ impl SoVITSModel {
         let y_mask = build_sequence_mask_typed(&y_lengths, time_len, 1, &self.device, self.dtype)?;
 
         // Pass through enc_p
-        let (_y, m_p, logs_p, _y_mask_enc) = self.enc_p.forward(
-            &quantized_up,
-            &y_lengths,
-            &text,
-            &text_lengths,
-            &ge,
-            1.0,
-        )?;
+        let (_y, m_p, logs_p, _y_mask_enc) =
+            self.enc_p
+                .forward(&quantized_up, &y_lengths, &text, &text_lengths, &ge, 1.0)?;
 
         // Sample from N(m, exp(logs)) to get latent z_p (matching Python: noise_scale=0.5)
         let noise = self.sample_noise(&m_p)?;
         let logs_exp = logs_p.exp()?;
-        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(&Tensor::full(noise_scale, m_p.dims(), &self.device)?.to_dtype(m_p.dtype())?)?)?;
+        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(
+            &Tensor::full(noise_scale, m_p.dims(), &self.device)?.to_dtype(m_p.dtype())?,
+        )?)?;
 
         // Invert flow transform: z_p → z (with ge conditioning, matching Python)
         let z = self.flow.forward(&z_p, &y_mask, Some(&ge), true)?;
@@ -303,7 +333,8 @@ impl SoVITSModel {
         let ge = if let Some(mel) = ref_audio_mel {
             let mel_in = mel.clone();
             let time = mel_in.dims()[2];
-            let refer_mask = Tensor::full(1.0f32, &[1, 1, time], &self.device)?.to_dtype(mel_in.dtype())?;
+            let refer_mask =
+                Tensor::full(1.0f32, &[1, 1, time], &self.device)?.to_dtype(mel_in.dtype())?;
             let mel_masked = mel_in.broadcast_mul(&refer_mask)?;
             let ge = self.ref_enc.forward(&mel_masked, &refer_mask)?;
             ge
@@ -320,14 +351,16 @@ impl SoVITSModel {
         let time_len = quantized_up.dims()[2];
         let y_mask = build_sequence_mask_typed(&y_lengths, time_len, 1, &self.device, self.dtype)?;
 
-        let (_y, m_p, logs_p, _y_mask_enc) = self.enc_p.forward(
-            &quantized_up, &y_lengths, &text, &text_lengths, &ge, 1.0,
-        )?;
+        let (_y, m_p, logs_p, _y_mask_enc) =
+            self.enc_p
+                .forward(&quantized_up, &y_lengths, &text, &text_lengths, &ge, 1.0)?;
 
         // enc_p.forward() already clamps logs to [-5.0, 2.0]
         let noise = self.sample_noise(&m_p)?;
         let logs_exp = logs_p.exp()?;
-        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(&Tensor::full(noise_scale, m_p.dims(), &self.device)?.to_dtype(m_p.dtype())?)?)?;
+        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(
+            &Tensor::full(noise_scale, m_p.dims(), &self.device)?.to_dtype(m_p.dtype())?,
+        )?)?;
 
         let z = self.flow.forward(&z_p, &y_mask, Some(&ge), true)?;
         let z_masked = z.broadcast_mul(&y_mask)?;
@@ -407,17 +440,22 @@ impl SoVITSModel {
             use std::io::Write;
             if let Ok(mut f) = std::fs::File::create("sovits_debug_semantic_tokens.txt") {
                 writeln!(f, "{}", codes_vec.len()).ok();
-                for t in &codes_vec { writeln!(f, "{}", t).ok(); }
+                for t in &codes_vec {
+                    writeln!(f, "{}", t).ok();
+                }
             }
             if let Ok(mut f) = std::fs::File::create("sovits_debug_text_tokens.txt") {
                 writeln!(f, "{}", text_vec.len()).ok();
-                for t in &text_vec { writeln!(f, "{}", t).ok(); }
+                for t in &text_vec {
+                    writeln!(f, "{}", t).ok();
+                }
             }
         }
 
         let ge = if let Some(mel) = ref_audio_mel {
             let mel_in = mel.to_dtype(self.dtype)?;
-            let refer_mask_m = Tensor::full(1.0f32, &[1, 1, mel_in.dims()[2]], &self.device)?.to_dtype(self.dtype)?;
+            let refer_mask_m = Tensor::full(1.0f32, &[1, 1, mel_in.dims()[2]], &self.device)?
+                .to_dtype(self.dtype)?;
             let mel_masked = mel_in.broadcast_mul(&refer_mask_m)?;
             let ge = self.ref_enc.forward(&mel_masked, &refer_mask_m)?;
             self.save_tensor("sovits_debug_ge", &ge)?;
@@ -440,16 +478,18 @@ impl SoVITSModel {
         let y_mask = build_sequence_mask_typed(&y_lengths, time_len, 1, &self.device, self.dtype)?;
 
         // enc_p
-        let (_y, m_p, logs_p, _y_mask_enc) = self.enc_p.forward(
-            &quantized_up, &y_lengths, &text, &text_lengths, &ge, 1.0,
-        )?;
+        let (_y, m_p, logs_p, _y_mask_enc) =
+            self.enc_p
+                .forward(&quantized_up, &y_lengths, &text, &text_lengths, &ge, 1.0)?;
         self.save_tensor("sovits_debug_encp_m", &m_p)?;
         self.save_tensor("sovits_debug_encp_logs", &logs_p)?;
 
         // Sampling - enc_p.forward() already clamps logs to [-5.0, 2.0]
         let noise = self.sample_noise(&m_p)?;
         let logs_exp = logs_p.exp()?;
-        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(&Tensor::full(noise_scale, m_p.dims(), &self.device)?.to_dtype(m_p.dtype())?)?)?;
+        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(
+            &Tensor::full(noise_scale, m_p.dims(), &self.device)?.to_dtype(m_p.dtype())?,
+        )?)?;
         self.save_tensor("sovits_debug_zp", &z_p)?;
 
         // Flow inverse
@@ -463,13 +503,24 @@ impl SoVITSModel {
         self.save_f32_file("sovits_debug_audio", &output);
 
         // Print stats
-        for name in &["quantized", "quantized_up", "encp_m", "encp_logs", "zp", "flow_z", "dec_input"] {
+        for name in &[
+            "quantized",
+            "quantized_up",
+            "encp_m",
+            "encp_logs",
+            "zp",
+            "flow_z",
+            "dec_input",
+        ] {
             let key = format!("sovits_debug_{}", name);
             let path = format!("{}.txt", key);
             if let Ok(content) = std::fs::read_to_string(&path) {
                 let mut lines = content.lines();
                 if let Some(dims_line) = lines.next() {
-                    let dims: Vec<usize> = dims_line.split(',').filter_map(|s| s.parse().ok()).collect();
+                    let dims: Vec<usize> = dims_line
+                        .split(',')
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
                     let data: Vec<f32> = lines.filter_map(|l| l.trim().parse().ok()).collect();
                     if !data.is_empty() {
                         let mean = data.iter().sum::<f32>() / data.len() as f32;
@@ -481,8 +532,15 @@ impl SoVITSModel {
                         let std_f = std as f64;
                         let min_f = min as f64;
                         let max_f = max as f64;
-                        tracing::debug!("  {}: {:?} mean={:.4} std={:.4} min={:.4} max={:.4}",
-                            name, dims, mean_f, std_f, min_f, max_f);
+                        tracing::debug!(
+                            "  {}: {:?} mean={:.4} std={:.4} min={:.4} max={:.4}",
+                            name,
+                            dims,
+                            mean_f,
+                            std_f,
+                            min_f,
+                            max_f
+                        );
                     }
                 }
             }
@@ -494,14 +552,26 @@ impl SoVITSModel {
     fn save_tensor(&self, name: &str, t: &Tensor) -> Result<()> {
         let flat: Vec<f32> = t.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?;
         let dims = t.dims();
-        let header = dims.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(",");
-        let data = flat.iter().map(|v| format!("{:.10}", v)).collect::<Vec<_>>().join("\n");
+        let header = dims
+            .iter()
+            .map(|d| d.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let data = flat
+            .iter()
+            .map(|v| format!("{:.10}", v))
+            .collect::<Vec<_>>()
+            .join("\n");
         std::fs::write(format!("{}.txt", name), format!("{}\n{}\n", header, data))
             .map_err(|e| crate::Error::InferenceError(format!("Failed to save {}: {}", name, e)))
     }
 
     fn save_f32_file(&self, name: &str, data: &[f32]) {
-        let content = data.iter().map(|v| format!("{:.10}", v)).collect::<Vec<_>>().join("\n");
+        let content = data
+            .iter()
+            .map(|v| format!("{:.10}", v))
+            .collect::<Vec<_>>()
+            .join("\n");
         std::fs::write(format!("{}.txt", name), format!("{}\n", content)).unwrap();
     }
 }

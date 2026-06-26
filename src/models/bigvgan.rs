@@ -5,10 +5,10 @@
 //! - Proper residual connections
 //! - Downsampling filters for multi-period enhancement
 
-use candle_core::{Device, Tensor, DType};
-use crate::{Result, Error};
-use crate::utils::{StateDict, load_safetensors};
 use crate::utils::weights::Conv1dWeightNorm;
+use crate::utils::{load_safetensors, StateDict};
+use crate::{Error, Result};
+use candle_core::{DType, Device, Tensor};
 
 /// BigVGAN vocoder for mel-to-waveform synthesis
 pub struct BigVGAN {
@@ -113,16 +113,23 @@ impl SnakeBeta {
         let (alpha_reshaped, beta_reshaped) = if x_dims.len() == 3 {
             let channels = x_dims[1];
             if self.alpha.dims().len() == 1 && self.alpha.dims()[0] == channels {
-                (alpha_exp.reshape((1, channels, 1))?, beta_exp.reshape((1, channels, 1))?)
+                (
+                    alpha_exp.reshape((1, channels, 1))?,
+                    beta_exp.reshape((1, channels, 1))?,
+                )
             } else if self.alpha.dims().len() == 1 {
-                (alpha_exp.narrow(0, 0, 1)?.reshape((1, 1, 1))?,
-                 beta_exp.narrow(0, 0, 1)?.reshape((1, 1, 1))?)
+                (
+                    alpha_exp.narrow(0, 0, 1)?.reshape((1, 1, 1))?,
+                    beta_exp.narrow(0, 0, 1)?.reshape((1, 1, 1))?,
+                )
             } else {
                 (alpha_exp.clone(), beta_exp.clone())
             }
         } else {
-            (alpha_exp.narrow(0, 0, 1)?.reshape((1, 1, 1))?,
-             beta_exp.narrow(0, 0, 1)?.reshape((1, 1, 1))?)
+            (
+                alpha_exp.narrow(0, 0, 1)?.reshape((1, 1, 1))?,
+                beta_exp.narrow(0, 0, 1)?.reshape((1, 1, 1))?,
+            )
         };
 
         // sin(x * alpha)
@@ -163,7 +170,9 @@ impl Downsample {
             .clone();
 
         Ok(Self {
-            lowpass: LowpassFilter { filter: filter_data },
+            lowpass: LowpassFilter {
+                filter: filter_data,
+            },
         })
     }
 
@@ -195,7 +204,9 @@ impl UpsampleFilter {
             .to_dtype(DType::F32)?
             .clone();
 
-        Ok(Self { filter: filter_data })
+        Ok(Self {
+            filter: filter_data,
+        })
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -215,7 +226,11 @@ impl UpsampleFilter {
             }
         }
 
-        Ok(Tensor::from_vec(samples, (batch, channels, time * factor), x.device())?)
+        Ok(Tensor::from_vec(
+            samples,
+            (batch, channels, time * factor),
+            x.device(),
+        )?)
     }
 
     fn apply_filter(&self, x: &Tensor) -> Result<Tensor> {
@@ -271,15 +286,20 @@ impl ResidualBlock {
             let alpha_key = format!("resblocks.{}.activations.0.act.alpha", i);
             let beta_key = format!("resblocks.{}.activations.0.act.beta", i);
 
-            let alpha = state_dict.get(&alpha_key)?.to_device(device)?.to_dtype(DType::F32)?;
-            let beta = state_dict.get(&beta_key)?.to_device(device)?.to_dtype(DType::F32)?;
+            let alpha = state_dict
+                .get(&alpha_key)?
+                .to_device(device)?
+                .to_dtype(DType::F32)?;
+            let beta = state_dict
+                .get(&beta_key)?
+                .to_device(device)?
+                .to_dtype(DType::F32)?;
 
             // Create 6 activations but only use downsampling (no upsampling inside resblock)
             for j in 0..6 {
                 let act_prefix = format!("{}.activations.{}", prefix, j);
-                let has_downsample = state_dict.contains(&format!(
-                    "{}.downsample.lowpass.filter", act_prefix
-                ));
+                let has_downsample =
+                    state_dict.contains(&format!("{}.downsample.lowpass.filter", act_prefix));
 
                 activations.push(Activation {
                     downsample: if has_downsample {
@@ -301,10 +321,23 @@ impl ResidualBlock {
         Ok(blocks)
     }
 
-    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1dWeightNorm> {
-        let weight_g = state_dict.get(&format!("{}.weight_g", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
-        let weight_v = state_dict.get(&format!("{}.weight_v", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
-        let bias = state_dict.get(&format!("{}.bias", prefix)).ok().cloned()
+    fn load_conv(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+    ) -> Result<Conv1dWeightNorm> {
+        let weight_g = state_dict
+            .get(&format!("{}.weight_g", prefix))?
+            .to_device(device)?
+            .to_dtype(DType::F32)?;
+        let weight_v = state_dict
+            .get(&format!("{}.weight_v", prefix))?
+            .to_device(device)?
+            .to_dtype(DType::F32)?;
+        let bias = state_dict
+            .get(&format!("{}.bias", prefix))
+            .ok()
+            .cloned()
             .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
             .transpose()?;
 
@@ -317,7 +350,9 @@ impl ResidualBlock {
 
         let padding = (kernel_size - 1) / 2;
 
-        Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)?)
+        Ok(Conv1dWeightNorm::new_with_cached(
+            weight_g, weight_v, bias, 1, padding, 1,
+        )?)
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -433,10 +468,23 @@ impl BigVGAN {
         })
     }
 
-    fn load_conv(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Conv1dWeightNorm> {
-        let weight_g = state_dict.get(&format!("{}.weight_g", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
-        let weight_v = state_dict.get(&format!("{}.weight_v", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
-        let bias = state_dict.get(&format!("{}.bias", prefix)).ok().cloned()
+    fn load_conv(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+    ) -> Result<Conv1dWeightNorm> {
+        let weight_g = state_dict
+            .get(&format!("{}.weight_g", prefix))?
+            .to_device(device)?
+            .to_dtype(DType::F32)?;
+        let weight_v = state_dict
+            .get(&format!("{}.weight_v", prefix))?
+            .to_device(device)?
+            .to_dtype(DType::F32)?;
+        let bias = state_dict
+            .get(&format!("{}.bias", prefix))
+            .ok()
+            .cloned()
             .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
             .transpose()?;
 
@@ -449,15 +497,27 @@ impl BigVGAN {
 
         let padding = (kernel_size - 1) / 2;
 
-        Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)?)
+        Ok(Conv1dWeightNorm::new_with_cached(
+            weight_g, weight_v, bias, 1, padding, 1,
+        )?)
     }
 
-    fn load_post_activation(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<PostActivation> {
+    fn load_post_activation(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+    ) -> Result<PostActivation> {
         let has_downsample = state_dict.contains(&format!("{}.downsample.lowpass.filter", prefix));
         let has_upsample = state_dict.contains(&format!("{}.upsample.filter", prefix));
 
-        let alpha = state_dict.get(&format!("{}.act.alpha", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
-        let beta = state_dict.get(&format!("{}.act.beta", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
+        let alpha = state_dict
+            .get(&format!("{}.act.alpha", prefix))?
+            .to_device(device)?
+            .to_dtype(DType::F32)?;
+        let beta = state_dict
+            .get(&format!("{}.act.beta", prefix))?
+            .to_device(device)?
+            .to_dtype(DType::F32)?;
 
         Ok(PostActivation {
             downsample: if has_downsample {
@@ -478,9 +538,10 @@ impl BigVGAN {
     pub fn generate(&self, mel_spec: &Tensor) -> Result<Vec<f32>> {
         let dims = mel_spec.dims();
         if dims.len() != 3 {
-            return Err(Error::InferenceError(
-                format!("Expected 3D mel spectrogram [batch, n_mels, time], got {:?}", dims)
-            ));
+            return Err(Error::InferenceError(format!(
+                "Expected 3D mel spectrogram [batch, n_mels, time], got {:?}",
+                dims
+            )));
         }
 
         // Step 1: Input projection
@@ -516,7 +577,12 @@ impl BigVGAN {
         Ok(output)
     }
 
-    fn upsample_forward(&self, x: &Tensor, conv: &Conv1dWeightNorm, upsample_factor: usize) -> Result<Tensor> {
+    fn upsample_forward(
+        &self,
+        x: &Tensor,
+        conv: &Conv1dWeightNorm,
+        upsample_factor: usize,
+    ) -> Result<Tensor> {
         let weight = conv.get_weight()?;
         let weight_dims = weight.dims();
 

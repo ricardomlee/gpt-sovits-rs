@@ -8,27 +8,27 @@
 //! - Hubert feature projection for prosody guidance
 //! - MRTE (Multi-Reference Timbre Encoder) for advanced fusion
 
-use candle_core::{Device, DType, Tensor};
-use crate::{Result, Error};
-use crate::utils::{StateDict, load_safetensors, KvCacheManager, StaticKvManager};
-use super::transformer::{TransformerGPTSoVITS, TransformerConfig};
 use super::mrte::MRTE;
+use super::transformer::{TransformerConfig, TransformerGPTSoVITS};
+use crate::utils::{load_safetensors, KvCacheManager, StateDict, StaticKvManager};
+use crate::{Error, Result};
+use candle_core::{DType, Device, Tensor};
 
 /// GPT Model for semantic token prediction
 pub struct GPTModel {
-    text_embedding: Tensor,      // model.ar_text_embedding.word_embeddings.weight [vocab_size, hidden_size]
-    audio_embedding: Tensor,     // model.ar_audio_embedding.word_embeddings.weight [1025, hidden_size]
+    text_embedding: Tensor, // model.ar_text_embedding.word_embeddings.weight [vocab_size, hidden_size]
+    audio_embedding: Tensor, // model.ar_audio_embedding.word_embeddings.weight [1025, hidden_size]
     bert_proj: Option<(Tensor, Tensor)>, // (weight, bias) for BERT features [512, 1024], [512]
     hubert_proj: Option<(Tensor, Tensor)>, // (weight, bias) for Hubert features [512, 768], [512]
-    mrte: Option<MRTE>,          // MRTE module for advanced cross-attention fusion
+    mrte: Option<MRTE>,     // MRTE module for advanced cross-attention fusion
     transformer: TransformerGPTSoVITS,
-    ar_predict_layer: Tensor,    // output projection [vocab_size, hidden_size]
-    text_pos_alpha: f32,         // Learned alpha for text positional encoding
-    audio_pos_alpha: f32,        // Learned alpha for audio positional encoding
+    ar_predict_layer: Tensor, // output projection [vocab_size, hidden_size]
+    text_pos_alpha: f32,      // Learned alpha for text positional encoding
+    audio_pos_alpha: f32,     // Learned alpha for audio positional encoding
     device: Device,
     dtype: DType,
     vocab_size: usize,
-    num_layers: usize,           // Number of transformer layers for KV cache
+    num_layers: usize, // Number of transformer layers for KV cache
 }
 
 struct SamplingScratch {
@@ -85,7 +85,8 @@ fn mixed_embedding_lookup(
             msg: "Expected 2D input for embedding".to_string(),
             expected: candle_core::Shape::from(&[1usize, 1]),
             got: candle_core::Shape::from(dims),
-        }.into());
+        }
+        .into());
     }
 
     let (batch, seq_len) = (dims[0], dims[1]);
@@ -106,12 +107,21 @@ fn mixed_embedding_lookup(
             // Audio tokens are in range [0, audio_vocab), so subtract text_vocab_size
             let audio_idx = (idx as usize).saturating_sub(text_vocab_size);
             if audio_idx >= audio_emb.dims()[0] {
-                tracing::warn!("audio_idx {} out of range for audio_emb {:?}", audio_idx, audio_emb.dims());
+                tracing::warn!(
+                    "audio_idx {} out of range for audio_emb {:?}",
+                    audio_idx,
+                    audio_emb.dims()
+                );
                 return Err(candle_core::Error::UnexpectedShape {
-                    msg: format!("Audio token index {} out of range [0, {})", audio_idx, audio_emb.dims()[0]),
+                    msg: format!(
+                        "Audio token index {} out of range [0, {})",
+                        audio_idx,
+                        audio_emb.dims()[0]
+                    ),
                     expected: candle_core::Shape::from(&[1usize, 1]),
                     got: candle_core::Shape::from(&[audio_idx, 1]),
-                }.into());
+                }
+                .into());
             }
             audio_emb.get(audio_idx)?
         };
@@ -122,7 +132,8 @@ fn mixed_embedding_lookup(
     let stacked = Tensor::stack(&embeddings, 0)?.to_device(device)?;
 
     // Reshape to [batch, seq_len, hidden]
-    stacked.reshape((batch, seq_len, hidden_size))
+    stacked
+        .reshape((batch, seq_len, hidden_size))
         .map_err(|e| e.into())
 }
 
@@ -140,7 +151,8 @@ impl GPTModel {
 
         // Load text embedding: [vocab_size, hidden_size]
         let text_emb_key = "model.ar_text_embedding.word_embeddings.weight";
-        let text_embedding = state_dict.get(text_emb_key)?
+        let text_embedding = state_dict
+            .get(text_emb_key)?
             .to_device(device)?
             .to_dtype(dtype)?;
 
@@ -149,14 +161,21 @@ impl GPTModel {
 
         // Load audio embedding: [1025, hidden_size]
         let audio_emb_key = "model.ar_audio_embedding.word_embeddings.weight";
-        let audio_embedding = state_dict.get(audio_emb_key)?
+        let audio_embedding = state_dict
+            .get(audio_emb_key)?
             .to_device(device)?
             .to_dtype(dtype)?;
 
         // Load BERT projection (optional): weight [512, 1024], bias [512]
         let bert_proj = if state_dict.contains("model.bert_proj.weight") {
-            let bert_weight = state_dict.get("model.bert_proj.weight")?.to_device(device)?.to_dtype(dtype)?;
-            let bert_bias = state_dict.get("model.bert_proj.bias")?.to_device(device)?.to_dtype(dtype)?;
+            let bert_weight = state_dict
+                .get("model.bert_proj.weight")?
+                .to_device(device)?
+                .to_dtype(dtype)?;
+            let bert_bias = state_dict
+                .get("model.bert_proj.bias")?
+                .to_device(device)?
+                .to_dtype(dtype)?;
             Some((bert_weight, bert_bias))
         } else {
             None
@@ -164,8 +183,14 @@ impl GPTModel {
 
         // Load Hubert projection (optional): weight [512, 768], bias [512]
         let hubert_proj = if state_dict.contains("model.hubert_proj.weight") {
-            let hubert_weight = state_dict.get("model.hubert_proj.weight")?.to_device(device)?.to_dtype(dtype)?;
-            let hubert_bias = state_dict.get("model.hubert_proj.bias")?.to_device(device)?.to_dtype(dtype)?;
+            let hubert_weight = state_dict
+                .get("model.hubert_proj.weight")?
+                .to_device(device)?
+                .to_dtype(dtype)?;
+            let hubert_bias = state_dict
+                .get("model.hubert_proj.bias")?
+                .to_device(device)?
+                .to_dtype(dtype)?;
             Some((hubert_weight, hubert_bias))
         } else {
             None
@@ -231,7 +256,8 @@ impl GPTModel {
             1.0
         };
 
-        let ar_predict_layer = state_dict.get("model.ar_predict_layer.weight")?
+        let ar_predict_layer = state_dict
+            .get("model.ar_predict_layer.weight")?
             .to_device(device)?
             .to_dtype(dtype)?;
 
@@ -273,8 +299,14 @@ impl GPTModel {
     ) -> Result<(usize, usize)> {
         let mut scratch = SamplingScratch::new(logits.dims().last().copied().unwrap_or(0));
         Self::sample_token_with_scratch(
-            logits, top_k, top_p, temperature, repetition_penalty,
-            prompt_tokens, generated_tokens, &mut scratch,
+            logits,
+            top_k,
+            top_p,
+            temperature,
+            repetition_penalty,
+            prompt_tokens,
+            generated_tokens,
+            &mut scratch,
         )
     }
 
@@ -293,7 +325,9 @@ impl GPTModel {
         let n = logits_vec.len();
 
         // Compute argmax of raw logits (before any filtering) — Python: torch.argmax(logits)
-        let argmax = logits_vec.iter().enumerate()
+        let argmax = logits_vec
+            .iter()
+            .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
             .map(|(i, _)| i)
             .unwrap_or(0);
@@ -316,9 +350,11 @@ impl GPTModel {
         if top_k > 0 && top_k < n {
             scratch.sorted_logits.clear();
             scratch.sorted_logits.extend_from_slice(&logits_vec);
-            scratch.sorted_logits.select_nth_unstable_by(top_k - 1, |a, b| {
-                b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            scratch
+                .sorted_logits
+                .select_nth_unstable_by(top_k - 1, |a, b| {
+                    b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal)
+                });
             let pivot = scratch.sorted_logits[top_k - 1];
             for v in logits_vec.iter_mut() {
                 if *v < pivot {
@@ -334,9 +370,14 @@ impl GPTModel {
             if exp_sum.is_finite() && exp_sum > 0.0 {
                 scratch.idx_probs.clear();
                 scratch.idx_probs.extend(
-                    logits_vec.iter().enumerate().map(|(idx, &x)| (idx, (x - max_l).exp() / exp_sum)),
+                    logits_vec
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, &x)| (idx, (x - max_l).exp() / exp_sum)),
                 );
-                scratch.idx_probs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                scratch
+                    .idx_probs
+                    .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
                 let mut cumsum = 0.0f32;
                 for &(idx, prob) in &scratch.idx_probs {
@@ -396,7 +437,16 @@ impl GPTModel {
         repetition_penalty: f32,
         max_tokens: usize,
     ) -> Result<Vec<usize>> {
-        self.generate_with_features(phoneme_ids, None, None, top_k, top_p, temperature, repetition_penalty, max_tokens)
+        self.generate_with_features(
+            phoneme_ids,
+            None,
+            None,
+            top_k,
+            top_p,
+            temperature,
+            repetition_penalty,
+            max_tokens,
+        )
     }
 
     /// Generate semantic tokens with BERT and Hubert features
@@ -428,8 +478,7 @@ impl GPTModel {
 
         // Convert phoneme IDs to tensor [1, seq_len]
         let input_ids: Vec<i64> = phoneme_ids.iter().map(|&x| x as i64).collect();
-        let mut current_ids = Tensor::new(input_ids.as_slice(), &self.device)?
-            .unsqueeze(0)?;
+        let mut current_ids = Tensor::new(input_ids.as_slice(), &self.device)?.unsqueeze(0)?;
 
         let mut generated_tokens = Vec::new();
         let max_new_tokens = max_tokens;
@@ -452,7 +501,8 @@ impl GPTModel {
                     // Candle requires same dims for batched matmul: [1, seq, 1024] @ [1, 1024, 512]
                     let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
                     let projected = bert_reshaped.matmul(&proj_w_3d)?;
-                    let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
+                    let projected =
+                        projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
                     Some(projected)
                 } else {
                     None
@@ -480,7 +530,8 @@ impl GPTModel {
                     // Project to hidden size (Candle requires same dims for batched matmul)
                     let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
                     let projected = hubert_reshaped.matmul(&proj_w_3d)?;
-                    let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
+                    let projected =
+                        projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
                     Some(projected)
                 } else {
                     None
@@ -497,86 +548,112 @@ impl GPTModel {
             let seq_len = current_ids.dims()[1];
 
             // Get token embeddings - use mixed lookup for text + audio tokens
-            let token_emb = mixed_embedding_lookup(&self.text_embedding, &self.audio_embedding, &current_ids, self.vocab_size)?;
+            let token_emb = mixed_embedding_lookup(
+                &self.text_embedding,
+                &self.audio_embedding,
+                &current_ids,
+                self.vocab_size,
+            )?;
 
             // Fuse features using MRTE if available, otherwise fall back to simple addition
-            let fused_emb = if let Some(ref mrte) = self.mrte {
-                if let (Some(bert), Some(hubert)) = (bert_proj_result.as_ref(), hubert_proj_result.as_ref()) {
-                    let _token_emb_t = token_emb.transpose(1, 2)?;
-                    let bert_t = bert.transpose(1, 2)?;
-                    let hubert_t = hubert.transpose(1, 2)?;
-                    let ones_mask = Tensor::ones((1, 1, seq_len), DType::F32, &self.device)?;
-                    match mrte.forward(&hubert_t, &ones_mask, &bert_t, &ones_mask, None) {
-                        Ok(mrte_out) => {
-                            let mrte_frames = mrte_out.dims()[2];
-                            let mrte_aligned = if mrte_frames >= seq_len {
-                                mrte_out.narrow(2, 0, seq_len)?
-                            } else {
-                                let last_frame = mrte_out.narrow(2, mrte_frames - 1, 1)?;
-                                let mut frames = vec![mrte_out.clone()];
-                                for _ in 0..(seq_len - mrte_frames) {
-                                    frames.push(last_frame.clone());
-                                }
-                                Tensor::cat(&frames, 2).unwrap_or_else(|_| mrte_out.clone())
-                            };
-                            mrte_aligned.transpose(1, 2).unwrap_or_else(|_| token_emb.clone())
+            let fused_emb =
+                if let Some(ref mrte) = self.mrte {
+                    if let (Some(bert), Some(hubert)) =
+                        (bert_proj_result.as_ref(), hubert_proj_result.as_ref())
+                    {
+                        let _token_emb_t = token_emb.transpose(1, 2)?;
+                        let bert_t = bert.transpose(1, 2)?;
+                        let hubert_t = hubert.transpose(1, 2)?;
+                        let ones_mask = Tensor::ones((1, 1, seq_len), DType::F32, &self.device)?;
+                        match mrte.forward(&hubert_t, &ones_mask, &bert_t, &ones_mask, None) {
+                            Ok(mrte_out) => {
+                                let mrte_frames = mrte_out.dims()[2];
+                                let mrte_aligned = if mrte_frames >= seq_len {
+                                    mrte_out.narrow(2, 0, seq_len)?
+                                } else {
+                                    let last_frame = mrte_out.narrow(2, mrte_frames - 1, 1)?;
+                                    let mut frames = vec![mrte_out.clone()];
+                                    for _ in 0..(seq_len - mrte_frames) {
+                                        frames.push(last_frame.clone());
+                                    }
+                                    Tensor::cat(&frames, 2).unwrap_or_else(|_| mrte_out.clone())
+                                };
+                                mrte_aligned
+                                    .transpose(1, 2)
+                                    .unwrap_or_else(|_| token_emb.clone())
+                            }
+                            Err(_) => token_emb.clone(),
                         }
-                        Err(_) => token_emb.clone(),
+                    } else {
+                        token_emb.clone()
                     }
                 } else {
-                    token_emb.clone()
-                }
-            } else {
-                let mut fused_emb = token_emb.clone();
-                if let Some(ref bert_proj) = bert_proj_result {
-                    if bert_proj.dims().len() >= 2 {
-                        let bert_seq_len = bert_proj.dims()[1];
-                        if bert_seq_len >= seq_len {
-                            let bert_narrowed = if bert_seq_len > seq_len {
-                                bert_proj.narrow(1, 0, seq_len)?
+                    let mut fused_emb = token_emb.clone();
+                    if let Some(ref bert_proj) = bert_proj_result {
+                        if bert_proj.dims().len() >= 2 {
+                            let bert_seq_len = bert_proj.dims()[1];
+                            if bert_seq_len >= seq_len {
+                                let bert_narrowed = if bert_seq_len > seq_len {
+                                    bert_proj.narrow(1, 0, seq_len)?
+                                } else {
+                                    bert_proj.clone()
+                                };
+                                if bert_narrowed.dims() == fused_emb.dims() {
+                                    let scale = 0.5f32;
+                                    let scaled_bert = bert_narrowed.broadcast_mul(
+                                        &Tensor::full(scale, bert_narrowed.dims(), &self.device)?,
+                                    )?;
+                                    fused_emb = fused_emb.broadcast_add(&scaled_bert)?;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(ref hubert_proj) = hubert_proj_result {
+                        let hubert_frames = hubert_proj.dims()[1];
+                        if hubert_frames > 0 {
+                            let hubert_aligned = if hubert_frames >= seq_len {
+                                hubert_proj.narrow(1, 0, seq_len)?
                             } else {
-                                bert_proj.clone()
+                                let last_frame = hubert_proj.narrow(1, hubert_frames - 1, 1)?;
+                                let mut frames = vec![hubert_proj.clone()];
+                                for _ in 0..(seq_len - hubert_frames) {
+                                    frames.push(last_frame.clone());
+                                }
+                                Tensor::cat(&frames, 1).unwrap_or_else(|_| hubert_proj.clone())
                             };
-                            if bert_narrowed.dims() == fused_emb.dims() {
-                                let scale = 0.5f32;
-                                let scaled_bert = bert_narrowed.broadcast_mul(&Tensor::full(scale, bert_narrowed.dims(), &self.device)?)?;
-                                fused_emb = fused_emb.broadcast_add(&scaled_bert)?;
+                            if hubert_aligned.dims() == fused_emb.dims() {
+                                let scale = 0.3f32;
+                                let scaled_hubert = hubert_aligned.broadcast_mul(&Tensor::full(
+                                    scale,
+                                    hubert_aligned.dims(),
+                                    &self.device,
+                                )?)?;
+                                fused_emb = fused_emb.broadcast_add(&scaled_hubert)?;
                             }
                         }
                     }
-                }
-                if let Some(ref hubert_proj) = hubert_proj_result {
-                    let hubert_frames = hubert_proj.dims()[1];
-                    if hubert_frames > 0 {
-                        let hubert_aligned = if hubert_frames >= seq_len {
-                            hubert_proj.narrow(1, 0, seq_len)?
-                        } else {
-                            let last_frame = hubert_proj.narrow(1, hubert_frames - 1, 1)?;
-                            let mut frames = vec![hubert_proj.clone()];
-                            for _ in 0..(seq_len - hubert_frames) {
-                                frames.push(last_frame.clone());
-                            }
-                            Tensor::cat(&frames, 1).unwrap_or_else(|_| hubert_proj.clone())
-                        };
-                        if hubert_aligned.dims() == fused_emb.dims() {
-                            let scale = 0.3f32;
-                            let scaled_hubert = hubert_aligned.broadcast_mul(&Tensor::full(scale, hubert_aligned.dims(), &self.device)?)?;
-                            fused_emb = fused_emb.broadcast_add(&scaled_hubert)?;
-                        }
-                    }
-                }
-                fused_emb
-            };
+                    fused_emb
+                };
 
             // Forward pass through transformer
             let hidden = self.transformer.forward_from_embedding(&fused_emb)?;
 
             // Project to vocab
             let last_hidden = hidden.narrow(1, seq_len - 1, 1)?.squeeze(0)?;
-            let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?;
+            let logits = last_hidden
+                .matmul(&self.ar_predict_layer.t()?)?
+                .squeeze(0)?;
 
             // Sample next token (no prompt tokens for generate_with_features path)
-            let (next_token, _argmax) = Self::sample_token(&logits, top_k, top_p, temperature, repetition_penalty, &[], &generated_tokens)?;
+            let (next_token, _argmax) = Self::sample_token(
+                &logits,
+                top_k,
+                top_p,
+                temperature,
+                repetition_penalty,
+                &[],
+                &generated_tokens,
+            )?;
 
             // Check for end-of-sequence token
             let audio_vocab_size = self.ar_predict_layer.dims()[0];
@@ -622,8 +699,16 @@ impl GPTModel {
         max_tokens: usize,
     ) -> Result<Vec<usize>> {
         self.generate_with_prompts_inner(
-            phoneme_ids, prompt_tokens, bert_features, None, word2ph,
-            top_k, top_p, temperature, repetition_penalty, max_tokens,
+            phoneme_ids,
+            prompt_tokens,
+            bert_features,
+            None,
+            word2ph,
+            top_k,
+            top_p,
+            temperature,
+            repetition_penalty,
+            max_tokens,
         )
     }
 
@@ -642,8 +727,16 @@ impl GPTModel {
         max_tokens: usize,
     ) -> Result<Vec<usize>> {
         self.generate_with_prompts_inner(
-            phoneme_ids, prompt_tokens, None, pre_aligned_bert, &[],
-            top_k, top_p, temperature, repetition_penalty, max_tokens,
+            phoneme_ids,
+            prompt_tokens,
+            None,
+            pre_aligned_bert,
+            &[],
+            top_k,
+            top_p,
+            temperature,
+            repetition_penalty,
+            max_tokens,
         )
     }
 
@@ -697,20 +790,29 @@ impl GPTModel {
 
         let mut kv_cache = KvCacheManager::new(self.num_layers);
         let prefill_out = self.transformer.forward_from_embedding_kv(
-            &prefill_input, Some(&hybrid_mask), &mut kv_cache
+            &prefill_input,
+            Some(&hybrid_mask),
+            &mut kv_cache,
         )?;
 
         // Get logits from the last prefill position
         let last_hidden = prefill_out.narrow(1, total_prefill - 1, 1)?.squeeze(0)?;
-        let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?;
+        let logits = last_hidden
+            .matmul(&self.ar_predict_layer.t()?)?
+            .squeeze(0)?;
 
         let mut generated_tokens: Vec<usize> = Vec::new();
 
         // First token sampling from prefill logits (step 0 — always mask EOS)
         let logits_for_sampling = logits.narrow(0, 0, audio_vocab_size - 1)?;
         let (next_token, _argmax) = Self::sample_token(
-            &logits_for_sampling, top_k, top_p, temperature, repetition_penalty,
-            prompt_tokens, &generated_tokens,
+            &logits_for_sampling,
+            top_k,
+            top_p,
+            temperature,
+            repetition_penalty,
+            prompt_tokens,
+            &generated_tokens,
         )?;
         if next_token >= audio_vocab_size - 1 {
             return Ok(generated_tokens);
@@ -726,20 +828,32 @@ impl GPTModel {
             let new_pos = self.add_sine_positional_at(&new_emb, audio_pe_pos)?;
 
             // Single-token forward: new token attends to ALL cached K/V (no mask needed)
-            let hidden = self.transformer.forward_from_embedding_kv(
-                &new_pos, None, &mut kv_cache
-            )?;
+            let hidden =
+                self.transformer
+                    .forward_from_embedding_kv(&new_pos, None, &mut kv_cache)?;
 
-            let logits = hidden.squeeze(0)?.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?;
+            let logits = hidden
+                .squeeze(0)?
+                .matmul(&self.ar_predict_layer.t()?)?
+                .squeeze(0)?;
 
             let is_eos_masked = step < 11;
-            let effective_vocab = if is_eos_masked { audio_vocab_size - 1 } else { audio_vocab_size };
+            let effective_vocab = if is_eos_masked {
+                audio_vocab_size - 1
+            } else {
+                audio_vocab_size
+            };
             let logits_for_sampling = logits.narrow(0, 0, effective_vocab)?;
 
             // sample_token returns (sampled, argmax) from a single D2H transfer
             let (next_token, argmax) = Self::sample_token(
-                &logits_for_sampling, top_k, top_p, temperature, repetition_penalty,
-                prompt_tokens, &generated_tokens,
+                &logits_for_sampling,
+                top_k,
+                top_p,
+                temperature,
+                repetition_penalty,
+                prompt_tokens,
+                &generated_tokens,
             )?;
 
             let argmax_eos = !is_eos_masked && argmax == audio_vocab_size - 1;
@@ -750,7 +864,10 @@ impl GPTModel {
             generated_tokens.push(next_token);
         }
 
-        tracing::info!("[GPT kv] Total generated tokens: {}", generated_tokens.len());
+        tracing::info!(
+            "[GPT kv] Total generated tokens: {}",
+            generated_tokens.len()
+        );
         Ok(generated_tokens)
     }
 
@@ -770,7 +887,7 @@ impl GPTModel {
         temperature: f32,
         repetition_penalty: f32,
         max_new_tokens: usize,
-        max_kv_len: usize,  // max total KV sequence length (prefill + generated)
+        max_kv_len: usize, // max total KV sequence length (prefill + generated)
     ) -> Result<Vec<usize>> {
         let audio_vocab_size = self.ar_predict_layer.dims()[0];
         let text_seq = phoneme_ids.len();
@@ -809,7 +926,9 @@ impl GPTModel {
         let hybrid_mask = self.create_hybrid_mask(text_seq, total_prefill)?;
         let mut dyn_kv = KvCacheManager::new(self.num_layers);
         let prefill_out = self.transformer.forward_from_embedding_kv(
-            &prefill_input, Some(&hybrid_mask), &mut dyn_kv,
+            &prefill_input,
+            Some(&hybrid_mask),
+            &mut dyn_kv,
         )?;
 
         // ── Convert dynamic KV → static pre-allocated KV ────────────────────────
@@ -818,11 +937,19 @@ impl GPTModel {
 
         // ── First token from prefill logits ─────────────────────────────────────
         let last_hidden = prefill_out.narrow(1, total_prefill - 1, 1)?.squeeze(0)?;
-        let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?;
+        let logits = last_hidden
+            .matmul(&self.ar_predict_layer.t()?)?
+            .squeeze(0)?;
         let logits_for_sampling = logits.narrow(0, 0, audio_vocab_size - 1)?;
         let (next_token, _) = Self::sample_token_with_scratch(
-            &logits_for_sampling, top_k, top_p, temperature, repetition_penalty,
-            prompt_tokens, &[], &mut sampling_scratch,
+            &logits_for_sampling,
+            top_k,
+            top_p,
+            temperature,
+            repetition_penalty,
+            prompt_tokens,
+            &[],
+            &mut sampling_scratch,
         )?;
         if next_token >= audio_vocab_size - 1 {
             return Ok(vec![]);
@@ -837,19 +964,32 @@ impl GPTModel {
             let pe_pos = prompt_seq + generated_tokens.len() - 1;
             let new_pos = self.add_sine_positional_at(&new_emb, pe_pos)?;
 
-            let hidden = self.transformer.forward_from_embedding_static(
-                &new_pos, &mut static_kv,
-            )?;
+            let hidden = self
+                .transformer
+                .forward_from_embedding_static(&new_pos, &mut static_kv)?;
 
-            let logits = hidden.squeeze(0)?.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?;
+            let logits = hidden
+                .squeeze(0)?
+                .matmul(&self.ar_predict_layer.t()?)?
+                .squeeze(0)?;
 
             let is_eos_masked = step < 11;
-            let effective_vocab = if is_eos_masked { audio_vocab_size - 1 } else { audio_vocab_size };
+            let effective_vocab = if is_eos_masked {
+                audio_vocab_size - 1
+            } else {
+                audio_vocab_size
+            };
             let logits_for_sampling = logits.narrow(0, 0, effective_vocab)?;
 
             let (next_token, argmax) = Self::sample_token_with_scratch(
-                &logits_for_sampling, top_k, top_p, temperature, repetition_penalty,
-                prompt_tokens, &generated_tokens, &mut sampling_scratch,
+                &logits_for_sampling,
+                top_k,
+                top_p,
+                temperature,
+                repetition_penalty,
+                prompt_tokens,
+                &generated_tokens,
+                &mut sampling_scratch,
             )?;
 
             let argmax_eos = !is_eos_masked && argmax == audio_vocab_size - 1;
@@ -859,7 +999,10 @@ impl GPTModel {
             generated_tokens.push(next_token);
         }
 
-        tracing::info!("[GPT static-kv] Generated {} tokens", generated_tokens.len());
+        tracing::info!(
+            "[GPT static-kv] Generated {} tokens",
+            generated_tokens.len()
+        );
         Ok(generated_tokens)
     }
 
@@ -898,9 +1041,15 @@ impl GPTModel {
 
             let candle_core::Device::Cuda(cuda_dev) = &self.device else {
                 return self.generate_with_static_kv(
-                    phoneme_ids, prompt_tokens, pre_aligned_bert,
-                    top_k, top_p, temperature, repetition_penalty,
-                    max_new_tokens, max_kv_len,
+                    phoneme_ids,
+                    prompt_tokens,
+                    pre_aligned_bert,
+                    top_k,
+                    top_p,
+                    temperature,
+                    repetition_penalty,
+                    max_new_tokens,
+                    max_kv_len,
                 );
             };
 
@@ -912,9 +1061,15 @@ impl GPTModel {
             // cache for GPU efficiency without the graph launch optimisation.
             if pre_aligned_bert.is_some() {
                 return self.generate_with_static_kv(
-                    phoneme_ids, prompt_tokens, pre_aligned_bert,
-                    top_k, top_p, temperature, repetition_penalty,
-                    max_new_tokens, max_kv_len,
+                    phoneme_ids,
+                    prompt_tokens,
+                    pre_aligned_bert,
+                    top_k,
+                    top_p,
+                    temperature,
+                    repetition_penalty,
+                    max_new_tokens,
+                    max_kv_len,
                 );
             }
 
@@ -943,7 +1098,8 @@ impl GPTModel {
                     pool,
                     driver::sys::CUmemPool_attribute::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD,
                     &threshold as *const u64 as *mut std::ffi::c_void,
-                ).map_err(|e| candle_core::Error::Msg(format!("set pool threshold: {e:?}")))?;
+                )
+                .map_err(|e| candle_core::Error::Msg(format!("set pool threshold: {e:?}")))?;
             }
 
             // ── Prefill (same as static_kv path) ─────────────────────────────────
@@ -954,7 +1110,9 @@ impl GPTModel {
                 let bert_f32 = bert.to_dtype(DType::F32)?;
                 let x_f32 = x_emb.to_dtype(DType::F32)?;
                 (x_f32 + bert_f32)?.to_dtype(self.dtype)?
-            } else { x_emb };
+            } else {
+                x_emb
+            };
             let x_emb = self.add_sine_positional(&x_emb, "text")?;
 
             let prompt_ids: Vec<i64> = prompt_tokens.iter().map(|&x| x as i64).collect();
@@ -966,19 +1124,31 @@ impl GPTModel {
             let hybrid_mask = self.create_hybrid_mask(text_seq, total_prefill)?;
             let mut dyn_kv = KvCacheManager::new(self.num_layers);
             let prefill_out = self.transformer.forward_from_embedding_kv(
-                &prefill_input, Some(&hybrid_mask), &mut dyn_kv,
+                &prefill_input,
+                Some(&hybrid_mask),
+                &mut dyn_kv,
             )?;
             let mut static_kv = StaticKvManager::from_dynamic(dyn_kv, max_kv_len)?;
             let mut sampling_scratch = SamplingScratch::new(audio_vocab_size);
 
             // ── First token ───────────────────────────────────────────────────────
             let last_hidden = prefill_out.narrow(1, total_prefill - 1, 1)?.squeeze(0)?;
-            let first_logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?;
+            let first_logits = last_hidden
+                .matmul(&self.ar_predict_layer.t()?)?
+                .squeeze(0)?;
             let (next_token, _) = Self::sample_token_with_scratch(
                 &first_logits.narrow(0, 0, audio_vocab_size - 1)?,
-                top_k, top_p, temperature, repetition_penalty, prompt_tokens, &[], &mut sampling_scratch,
+                top_k,
+                top_p,
+                temperature,
+                repetition_penalty,
+                prompt_tokens,
+                &[],
+                &mut sampling_scratch,
             )?;
-            if next_token >= audio_vocab_size - 1 { return Ok(vec![]); }
+            if next_token >= audio_vocab_size - 1 {
+                return Ok(vec![]);
+            }
             let mut generated = vec![next_token];
 
             // Acquire the CUDA stream early — needed for raw memcpy helpers below.
@@ -1025,8 +1195,8 @@ impl GPTModel {
             // cuMemcpyHtoDAsync / cuMemcpyDtoDAsync do NOT allocate from the memory pool,
             // so they leave the pool state undisturbed between launches.
             use candle_core::cuda_backend::{
+                cudarc::driver::{result as cudarc_result, DevicePtr},
                 CudaStorageSlice,
-                cudarc::driver::{DevicePtr, result as cudarc_result},
             };
 
             // Helper: get raw CUDA device pointer for a contiguous tensor (at start_offset).
@@ -1039,15 +1209,33 @@ impl GPTModel {
                     candle_core::Storage::Cuda(cs) => {
                         let cstream = cs.device.cuda_stream();
                         let base = match &cs.slice {
-                            CudaStorageSlice::F32(s)  => { let (p, _g) = s.device_ptr(&*cstream); p }
-                            CudaStorageSlice::F16(s)  => { let (p, _g) = s.device_ptr(&*cstream); p }
-                            CudaStorageSlice::BF16(s) => { let (p, _g) = s.device_ptr(&*cstream); p }
-                            CudaStorageSlice::I64(s)  => { let (p, _g) = s.device_ptr(&*cstream); p }
-                            _ => return Err(candle_core::Error::Msg("unsupported dtype in get_cuda_ptr".into())),
+                            CudaStorageSlice::F32(s) => {
+                                let (p, _g) = s.device_ptr(&*cstream);
+                                p
+                            }
+                            CudaStorageSlice::F16(s) => {
+                                let (p, _g) = s.device_ptr(&*cstream);
+                                p
+                            }
+                            CudaStorageSlice::BF16(s) => {
+                                let (p, _g) = s.device_ptr(&*cstream);
+                                p
+                            }
+                            CudaStorageSlice::I64(s) => {
+                                let (p, _g) = s.device_ptr(&*cstream);
+                                p
+                            }
+                            _ => {
+                                return Err(candle_core::Error::Msg(
+                                    "unsupported dtype in get_cuda_ptr".into(),
+                                ))
+                            }
                         };
                         Ok(base + (start * esize) as u64)
                     }
-                    _ => Err(candle_core::Error::Msg("tensor is not on CUDA device".into())),
+                    _ => Err(candle_core::Error::Msg(
+                        "tensor is not on CUDA device".into(),
+                    )),
                 }
             };
 
@@ -1055,7 +1243,8 @@ impl GPTModel {
 
             // Precompute audio embedding weights on CPU for pool-free input updates.
             // D2H copy is done once here; each decode step uses a CPU-side emb+PE computation.
-            let audio_emb_cpu: Vec<f32> = self.audio_embedding
+            let audio_emb_cpu: Vec<f32> = self
+                .audio_embedding
                 .to_dtype(DType::F32)?
                 .flatten_all()?
                 .to_vec1()?;
@@ -1079,32 +1268,37 @@ impl GPTModel {
                 let pos = pe_pos as f64;
                 for i in 0..half_dim {
                     let v = pos * div_term[i];
-                    combined[2 * i]     += audio_alpha * v.sin() as f32;
+                    combined[2 * i] += audio_alpha * v.sin() as f32;
                     combined[2 * i + 1] += audio_alpha * v.cos() as f32;
                 }
                 if input_buf.dtype() != DType::F32 {
                     return Err(candle_core::Error::Msg(
-                        "CUDA graph raw update only supports F32 models".into()
+                        "CUDA graph raw update only supports F32 models".into(),
                     ));
                 }
                 unsafe {
-                    cudarc_result::memcpy_htod_async(input_buf_ptr, combined.as_slice(), raw_stream)
-                        .map_err(|e| candle_core::Error::Msg(format!("htod input_buf: {e:?}")))?;
+                    cudarc_result::memcpy_htod_async(
+                        input_buf_ptr,
+                        combined.as_slice(),
+                        raw_stream,
+                    )
+                    .map_err(|e| candle_core::Error::Msg(format!("htod input_buf: {e:?}")))?;
                 }
                 Ok(())
             };
 
             // Update pos_idx: H2D copy of [new_pos; n_elements] — zero pool allocations.
-            let update_pos_idx_raw = |pos_idx: &Tensor, new_pos: usize| -> candle_core::Result<()> {
-                let n = pos_idx.elem_count();
-                let vals: Vec<i64> = vec![new_pos as i64; n];
-                let ptr = get_cuda_ptr(pos_idx)?;
-                unsafe {
-                    cudarc_result::memcpy_htod_async(ptr, vals.as_slice(), raw_stream)
-                        .map_err(|e| candle_core::Error::Msg(format!("htod pos_idx: {e:?}")))?;
-                }
-                Ok(())
-            };
+            let update_pos_idx_raw =
+                |pos_idx: &Tensor, new_pos: usize| -> candle_core::Result<()> {
+                    let n = pos_idx.elem_count();
+                    let vals: Vec<i64> = vec![new_pos as i64; n];
+                    let ptr = get_cuda_ptr(pos_idx)?;
+                    unsafe {
+                        cudarc_result::memcpy_htod_async(ptr, vals.as_slice(), raw_stream)
+                            .map_err(|e| candle_core::Error::Msg(format!("htod pos_idx: {e:?}")))?;
+                    }
+                    Ok(())
+                };
 
             // Update mask: H2D write zero-bytes at strided positions for `cache_len` in all heads.
             // mask_buf is [1, n_heads, 1, max_kv_len] C-contiguous.
@@ -1120,23 +1314,29 @@ impl GPTModel {
                             mask_buf_ptr + byte_off,
                             &zero[..nbytes],
                             raw_stream,
-                        ).map_err(|e| candle_core::Error::Msg(format!("htod mask h={h}: {e:?}")))?;
+                        )
+                        .map_err(|e| candle_core::Error::Msg(format!("htod mask h={h}: {e:?}")))?;
                     }
                 }
                 Ok(())
             };
 
-
             // ── Eager decode step for warmup (uses static KV's append(), not graphable) ──
-            let eager_step = |gen: &Vec<usize>, static_kv: &mut StaticKvManager| -> Result<Tensor> {
-                let prev = *gen.last().unwrap();
-                let ids = Tensor::new(&[prev as i64], &self.device)?.unsqueeze(0)?;
-                let emb = self.lookup_tokens(&self.audio_embedding, &ids, 1)?;
-                let pe_pos = prompt_seq + gen.len() - 1;
-                let pos_emb = self.add_sine_positional_at(&emb, pe_pos)?;
-                let hidden = self.transformer.forward_from_embedding_static(&pos_emb, static_kv)?;
-                Ok(hidden.squeeze(0)?.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?)
-            };
+            let eager_step =
+                |gen: &Vec<usize>, static_kv: &mut StaticKvManager| -> Result<Tensor> {
+                    let prev = *gen.last().unwrap();
+                    let ids = Tensor::new(&[prev as i64], &self.device)?.unsqueeze(0)?;
+                    let emb = self.lookup_tokens(&self.audio_embedding, &ids, 1)?;
+                    let pe_pos = prompt_seq + gen.len() - 1;
+                    let pos_emb = self.add_sine_positional_at(&emb, pe_pos)?;
+                    let hidden = self
+                        .transformer
+                        .forward_from_embedding_static(&pos_emb, static_kv)?;
+                    Ok(hidden
+                        .squeeze(0)?
+                        .matmul(&self.ar_predict_layer.t()?)?
+                        .squeeze(0)?)
+                };
 
             // ── Warmup: 3 eager steps to prime the allocator pool ─────────────────
             // Also unmask each new KV position in attn_mask_buf: warmup steps write to
@@ -1144,21 +1344,37 @@ impl GPTModel {
             // graph's attention must see those positions as valid (0.0) on replay.
             const WARMUP: usize = 3;
             for step in 1..=WARMUP {
-                if generated.len() >= max_new_tokens { break; }
+                if generated.len() >= max_new_tokens {
+                    break;
+                }
                 let pos_before = static_kv.len(); // position this step will write to
                 let logits = eager_step(&generated, &mut static_kv)?;
                 // Unmask the position that eager_step just appended (uses H2D async on same stream)
                 update_mask_raw(pos_before)?;
                 let is_eos = step < 11;
-                let ev = if is_eos { audio_vocab_size - 1 } else { audio_vocab_size };
+                let ev = if is_eos {
+                    audio_vocab_size - 1
+                } else {
+                    audio_vocab_size
+                };
                 let (tok, ag) = Self::sample_token_with_scratch(
-                    &logits.narrow(0, 0, ev)?, top_k, top_p, temperature, repetition_penalty,
-                    prompt_tokens, &generated, &mut sampling_scratch,
+                    &logits.narrow(0, 0, ev)?,
+                    top_k,
+                    top_p,
+                    temperature,
+                    repetition_penalty,
+                    prompt_tokens,
+                    &generated,
+                    &mut sampling_scratch,
                 )?;
-                if tok >= audio_vocab_size - 1 || (!is_eos && ag == audio_vocab_size - 1) { break; }
+                if tok >= audio_vocab_size - 1 || (!is_eos && ag == audio_vocab_size - 1) {
+                    break;
+                }
                 generated.push(tok);
             }
-            if generated.len() >= max_new_tokens { return Ok(generated); }
+            if generated.len() >= max_new_tokens {
+                return Ok(generated);
+            }
 
             self.device.synchronize()?;
 
@@ -1174,7 +1390,8 @@ impl GPTModel {
             }
             update_mask_raw(cache_len_before_capture)?;
             // Flush all H2D copies before capture begins
-            stream.synchronize()
+            stream
+                .synchronize()
                 .map_err(|e| candle_core::Error::Msg(format!("sync before capture: {e:?}")))?;
 
             // Trim the memory pool: release all free-listed blocks (e.g. from BERT prefill
@@ -1186,8 +1403,10 @@ impl GPTModel {
                 use candle_core::cuda_backend::cudarc::driver;
                 let cu_device = driver::result::device::get(0)
                     .map_err(|e| candle_core::Error::Msg(format!("cu_device get (trim): {e:?}")))?;
-                let pool = driver::result::device::get_default_mem_pool(cu_device)
-                    .map_err(|e| candle_core::Error::Msg(format!("get_default_mem_pool (trim): {e:?}")))?;
+                let pool =
+                    driver::result::device::get_default_mem_pool(cu_device).map_err(|e| {
+                        candle_core::Error::Msg(format!("get_default_mem_pool (trim): {e:?}"))
+                    })?;
                 driver::result::mem_pool::trim_to(pool, 0)
                     .map_err(|e| candle_core::Error::Msg(format!("cuMemPoolTrimTo: {e:?}")))?;
                 // Re-set threshold to never-release AFTER trim so graph-managed allocs
@@ -1197,14 +1416,18 @@ impl GPTModel {
                     pool,
                     driver::sys::CUmemPool_attribute::CU_MEMPOOL_ATTR_RELEASE_THRESHOLD,
                     &threshold as *const u64 as *mut std::ffi::c_void,
-                ).map_err(|e| candle_core::Error::Msg(format!("set pool threshold (post-trim): {e:?}")))?;
+                )
+                .map_err(|e| {
+                    candle_core::Error::Msg(format!("set pool threshold (post-trim): {e:?}"))
+                })?;
             }
 
             // ── CUDA graph capture ────────────────────────────────────────────────
             use candle_core::cuda_backend::cudarc::driver::sys::{
-                CUstreamCaptureMode, CUgraphInstantiate_flags,
+                CUgraphInstantiate_flags, CUstreamCaptureMode,
             };
-            stream.begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED)
+            stream
+                .begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED)
                 .map_err(|e| candle_core::Error::Msg(format!("begin_capture: {e:?}")))?;
 
             // The graph captures: scatter-based decode + logits projection +
@@ -1213,7 +1436,8 @@ impl GPTModel {
             // become valid after graph.launch(). logits_tmp MUST be dropped before end_capture
             // so its free_async is also captured (graph owns the full alloc/free lifecycle).
             {
-                let logits_tmp = self.transformer
+                let logits_tmp = self
+                    .transformer
                     .forward_from_embedding_graphable(&input_buf, &static_kv, &attn_mask_buf)?
                     .squeeze(0)?
                     .matmul(&self.ar_predict_layer.t()?)?
@@ -1229,16 +1453,28 @@ impl GPTModel {
 
             let Some(graph) = graph_opt else {
                 tracing::warn!("[GPT cuda-graph] empty graph; falling back to static-kv");
-                static_kv.step();  // account for the decode_step we ran above
+                static_kv.step(); // account for the decode_step we ran above
                 for step in generated.len()..max_new_tokens {
                     let logits = eager_step(&generated, &mut static_kv)?;
                     let is_eos = step < 11;
-                    let ev = if is_eos { audio_vocab_size - 1 } else { audio_vocab_size };
+                    let ev = if is_eos {
+                        audio_vocab_size - 1
+                    } else {
+                        audio_vocab_size
+                    };
                     let (tok, ag) = Self::sample_token_with_scratch(
-                        &logits.narrow(0, 0, ev)?, top_k, top_p, temperature, repetition_penalty,
-                        prompt_tokens, &generated, &mut sampling_scratch,
+                        &logits.narrow(0, 0, ev)?,
+                        top_k,
+                        top_p,
+                        temperature,
+                        repetition_penalty,
+                        prompt_tokens,
+                        &generated,
+                        &mut sampling_scratch,
                     )?;
-                    if tok >= audio_vocab_size - 1 || (!is_eos && ag == audio_vocab_size - 1) { break; }
+                    if tok >= audio_vocab_size - 1 || (!is_eos && ag == audio_vocab_size - 1) {
+                        break;
+                    }
                     generated.push(tok);
                 }
                 return Ok(generated);
@@ -1246,18 +1482,29 @@ impl GPTModel {
 
             // Graph capture only RECORDS operations — they were NOT executed.
             // Launch now to execute the captured decode step and populate logits_out.
-            graph.launch()
+            graph
+                .launch()
                 .map_err(|e| candle_core::Error::Msg(format!("graph launch (first): {e:?}")))?;
-            stream.synchronize()
+            stream
+                .synchronize()
                 .map_err(|e| candle_core::Error::Msg(format!("stream sync (first): {e:?}")))?;
             static_kv.step();
             {
                 let step = generated.len();
                 let is_eos = step < 11;
-                let ev = if is_eos { audio_vocab_size - 1 } else { audio_vocab_size };
+                let ev = if is_eos {
+                    audio_vocab_size - 1
+                } else {
+                    audio_vocab_size
+                };
                 let (tok, ag) = Self::sample_token_with_scratch(
                     &logits_out.narrow(0, 0, ev)?,
-                    top_k, top_p, temperature, repetition_penalty, prompt_tokens, &generated,
+                    top_k,
+                    top_p,
+                    temperature,
+                    repetition_penalty,
+                    prompt_tokens,
+                    &generated,
                     &mut sampling_scratch,
                 )?;
                 if tok >= audio_vocab_size - 1 || (!is_eos && ag == audio_vocab_size - 1) {
@@ -1267,7 +1514,10 @@ impl GPTModel {
                 generated.push(tok);
             }
 
-            tracing::info!("[GPT cuda-graph] Graph captured ({} warmup + 1 capture steps); replaying", WARMUP);
+            tracing::info!(
+                "[GPT cuda-graph] Graph captured ({} warmup + 1 capture steps); replaying",
+                WARMUP
+            );
 
             // ── Graph replay loop ─────────────────────────────────────────────────
             for step in generated.len()..max_new_tokens {
@@ -1278,7 +1528,9 @@ impl GPTModel {
 
                 // 2. Update pos_idx (H2D copy, zero pool allocations)
                 let cur_len = static_kv.len();
-                tracing::debug!("[GPT cuda-graph] step {step}: cur_len={cur_len} max_kv_len={max_kv_len}");
+                tracing::debug!(
+                    "[GPT cuda-graph] step {step}: cur_len={cur_len} max_kv_len={max_kv_len}"
+                );
                 if cur_len >= max_kv_len {
                     tracing::warn!("[GPT cuda-graph] KV cache overflow: cur_len={cur_len} >= max_kv_len={max_kv_len}, stopping");
                     break;
@@ -1293,35 +1545,57 @@ impl GPTModel {
                 // 5. Launch graph (replays all 16 layers of attention + FFN + logits proj)
                 // No explicit sync needed: H2D copies and graph launch are on the same stream,
                 // so CUDA guarantees the copies complete before the graph kernel reads.
-                graph.launch()
-                    .map_err(|e| candle_core::Error::Msg(format!("graph launch step {step}: {e:?}")))?;
+                graph.launch().map_err(|e| {
+                    candle_core::Error::Msg(format!("graph launch step {step}: {e:?}"))
+                })?;
                 // Sync stream before D2H copy so logits_out is fully written.
-                stream.synchronize()
-                    .map_err(|e| candle_core::Error::Msg(format!("stream sync step {step}: {e:?}")))?;
+                stream.synchronize().map_err(|e| {
+                    candle_core::Error::Msg(format!("stream sync step {step}: {e:?}"))
+                })?;
 
                 static_kv.step();
 
                 // 6. Sample (D2H; logits_out is stable pre-allocated buffer written by graph)
                 let is_eos = step < 11;
-                let ev = if is_eos { audio_vocab_size - 1 } else { audio_vocab_size };
+                let ev = if is_eos {
+                    audio_vocab_size - 1
+                } else {
+                    audio_vocab_size
+                };
                 let (tok, ag) = Self::sample_token_with_scratch(
                     &logits_out.narrow(0, 0, ev)?,
-                    top_k, top_p, temperature, repetition_penalty, prompt_tokens, &generated,
+                    top_k,
+                    top_p,
+                    temperature,
+                    repetition_penalty,
+                    prompt_tokens,
+                    &generated,
                     &mut sampling_scratch,
                 )?;
-                if tok >= audio_vocab_size - 1 || (!is_eos && ag == audio_vocab_size - 1) { break; }
+                if tok >= audio_vocab_size - 1 || (!is_eos && ag == audio_vocab_size - 1) {
+                    break;
+                }
                 generated.push(tok);
             }
 
-            tracing::info!("[GPT cuda-graph] Generated {} tokens total", generated.len());
+            tracing::info!(
+                "[GPT cuda-graph] Generated {} tokens total",
+                generated.len()
+            );
             Ok(generated)
         }
         #[cfg(not(feature = "cuda"))]
         {
             self.generate_with_static_kv(
-                phoneme_ids, prompt_tokens, pre_aligned_bert,
-                top_k, top_p, temperature, repetition_penalty,
-                max_new_tokens, max_kv_len,
+                phoneme_ids,
+                prompt_tokens,
+                pre_aligned_bert,
+                top_k,
+                top_p,
+                temperature,
+                repetition_penalty,
+                max_new_tokens,
+                max_kv_len,
             )
         }
     }
@@ -1331,7 +1605,7 @@ impl GPTModel {
         phoneme_ids: &[usize],
         prompt_tokens: &[usize],
         bert_features: Option<&Tensor>,
-        pre_aligned_bert: Option<&Tensor>,  // [1, all_phones, 512] — bypasses projection+alignment
+        pre_aligned_bert: Option<&Tensor>, // [1, all_phones, 512] — bypasses projection+alignment
         word2ph: &[usize],
         top_k: usize,
         top_p: f32,
@@ -1364,7 +1638,7 @@ impl GPTModel {
         } else if let (Some(bert), Some((proj_w, proj_b))) = (bert_features, &self.bert_proj) {
             let bert_dims = bert.dims();
             let bert_reshaped = if bert_dims.len() == 3 && bert_dims[1] == 1024 {
-                bert.transpose(1, 2)?  // [batch, 1024, seq] -> [batch, seq, 1024]
+                bert.transpose(1, 2)? // [batch, 1024, seq] -> [batch, seq, 1024]
             } else {
                 bert.clone()
             };
@@ -1372,7 +1646,8 @@ impl GPTModel {
             if last_dim == Some(1024) {
                 let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
                 let projected = bert_reshaped.matmul(&proj_w_3d)?;
-                let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
+                let projected =
+                    projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
                 let target_seq = x_emb.dims()[1];
                 let aligned = self.align_bert_to_phonemes(&projected, target_seq, word2ph)?;
                 x_emb.broadcast_add(&aligned)?
@@ -1403,15 +1678,23 @@ impl GPTModel {
 
             // Use hybrid mask: text bidirectional + text blocked from audio + audio causal
             let mask = self.create_hybrid_mask(text_seq, total_seq)?;
-            let hidden = self.transformer.forward_all_layers_with_mask(&xy_pos, &mask)?;
+            let hidden = self
+                .transformer
+                .forward_all_layers_with_mask(&xy_pos, &mask)?;
 
             // Project last position to vocab
             let last_hidden = hidden.narrow(1, total_seq - 1, 1)?.squeeze(0)?;
-            let logits = last_hidden.matmul(&self.ar_predict_layer.t()?)?.squeeze(0)?;
+            let logits = last_hidden
+                .matmul(&self.ar_predict_layer.t()?)?
+                .squeeze(0)?;
 
             // For first 11 steps, mask out EOS logit
             let is_eos_masked = step < 11;
-            let effective_vocab_size = if is_eos_masked { audio_vocab_size - 1 } else { audio_vocab_size };
+            let effective_vocab_size = if is_eos_masked {
+                audio_vocab_size - 1
+            } else {
+                audio_vocab_size
+            };
             let logits_for_sampling = if is_eos_masked {
                 logits.narrow(0, 0, effective_vocab_size)?
             } else {
@@ -1419,7 +1702,15 @@ impl GPTModel {
             };
 
             // sample_token returns (sampled, argmax) from a single D2H transfer
-            let (next_token, argmax) = Self::sample_token(&logits_for_sampling, top_k, top_p, temperature, repetition_penalty, prompt_tokens, &generated_tokens)?;
+            let (next_token, argmax) = Self::sample_token(
+                &logits_for_sampling,
+                top_k,
+                top_p,
+                temperature,
+                repetition_penalty,
+                prompt_tokens,
+                &generated_tokens,
+            )?;
 
             // Python stop condition: argmax(logits_for_sampling) == EOS OR sampled == EOS
             let argmax_eos = !is_eos_masked && argmax == audio_vocab_size - 1;
@@ -1451,11 +1742,13 @@ impl GPTModel {
     /// before concatenating them for joint GPT conditioning.
     pub fn project_and_align_bert(
         &self,
-        bert_raw: &Tensor,  // [1, seq_with_cls_sep, 1024]
+        bert_raw: &Tensor, // [1, seq_with_cls_sep, 1024]
         word2ph: &[usize],
         n_phones: usize,
     ) -> Result<Tensor> {
-        let (proj_w, proj_b) = self.bert_proj.as_ref()
+        let (proj_w, proj_b) = self
+            .bert_proj
+            .as_ref()
             .ok_or_else(|| Error::ModelLoadError("bert_proj not loaded".to_string()))?;
 
         let bert = if bert_raw.dims().len() == 3 && bert_raw.dims()[1] == 1024 {
@@ -1483,7 +1776,12 @@ impl GPTModel {
     /// * `projected` - BERT projected features [1, bert_seq, hidden] (including CLS/SEP)
     /// * `target_seq` - Target phoneme sequence length
     /// * `word2ph` - Per-character phoneme counts from G2P (empty → use nearest-neighbor)
-    fn align_bert_to_phonemes(&self, projected: &Tensor, target_seq: usize, word2ph: &[usize]) -> Result<Tensor> {
+    fn align_bert_to_phonemes(
+        &self,
+        projected: &Tensor,
+        target_seq: usize,
+        word2ph: &[usize],
+    ) -> Result<Tensor> {
         let bert_full_len = projected.dims()[1];
 
         // Strip CLS (index 0) and SEP (last index)
@@ -1510,8 +1808,11 @@ impl GPTModel {
                 }
                 return Tensor::cat(&frames, 1).map_err(|e| e.into());
             } else {
-                tracing::debug!("word2ph sum={} != target_seq={}, falling back to nearest-neighbor",
-                    total_phonemes, target_seq);
+                tracing::debug!(
+                    "word2ph sum={} != target_seq={}, falling back to nearest-neighbor",
+                    total_phonemes,
+                    target_seq
+                );
             }
         }
 
@@ -1552,7 +1853,11 @@ impl GPTModel {
             }
         }
 
-        Ok(Tensor::from_vec(mask, (total_seq, total_seq), &self.device)?)
+        Ok(Tensor::from_vec(
+            mask,
+            (total_seq, total_seq),
+            &self.device,
+        )?)
     }
 
     /// Lookup token embeddings for a tensor of token IDs.
@@ -1562,16 +1867,19 @@ impl GPTModel {
         let orig_dims = ids.dims().to_vec();
         let hidden = embedding.dims()[1];
         // index_select (used internally by Tensor::embedding) requires 1D ids
-        let ids_flat = ids.flatten_all()
+        let ids_flat = ids
+            .flatten_all()
             .map_err(|e| crate::Error::InferenceError(e.to_string()))?
             .to_dtype(candle_core::DType::U32)
             .map_err(|e| crate::Error::InferenceError(e.to_string()))?;
-        let flat_emb = embedding.embedding(&ids_flat)
+        let flat_emb = embedding
+            .embedding(&ids_flat)
             .map_err(|e| crate::Error::InferenceError(e.to_string()))?;
         // Restore original batch/seq dims: [batch*seq, hidden] → [batch, seq, hidden]
         let mut out_dims = orig_dims;
         out_dims.push(hidden);
-        flat_emb.reshape(out_dims)
+        flat_emb
+            .reshape(out_dims)
             .map_err(|e| crate::Error::InferenceError(e.to_string()))
     }
 
@@ -1587,7 +1895,12 @@ impl GPTModel {
     }
 
     /// Add sinusoidal positional encoding with explicit alpha
-    fn add_sine_positional_with_alpha(&self, x: &Tensor, start_pos: usize, kind: &str) -> Result<Tensor> {
+    fn add_sine_positional_with_alpha(
+        &self,
+        x: &Tensor,
+        start_pos: usize,
+        kind: &str,
+    ) -> Result<Tensor> {
         let dims = x.dims();
         let seq = dims[1];
         let hidden = dims[2];
@@ -1614,8 +1927,10 @@ impl GPTModel {
         }
 
         // output = x + alpha * pe  (cast pe to match x dtype for FP16 compatibility)
-        let pe_tensor = Tensor::from_vec(pe, (1, seq, hidden), &self.device)?.to_dtype(x.dtype())?;
-        let scaled_pe = pe_tensor.broadcast_mul(&Tensor::full(alpha, x.dims(), &self.device)?.to_dtype(x.dtype())?)?;
+        let pe_tensor =
+            Tensor::from_vec(pe, (1, seq, hidden), &self.device)?.to_dtype(x.dtype())?;
+        let scaled_pe = pe_tensor
+            .broadcast_mul(&Tensor::full(alpha, x.dims(), &self.device)?.to_dtype(x.dtype())?)?;
         Ok(x.broadcast_add(&scaled_pe)?)
     }
 
@@ -1689,14 +2004,15 @@ impl GPTModel {
         let x_emb = if let (Some(bert), Some((proj_w, proj_b))) = (bert_features, &self.bert_proj) {
             let bert_dims = bert.dims();
             let bert_reshaped = if bert_dims.len() == 3 && bert_dims[1] == 1024 {
-                bert.transpose(1, 2)?  // [batch, 1024, seq] -> [batch, seq, 1024]
+                bert.transpose(1, 2)? // [batch, 1024, seq] -> [batch, seq, 1024]
             } else {
                 bert.clone()
             };
             if bert_reshaped.dims().last().copied() == Some(1024) {
                 let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
                 let projected = bert_reshaped.matmul(&proj_w_3d)?;
-                let projected = projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
+                let projected =
+                    projected.broadcast_add(&proj_b.reshape((1, 1, proj_b.dims()[0]))?)?;
                 // Align BERT features: strip CLS/SEP, expand via word2ph to phoneme seq length
                 let text_seq = x_emb.dims()[1];
                 let aligned = self.align_bert_to_phonemes(&projected, text_seq, &[])?;
@@ -1730,7 +2046,8 @@ impl GPTModel {
 
         // Flatten and return as Vec<f32>
         let flat = hidden.flatten_all()?;
-        flat.to_vec1().map_err(|e| crate::Error::InferenceError(e.to_string()))
+        flat.to_vec1()
+            .map_err(|e| crate::Error::InferenceError(e.to_string()))
     }
 
     /// Get a reference to the ar_predict_layer for debugging
@@ -1752,7 +2069,11 @@ impl GPTModel {
 
     /// Run first transformer layer and return debug intermediates:
     /// (attn_out, norm1_out, linear1_out, relu_out, final_out)
-    pub fn debug_layer0_intermediates(&self, xy_pos: &Tensor, mask: &Tensor) -> Result<(Tensor, Tensor, Tensor, Tensor, Tensor)> {
+    pub fn debug_layer0_intermediates(
+        &self,
+        xy_pos: &Tensor,
+        mask: &Tensor,
+    ) -> Result<(Tensor, Tensor, Tensor, Tensor, Tensor)> {
         self.transformer.forward_first_layer_debug(xy_pos, mask)
     }
 

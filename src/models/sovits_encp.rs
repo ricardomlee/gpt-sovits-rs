@@ -3,9 +3,9 @@
 //! EncP processes semantic tokens and text features to produce
 //! parameters for the flow model.
 
-use candle_core::{Device, DType, Tensor, Module};
+use crate::utils::{LayerNorm, StateDict};
 use crate::Result;
-use crate::utils::{StateDict, LayerNorm};
+use candle_core::{DType, Device, Module, Tensor};
 
 /// Text Encoder layer with self-attention
 #[derive(Debug, Clone)]
@@ -17,7 +17,14 @@ pub struct EncoderLayer {
 }
 
 impl EncoderLayer {
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, layer_idx: usize, n_heads: usize, dtype: DType) -> Result<Self> {
+    pub fn load(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+        layer_idx: usize,
+        n_heads: usize,
+        dtype: DType,
+    ) -> Result<Self> {
         // Model uses format: enc_p.encoder_ssl.attn_layers.0.conv_q.weight
         let self_attn = SelfAttention::load(state_dict, prefix, device, layer_idx, n_heads, dtype)?;
 
@@ -26,12 +33,24 @@ impl EncoderLayer {
 
         // Layer norms - keep F32 for numerical stability
         let norm1 = LayerNorm::new(
-            state_dict.get(&format!("{}.norm_layers_1.{}.gamma", prefix, layer_idx))?.to_device(device)?.to_dtype(DType::F32)?,
-            state_dict.get(&format!("{}.norm_layers_1.{}.beta", prefix, layer_idx))?.to_device(device)?.to_dtype(DType::F32)?,
+            state_dict
+                .get(&format!("{}.norm_layers_1.{}.gamma", prefix, layer_idx))?
+                .to_device(device)?
+                .to_dtype(DType::F32)?,
+            state_dict
+                .get(&format!("{}.norm_layers_1.{}.beta", prefix, layer_idx))?
+                .to_device(device)?
+                .to_dtype(DType::F32)?,
         );
         let norm2 = LayerNorm::new(
-            state_dict.get(&format!("{}.norm_layers_2.{}.gamma", prefix, layer_idx))?.to_device(device)?.to_dtype(DType::F32)?,
-            state_dict.get(&format!("{}.norm_layers_2.{}.beta", prefix, layer_idx))?.to_device(device)?.to_dtype(DType::F32)?,
+            state_dict
+                .get(&format!("{}.norm_layers_2.{}.gamma", prefix, layer_idx))?
+                .to_device(device)?
+                .to_dtype(DType::F32)?,
+            state_dict
+                .get(&format!("{}.norm_layers_2.{}.beta", prefix, layer_idx))?
+                .to_device(device)?
+                .to_dtype(DType::F32)?,
         );
 
         Ok(Self {
@@ -72,31 +91,72 @@ pub struct SelfAttention {
 }
 
 impl SelfAttention {
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, layer_idx: usize, _n_heads: usize, dtype: DType) -> Result<Self> {
-        let conv_q = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_q", prefix, layer_idx), device, dtype)?;
-        let conv_k = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_k", prefix, layer_idx), device, dtype)?;
-        let conv_v = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_v", prefix, layer_idx), device, dtype)?;
-        let conv_o = load_conv1d(state_dict, &format!("{}.attn_layers.{}.conv_o", prefix, layer_idx), device, dtype)?;
+    pub fn load(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+        layer_idx: usize,
+        _n_heads: usize,
+        dtype: DType,
+    ) -> Result<Self> {
+        let conv_q = load_conv1d(
+            state_dict,
+            &format!("{}.attn_layers.{}.conv_q", prefix, layer_idx),
+            device,
+            dtype,
+        )?;
+        let conv_k = load_conv1d(
+            state_dict,
+            &format!("{}.attn_layers.{}.conv_k", prefix, layer_idx),
+            device,
+            dtype,
+        )?;
+        let conv_v = load_conv1d(
+            state_dict,
+            &format!("{}.attn_layers.{}.conv_v", prefix, layer_idx),
+            device,
+            dtype,
+        )?;
+        let conv_o = load_conv1d(
+            state_dict,
+            &format!("{}.attn_layers.{}.conv_o", prefix, layer_idx),
+            device,
+            dtype,
+        )?;
 
         let hidden = conv_q.weight().dims()[0];
         // Derive head_dim from emb_rel_k shape [n_heads_rel, window_size, head_dim]
-        let head_dim = if let Ok(emb) = state_dict.get(&format!("{}.attn_layers.{}.emb_rel_k", prefix, layer_idx)) {
+        let head_dim = if let Ok(emb) =
+            state_dict.get(&format!("{}.attn_layers.{}.emb_rel_k", prefix, layer_idx))
+        {
             emb.dims()[2]
         } else {
-            hidden / 2  // fallback: assume 2 heads (model default)
+            hidden / 2 // fallback: assume 2 heads (model default)
         };
         let n_heads = hidden / head_dim;
 
-        let emb_rel_k = if state_dict.contains(&format!("{}.attn_layers.{}.emb_rel_k", prefix, layer_idx)) {
-            Some(state_dict.get(&format!("{}.attn_layers.{}.emb_rel_k", prefix, layer_idx))?.to_device(device)?.to_dtype(dtype)?)
-        } else {
-            None
-        };
-        let emb_rel_v = if state_dict.contains(&format!("{}.attn_layers.{}.emb_rel_v", prefix, layer_idx)) {
-            Some(state_dict.get(&format!("{}.attn_layers.{}.emb_rel_v", prefix, layer_idx))?.to_device(device)?.to_dtype(dtype)?)
-        } else {
-            None
-        };
+        let emb_rel_k =
+            if state_dict.contains(&format!("{}.attn_layers.{}.emb_rel_k", prefix, layer_idx)) {
+                Some(
+                    state_dict
+                        .get(&format!("{}.attn_layers.{}.emb_rel_k", prefix, layer_idx))?
+                        .to_device(device)?
+                        .to_dtype(dtype)?,
+                )
+            } else {
+                None
+            };
+        let emb_rel_v =
+            if state_dict.contains(&format!("{}.attn_layers.{}.emb_rel_v", prefix, layer_idx)) {
+                Some(
+                    state_dict
+                        .get(&format!("{}.attn_layers.{}.emb_rel_v", prefix, layer_idx))?
+                        .to_device(device)?
+                        .to_dtype(dtype)?,
+                )
+            } else {
+                None
+            };
 
         Ok(Self {
             conv_q,
@@ -121,9 +181,15 @@ impl SelfAttention {
 
         // Reshape: [batch, n_heads*head_dim, T] → [batch, n_heads, T, head_dim]
         // Python: q.view(b, n_heads, k_ch, T).transpose(2, 3)
-        let q = q.reshape((batch, self.n_heads, self.head_dim, seq_len))?.transpose(2, 3)?;
-        let k = k.reshape((batch, self.n_heads, self.head_dim, seq_len))?.transpose(2, 3)?;
-        let v = v.reshape((batch, self.n_heads, self.head_dim, seq_len))?.transpose(2, 3)?;
+        let q = q
+            .reshape((batch, self.n_heads, self.head_dim, seq_len))?
+            .transpose(2, 3)?;
+        let k = k
+            .reshape((batch, self.n_heads, self.head_dim, seq_len))?
+            .transpose(2, 3)?;
+        let v = v
+            .reshape((batch, self.n_heads, self.head_dim, seq_len))?
+            .transpose(2, 3)?;
         // All: [batch, n_heads, seq_len, head_dim]
 
         // Scale q: Python scales q BEFORE content and relative key matmuls
@@ -138,8 +204,8 @@ impl SelfAttention {
         if let Some(emb_rel_k) = &self.emb_rel_k {
             let key_rel_emb = Self::get_relative_embeddings(emb_rel_k, seq_len)?;
             // key_rel_emb: [1, 2T-1, d]. Expand across heads: [1, n_heads, d, 2T-1]
-            let kre_t = key_rel_emb.transpose(1, 2)?;  // [1, d, 2T-1]
-            // repeat for each head: [n_heads, d, 2T-1] → unsqueeze → [1, n_heads, d, 2T-1]
+            let kre_t = key_rel_emb.transpose(1, 2)?; // [1, d, 2T-1]
+                                                      // repeat for each head: [n_heads, d, 2T-1] → unsqueeze → [1, n_heads, d, 2T-1]
             let kre_t_exp = kre_t.repeat(vec![self.n_heads, 1, 1])?.unsqueeze(0)?;
             // q_scaled [b, n_h, T, d] × [1, n_h, d, 2T-1] → [b, n_h, T, 2T-1]
             let rel_logits = q_scaled.matmul(&kre_t_exp)?;
@@ -150,16 +216,18 @@ impl SelfAttention {
         // Apply attention mask: masked_fill(mask == 0, -1e4)
         // x_mask: [batch, 1, T]; expand to [batch, n_heads, T, T] masking key positions
         let mask_2d = x_mask.squeeze(1)?;
-        let mask_4d = mask_2d.unsqueeze(1)?.unsqueeze(2)?;  // [b, 1, 1, T] (key dim)
+        let mask_4d = mask_2d.unsqueeze(1)?.unsqueeze(2)?; // [b, 1, 1, T] (key dim)
         let mask_bc = mask_4d.broadcast_as(scores.dims())?;
         let ones = Tensor::ones(mask_bc.dims(), scores.dtype(), x.device())?;
         let inv_mask = ones.sub(&mask_bc)?.broadcast_mul(
-            &Tensor::full(-1e4f32, mask_bc.dims(), x.device())?.to_dtype(scores.dtype())?
+            &Tensor::full(-1e4f32, mask_bc.dims(), x.device())?.to_dtype(scores.dtype())?,
         )?;
         scores = scores.broadcast_mul(&mask_bc)?.add(&inv_mask)?;
 
-        let attn_probs = candle_nn::ops::softmax(&scores.to_dtype(DType::F32)?, candle_core::D::Minus1)?.to_dtype(scores.dtype())?;
-        let mut attn_out = attn_probs.matmul(&v)?;  // [b, n_heads, T, head_dim]
+        let attn_probs =
+            candle_nn::ops::softmax(&scores.to_dtype(DType::F32)?, candle_core::D::Minus1)?
+                .to_dtype(scores.dtype())?;
+        let mut attn_out = attn_probs.matmul(&v)?; // [b, n_heads, T, head_dim]
 
         // Relative value attention
         if let Some(emb_rel_v) = &self.emb_rel_v {
@@ -173,7 +241,10 @@ impl SelfAttention {
         }
 
         // Reshape back: [b, n_heads, T, head_dim] → [b, channels, T]
-        let attn_out = attn_out.transpose(2, 3)?.contiguous()?.reshape((batch, channels, seq_len))?;
+        let attn_out = attn_out
+            .transpose(2, 3)?
+            .contiguous()?
+            .reshape((batch, channels, seq_len))?;
         Ok(self.conv_o.forward(&attn_out)?)
     }
 
@@ -185,8 +256,16 @@ impl SelfAttention {
         let k_ch = emb.dims()[2];
         let device = emb.device();
 
-        let pad_length = if length > window_size + 1 { length - window_size - 1 } else { 0 };
-        let slice_start = if window_size + 1 > length { window_size + 1 - length } else { 0 };
+        let pad_length = if length > window_size + 1 {
+            length - window_size - 1
+        } else {
+            0
+        };
+        let slice_start = if window_size + 1 > length {
+            window_size + 1 - length
+        } else {
+            0
+        };
         let slice_end = slice_start + 2 * length - 1;
 
         // Pad emb on dim 1 with zeros on both sides
@@ -236,24 +315,48 @@ pub struct FeedForward {
 }
 
 impl FeedForward {
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, layer_idx: usize, dtype: DType) -> Result<Self> {
-        let conv_1 = load_conv1d(state_dict, &format!("{}.ffn_layers.{}.conv_1", prefix, layer_idx), device, dtype)?;
-        let conv_2 = load_conv1d(state_dict, &format!("{}.ffn_layers.{}.conv_2", prefix, layer_idx), device, dtype)?;
+    pub fn load(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+        layer_idx: usize,
+        dtype: DType,
+    ) -> Result<Self> {
+        let conv_1 = load_conv1d(
+            state_dict,
+            &format!("{}.ffn_layers.{}.conv_1", prefix, layer_idx),
+            device,
+            dtype,
+        )?;
+        let conv_2 = load_conv1d(
+            state_dict,
+            &format!("{}.ffn_layers.{}.conv_2", prefix, layer_idx),
+            device,
+            dtype,
+        )?;
 
         Ok(Self { conv_1, conv_2 })
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let x = self.conv_1.forward(x)?;
-        let x = x.relu()?;  // Python FFN default activation is ReLU (not GELU)
+        let x = x.relu()?; // Python FFN default activation is ReLU (not GELU)
         Ok(self.conv_2.forward(&x)?)
     }
 }
 
-fn load_conv1d(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<candle_nn::Conv1d> {
-    let weight = state_dict.get(&format!("{}.weight", prefix))?
-        .to_device(device)?.to_dtype(dtype)?;
-    let bias = state_dict.get(&format!("{}.bias", prefix))
+fn load_conv1d(
+    state_dict: &StateDict,
+    prefix: &str,
+    device: &Device,
+    dtype: DType,
+) -> Result<candle_nn::Conv1d> {
+    let weight = state_dict
+        .get(&format!("{}.weight", prefix))?
+        .to_device(device)?
+        .to_dtype(dtype)?;
+    let bias = state_dict
+        .get(&format!("{}.bias", prefix))
         .ok()
         .cloned()
         .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
@@ -290,7 +393,13 @@ struct MultiHeadAttention {
 }
 
 impl MultiHeadAttention {
-    fn load(state_dict: &StateDict, prefix: &str, device: &Device, n_heads: usize, dtype: DType) -> Result<Self> {
+    fn load(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+        n_heads: usize,
+        dtype: DType,
+    ) -> Result<Self> {
         let conv_q = load_conv1d(state_dict, &format!("{}.conv_q", prefix), device, dtype)?;
         let conv_k = load_conv1d(state_dict, &format!("{}.conv_k", prefix), device, dtype)?;
         let conv_v = load_conv1d(state_dict, &format!("{}.conv_v", prefix), device, dtype)?;
@@ -300,7 +409,10 @@ impl MultiHeadAttention {
         let k_channels = channels / n_heads;
 
         Ok(Self {
-            conv_q, conv_k, conv_v, conv_o,
+            conv_q,
+            conv_k,
+            conv_v,
+            conv_o,
             n_heads,
             k_channels,
         })
@@ -331,7 +443,12 @@ impl MultiHeadAttention {
         // Scaled dot-product attention: Q @ K^T
         let k_t = k_heads.transpose(2, 3)?; // [batch, n_heads, k_ch, seq_k]
         let scores_raw = q_heads.matmul(&k_t)?; // [batch, n_heads, seq_q, seq_k]
-        let scale = Tensor::full((k_ch as f32).sqrt().recip(), scores_raw.dims(), scores_raw.device())?.to_dtype(scores_raw.dtype())?;
+        let scale = Tensor::full(
+            (k_ch as f32).sqrt().recip(),
+            scores_raw.dims(),
+            scores_raw.device(),
+        )?
+        .to_dtype(scores_raw.dtype())?;
         let scores = scores_raw.broadcast_mul(&scale)?;
 
         // Apply mask: scores * mask + (1 - mask) * (-1e9)
@@ -340,16 +457,21 @@ impl MultiHeadAttention {
         let dims = scores.dims();
         let ones = Tensor::ones(dims, scores.dtype(), scores.device())?;
         let neg_inf = ones.broadcast_sub(&mask_bc)?.broadcast_mul(
-            &Tensor::full(-1e9f32, dims, scores.device())?.to_dtype(scores.dtype())?
+            &Tensor::full(-1e9f32, dims, scores.device())?.to_dtype(scores.dtype())?,
         )?;
         let masked_scores = scores.broadcast_mul(&mask_bc)?.add(&neg_inf)?;
 
         // Softmax over last dimension (seq_k)
-        let attn_probs = candle_nn::ops::softmax(&masked_scores.to_dtype(DType::F32)?, candle_core::D::Minus1)?.to_dtype(masked_scores.dtype())?;
+        let attn_probs =
+            candle_nn::ops::softmax(&masked_scores.to_dtype(DType::F32)?, candle_core::D::Minus1)?
+                .to_dtype(masked_scores.dtype())?;
 
         // Attention output: attn_probs @ V, then transpose+reshape back to [batch, channels, seq_q]
         let attn_out = attn_probs.matmul(&v_heads)?; // [batch, n_heads, seq_q, k_ch]
-        let attn_out = attn_out.transpose(2, 3)?.contiguous()?.reshape((batch, channels, seq_q))?;
+        let attn_out = attn_out
+            .transpose(2, 3)?
+            .contiguous()?
+            .reshape((batch, channels, seq_q))?;
 
         // Output projection
         Ok(self.conv_o.forward(&attn_out)?)
@@ -366,30 +488,57 @@ pub struct MRTE {
 }
 
 impl MRTE {
-    pub fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
+    pub fn load(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
         let c_pre = if state_dict.contains(&format!("{}.c_pre.weight", prefix)) {
-            Some(load_conv1d(state_dict, &format!("{}.c_pre", prefix), device, dtype)?)
+            Some(load_conv1d(
+                state_dict,
+                &format!("{}.c_pre", prefix),
+                device,
+                dtype,
+            )?)
         } else {
             None
         };
 
         let c_post = if state_dict.contains(&format!("{}.c_post.weight", prefix)) {
-            Some(load_conv1d(state_dict, &format!("{}.c_post", prefix), device, dtype)?)
+            Some(load_conv1d(
+                state_dict,
+                &format!("{}.c_post", prefix),
+                device,
+                dtype,
+            )?)
         } else {
             None
         };
 
         let text_pre = if state_dict.contains(&format!("{}.text_pre.weight", prefix)) {
-            Some(load_conv1d(state_dict, &format!("{}.text_pre", prefix), device, dtype)?)
+            Some(load_conv1d(
+                state_dict,
+                &format!("{}.text_pre", prefix),
+                device,
+                dtype,
+            )?)
         } else {
             None
         };
 
-        let cross_attention = if state_dict.contains(&format!("{}.cross_attention.conv_q.weight", prefix)) {
-            Some(MultiHeadAttention::load(state_dict, &format!("{}.cross_attention", prefix), device, 4, dtype)?)
-        } else {
-            None
-        };
+        let cross_attention =
+            if state_dict.contains(&format!("{}.cross_attention.conv_q.weight", prefix)) {
+                Some(MultiHeadAttention::load(
+                    state_dict,
+                    &format!("{}.cross_attention", prefix),
+                    device,
+                    4,
+                    dtype,
+                )?)
+            } else {
+                None
+            };
 
         Ok(Self {
             c_pre,
@@ -463,10 +612,18 @@ impl MRTE {
 }
 
 #[allow(dead_code)]
-fn load_linear(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<candle_nn::Linear> {
-    let weight = state_dict.get(&format!("{}.weight", prefix))?
-        .to_device(device)?.to_dtype(dtype)?;
-    let bias = state_dict.get(&format!("{}.bias", prefix))
+fn load_linear(
+    state_dict: &StateDict,
+    prefix: &str,
+    device: &Device,
+    dtype: DType,
+) -> Result<candle_nn::Linear> {
+    let weight = state_dict
+        .get(&format!("{}.weight", prefix))?
+        .to_device(device)?
+        .to_dtype(dtype)?;
+    let bias = state_dict
+        .get(&format!("{}.bias", prefix))
         .ok()
         .cloned()
         .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
@@ -490,11 +647,21 @@ pub struct EncP {
 
 impl EncP {
     /// Load EncP from SoVITS state dict
-    pub fn load(state_dict: &StateDict, device: &Device, _hidden_channels: usize, n_layers: usize, out_channels: usize, dtype: DType) -> Result<Self> {
+    pub fn load(
+        state_dict: &StateDict,
+        device: &Device,
+        _hidden_channels: usize,
+        n_layers: usize,
+        out_channels: usize,
+        dtype: DType,
+    ) -> Result<Self> {
         // Load SSL projection: [192, 768, 1]
-        let ssl_proj_weight = state_dict.get("enc_p.ssl_proj.weight")?
-            .to_device(device)?.to_dtype(dtype)?;
-        let ssl_proj_bias = state_dict.get("enc_p.ssl_proj.bias")
+        let ssl_proj_weight = state_dict
+            .get("enc_p.ssl_proj.weight")?
+            .to_device(device)?
+            .to_dtype(dtype)?;
+        let ssl_proj_bias = state_dict
+            .get("enc_p.ssl_proj.bias")
             .ok()
             .cloned()
             .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
@@ -509,11 +676,11 @@ impl EncP {
         };
         let ssl_proj = candle_nn::Conv1d::new(ssl_proj_weight, ssl_proj_bias, ssl_proj_config);
 
-
-
         // Load text embedding
-        let text_embedding = state_dict.get("enc_p.text_embedding.weight")?
-            .to_device(device)?.to_dtype(dtype)?;
+        let text_embedding = state_dict
+            .get("enc_p.text_embedding.weight")?
+            .to_device(device)?
+            .to_dtype(dtype)?;
 
         // Load encoder_ssl layers (model uses 3 layers)
         let mut encoder_ssl = Vec::new();
@@ -553,9 +720,12 @@ impl EncP {
         }
 
         // Load output projection: [out_channels * 2, hidden_channels, 1]
-        let proj_weight = state_dict.get("enc_p.proj.weight")?
-            .to_device(device)?.to_dtype(dtype)?;
-        let proj_bias = state_dict.get("enc_p.proj.bias")
+        let proj_weight = state_dict
+            .get("enc_p.proj.weight")?
+            .to_device(device)?
+            .to_dtype(dtype)?;
+        let proj_bias = state_dict
+            .get("enc_p.proj.bias")
             .ok()
             .cloned()
             .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
@@ -596,11 +766,15 @@ impl EncP {
 
         // Create mask for quantized — cast to match quantized dtype (F16 in FP16 mode)
         let y_max_len = quantized.dims()[2] as i64;
-        let y_mask = self.sequence_mask(y_lengths, y_max_len, device)?.to_dtype(quantized.dtype())?;
+        let y_mask = self
+            .sequence_mask(y_lengths, y_max_len, device)?
+            .to_dtype(quantized.dtype())?;
         let y_mask_expanded = y_mask.unsqueeze(1)?;
 
         // SSL projection: matches Python y = self.ssl_proj(y * y_mask) * y_mask
-        let mut y = self.ssl_proj.forward(&quantized.broadcast_mul(&y_mask_expanded)?)?;
+        let mut y = self
+            .ssl_proj
+            .forward(&quantized.broadcast_mul(&y_mask_expanded)?)?;
         y = y.broadcast_mul(&y_mask_expanded)?;
 
         // Create text mask — cast to match embedding dtype
@@ -627,7 +801,13 @@ impl EncP {
 
         // MRTE fusion (if available)
         if let Some(mrte) = &self.mrte {
-            y = mrte.forward(&y, &y_mask_expanded, &text_emb, &text_mask_expanded, Some(ge))?;
+            y = mrte.forward(
+                &y,
+                &y_mask_expanded,
+                &text_emb,
+                &text_mask_expanded,
+                Some(ge),
+            )?;
         } else {
             // Simple fusion: project ge to 192 channels and add
             let ge_192 = if ge.dims()[1] == y.dims()[1] {
@@ -671,7 +851,11 @@ impl EncP {
             }
         }
 
-        Ok(Tensor::from_vec(mask, (batch_size, max_len as usize), device)?)
+        Ok(Tensor::from_vec(
+            mask,
+            (batch_size, max_len as usize),
+            device,
+        )?)
     }
 
     fn lookup_embeddings(&self, text: &Tensor) -> Result<Tensor> {

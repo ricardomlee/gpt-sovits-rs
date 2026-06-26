@@ -3,7 +3,7 @@
 //! Utilities for loading and converting model weights from safetensors format
 
 use candle_core::{DType, Device, Tensor, D};
-use safetensors::{SafeTensors, tensor::Dtype};
+use safetensors::{tensor::Dtype, SafeTensors};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
@@ -49,12 +49,10 @@ pub fn load_safetensors<P: AsRef<Path>>(path: P) -> Result<HashMap<String, Tenso
             }
         };
 
-        let tensor = Tensor::from_raw_buffer(
-            view.data(),
-            dtype,
-            view.shape(),
-            &device,
-        ).map_err(|e| Error::ModelLoadError(format!("Failed to create tensor {}: {}", name, e)))?;
+        let tensor =
+            Tensor::from_raw_buffer(view.data(), dtype, view.shape(), &device).map_err(|e| {
+                Error::ModelLoadError(format!("Failed to create tensor {}: {}", name, e))
+            })?;
 
         weights.insert(name.to_string(), tensor);
     }
@@ -100,15 +98,15 @@ impl StateDict {
     }
 
     pub fn get(&self, key: &str) -> Result<&Tensor> {
-        self.data.get(key).ok_or_else(|| {
-            Error::ModelLoadError(format!("Key '{}' not found in state dict", key))
-        })
+        self.data
+            .get(key)
+            .ok_or_else(|| Error::ModelLoadError(format!("Key '{}' not found in state dict", key)))
     }
 
     pub fn remove(&mut self, key: &str) -> Result<Tensor> {
-        self.data.remove(key).ok_or_else(|| {
-            Error::ModelLoadError(format!("Key '{}' not found in state dict", key))
-        })
+        self.data
+            .remove(key)
+            .ok_or_else(|| Error::ModelLoadError(format!("Key '{}' not found in state dict", key)))
     }
 
     pub fn contains(&self, key: &str) -> bool {
@@ -130,9 +128,9 @@ impl StateDict {
     /// Get a tensor and reshape it
     pub fn get_reshaped(&self, key: &str, shape: &[usize]) -> Result<Tensor> {
         let tensor = self.get(key)?;
-        tensor.reshape(shape).map_err(|e| {
-            Error::ModelLoadError(format!("Failed to reshape {}: {}", key, e))
-        })
+        tensor
+            .reshape(shape)
+            .map_err(|e| Error::ModelLoadError(format!("Failed to reshape {}: {}", key, e)))
     }
 
     /// Get embedding weights
@@ -172,7 +170,9 @@ impl StateDict {
         // Calculate padding to maintain sequence length: padding = (kernel_size - 1) / 2
         let padding = (kernel_size - 1) / 2;
 
-        Ok(Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)?)
+        Ok(Conv1dWeightNorm::new_with_cached(
+            weight_g, weight_v, bias, 1, padding, 1,
+        )?)
     }
 
     /// Get internal HashMap for VarBuilder
@@ -234,7 +234,8 @@ impl Embedding {
                 msg: "Embedding input must be 1D or 2D".to_string(),
                 expected: Shape::from(&[1usize]),
                 got: Shape::from(input.dims()),
-            }.into())
+            }
+            .into())
         }
     }
 
@@ -343,9 +344,9 @@ impl LayerNorm {
         let is_middle_dim = rank >= 3 && input_dims[1] == norm_dim;
 
         let dim = if is_last_dim {
-            candle_core::D::Minus1  // Transformer format
+            candle_core::D::Minus1 // Transformer format
         } else if is_middle_dim {
-            candle_core::D::Minus2  // SoVITS format
+            candle_core::D::Minus2 // SoVITS format
         } else {
             // Fallback: try last dimension (standard PyTorch behavior)
             candle_core::D::Minus1
@@ -366,13 +367,19 @@ impl LayerNorm {
         // Apply weight and bias with proper shape
         let mut shape = vec![1; rank];
         if is_last_dim {
-            shape[rank - 1] = norm_dim;  // Transformer: [1, 1, channels]
+            shape[rank - 1] = norm_dim; // Transformer: [1, 1, channels]
         } else {
-            shape[1] = norm_dim;  // SoVITS: [1, channels, 1]
+            shape[1] = norm_dim; // SoVITS: [1, channels, 1]
         }
 
-        let weight = self.weight.to_device(&input.device())?.to_dtype(normalized.dtype())?;
-        let bias = self.bias.to_device(&input.device())?.to_dtype(normalized.dtype())?;
+        let weight = self
+            .weight
+            .to_device(&input.device())?
+            .to_dtype(normalized.dtype())?;
+        let bias = self
+            .bias
+            .to_device(&input.device())?
+            .to_dtype(normalized.dtype())?;
         let weight_reshaped = weight.reshape(&*shape)?;
         let bias_reshaped = bias.reshape(&*shape)?;
 
@@ -550,8 +557,14 @@ mod tests {
     fn test_state_dict() {
         let device = Device::Cpu;
         let mut data = HashMap::new();
-        data.insert("layer.weight".to_string(), Tensor::ones((10, 5), DType::F32, &device).unwrap());
-        data.insert("layer.bias".to_string(), Tensor::zeros(5, DType::F32, &device).unwrap());
+        data.insert(
+            "layer.weight".to_string(),
+            Tensor::ones((10, 5), DType::F32, &device).unwrap(),
+        );
+        data.insert(
+            "layer.bias".to_string(),
+            Tensor::zeros(5, DType::F32, &device).unwrap(),
+        );
 
         let sd = StateDict::new(data);
         assert!(sd.contains("layer.weight"));

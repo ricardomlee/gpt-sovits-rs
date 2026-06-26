@@ -7,28 +7,28 @@ pub mod bert_candle;
 pub mod bigvgan;
 pub mod gpt;
 pub mod hubert;
-pub mod wav2vec2;
 pub mod mrte;
+pub mod semantic_tokenizer;
 pub mod sovits;
+pub mod sovits_decoder;
 pub mod sovits_encp;
 pub mod sovits_encq;
 pub mod sovits_flow;
-pub mod sovits_decoder;
 pub mod sovits_ref_enc;
 pub mod transformer;
-pub mod semantic_tokenizer;
+pub mod wav2vec2;
 
 pub use bert::BertModel;
 pub use bert_candle::BertCandleModel;
 pub use bigvgan::BigVGAN;
 pub use gpt::GPTModel;
 pub use hubert::HubertModel;
-pub use wav2vec2::Wav2Vec2Model;
 pub use mrte::MRTE;
+pub use semantic_tokenizer::SemanticTokenizer;
 pub use sovits::SoVITSModel;
 pub use sovits_encq::EncQ;
-pub use transformer::{Transformer, TransformerConfig, TransformerBlock, MultiHeadAttention};
-pub use semantic_tokenizer::SemanticTokenizer;
+pub use transformer::{MultiHeadAttention, Transformer, TransformerBlock, TransformerConfig};
+pub use wav2vec2::Wav2Vec2Model;
 
 use crate::Result;
 

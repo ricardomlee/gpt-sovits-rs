@@ -20,8 +20,8 @@ pub struct SymbolTable {
 impl SymbolTable {
     /// Create a new symbol table matching GPT-SoVITS v2 symbols
     pub fn new() -> Self {
-        let symbols: Vec<String> = serde_json::from_str(SYMBOLS_JSON)
-            .expect("Failed to parse embedded symbols JSON");
+        let symbols: Vec<String> =
+            serde_json::from_str(SYMBOLS_JSON).expect("Failed to parse embedded symbols JSON");
 
         let symbol_to_id: HashMap<String, usize> = symbols
             .iter()

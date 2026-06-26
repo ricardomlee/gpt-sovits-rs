@@ -1,8 +1,8 @@
 //! Benchmark tests for GPT-SoVITS inference
 
+use candle_core::{DType, Device, Tensor};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use gpt_sovits_rs::AudioBuffer;
-use candle_core::{DType, Device, Tensor};
 
 fn audio_benchmark(c: &mut Criterion) {
     // Audio buffer benchmark
@@ -79,22 +79,26 @@ fn feature_fusion_benchmark(c: &mut Criterion) {
     // proj_w: [768, 512] - need to transpose bert to [batch, 768, seq] for matmul
     // Or use [seq, 768] @ [768, 512] = [seq, 512] per sample
     c.bench_function("bert_feature_projection", |b| {
-        let bert = Tensor::randn(0.0f32, 0.1f32, (50, 768), &device).unwrap();  // [seq, 768]
+        let bert = Tensor::randn(0.0f32, 0.1f32, (50, 768), &device).unwrap(); // [seq, 768]
         let proj_w = Tensor::randn(0.0f32, 0.01f32, (768, 512), &device).unwrap();
         let proj_b = Tensor::zeros(512, DType::F32, &device).unwrap();
         b.iter(|| {
-            let projected = bert.matmul(&proj_w).unwrap();  // [seq, 512]
-            let _ = projected.broadcast_add(&proj_b.reshape((1, 512)).unwrap()).unwrap();
+            let projected = bert.matmul(&proj_w).unwrap(); // [seq, 512]
+            let _ = projected
+                .broadcast_add(&proj_b.reshape((1, 512)).unwrap())
+                .unwrap();
         })
     });
 
     c.bench_function("hubert_feature_projection", |b| {
-        let hubert = Tensor::randn(0.0f32, 0.1f32, (10, 768), &device).unwrap();  // [frames, 768]
+        let hubert = Tensor::randn(0.0f32, 0.1f32, (10, 768), &device).unwrap(); // [frames, 768]
         let proj_w = Tensor::randn(0.0f32, 0.01f32, (768, 512), &device).unwrap();
         let proj_b = Tensor::zeros(512, DType::F32, &device).unwrap();
         b.iter(|| {
-            let projected = hubert.matmul(&proj_w).unwrap();  // [frames, 512]
-            let _ = projected.broadcast_add(&proj_b.reshape((1, 512)).unwrap()).unwrap();
+            let projected = hubert.matmul(&proj_w).unwrap(); // [frames, 512]
+            let _ = projected
+                .broadcast_add(&proj_b.reshape((1, 512)).unwrap())
+                .unwrap();
         })
     });
 

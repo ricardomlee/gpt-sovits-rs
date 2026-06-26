@@ -12,10 +12,10 @@
 //! - temporal_avg_pool: mean over time dimension
 //! - output: [batch, 512, 1]
 
+use crate::utils::StateDict;
+use crate::Result;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::ops::softmax;
-use crate::Result;
-use crate::utils::StateDict;
 
 /// Linear layer with Mish activation
 #[derive(Debug, Clone)]
@@ -27,10 +27,14 @@ struct LinearNorm {
 impl LinearNorm {
     fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
         // Python uses `.fc` suffix: spectral.0.fc.weight, spectral.3.fc.weight
-        let weight = state_dict.get(&format!("{}.fc.weight", prefix))?
-            .to_device(device)?.to_dtype(dtype)?;
-        let bias = state_dict.get(&format!("{}.fc.bias", prefix))?
-            .to_device(device)?.to_dtype(dtype)?;
+        let weight = state_dict
+            .get(&format!("{}.fc.weight", prefix))?
+            .to_device(device)?
+            .to_dtype(dtype)?;
+        let bias = state_dict
+            .get(&format!("{}.fc.bias", prefix))?
+            .to_device(device)?
+            .to_dtype(dtype)?;
         Ok(Self { weight, bias })
     }
 
@@ -44,7 +48,9 @@ impl LinearNorm {
         let result = x_2d.matmul(&self.weight.transpose(0, 1)?)?; // [batch*seq, out]
         let result = result.reshape((batch, seq, self.weight.dims()[0]))?; // [batch, seq, out]
         let bias_broadcast = self.bias.reshape((1, 1, self.bias.dims()[0]))?;
-        result.broadcast_add(&bias_broadcast).map_err(|e| crate::Error::InferenceError(e.to_string()))
+        result
+            .broadcast_add(&bias_broadcast)
+            .map_err(|e| crate::Error::InferenceError(e.to_string()))
     }
 }
 
@@ -69,10 +75,14 @@ struct Conv1dGLU {
 impl Conv1dGLU {
     fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
         let conv_prefix = format!("{}.conv1.conv", prefix);
-        let weight = state_dict.get(&format!("{}.weight", conv_prefix))?
-            .to_device(device)?.to_dtype(dtype)?;
-        let bias = state_dict.get(&format!("{}.bias", conv_prefix))?
-            .to_device(device)?.to_dtype(dtype)?;
+        let weight = state_dict
+            .get(&format!("{}.weight", conv_prefix))?
+            .to_device(device)?
+            .to_dtype(dtype)?;
+        let bias = state_dict
+            .get(&format!("{}.bias", conv_prefix))?
+            .to_device(device)?
+            .to_dtype(dtype)?;
         let kernel_size = weight.dims()[2];
         let padding = (kernel_size - 1) / 2;
         Ok(Self {
@@ -86,10 +96,7 @@ impl Conv1dGLU {
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let x = x.to_dtype(self.conv_weight.dtype())?;
         // x: [batch, channels, seq]
-        let conv_out = x.conv1d(
-            &self.conv_weight,
-            self.padding, 1, 1, 1,
-        )?;
+        let conv_out = x.conv1d(&self.conv_weight, self.padding, 1, 1, 1)?;
         // Add bias: [1, out_channels, 1]
         let bias_3d = self.conv_bias.reshape((1, self.conv_bias.dims()[0], 1))?;
         let conv_out = conv_out.broadcast_add(&bias_3d)?;
@@ -118,23 +125,39 @@ struct MultiHeadSelfAttention {
 
 impl MultiHeadSelfAttention {
     fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
-        let w_q = state_dict.get(&format!("{}.w_qs.weight", prefix))?
-            .to_device(device)?.to_dtype(dtype)?;
-        let w_k = state_dict.get(&format!("{}.w_ks.weight", prefix))?
-            .to_device(device)?.to_dtype(dtype)?;
-        let w_v = state_dict.get(&format!("{}.w_vs.weight", prefix))?
-            .to_device(device)?.to_dtype(dtype)?;
-        let fc = state_dict.get(&format!("{}.fc.weight", prefix))?
-            .to_device(device)?.to_dtype(dtype)?;
-        let fc_bias = state_dict.get(&format!("{}.fc.bias", prefix))?
-            .to_device(device)?.to_dtype(dtype)?;
+        let w_q = state_dict
+            .get(&format!("{}.w_qs.weight", prefix))?
+            .to_device(device)?
+            .to_dtype(dtype)?;
+        let w_k = state_dict
+            .get(&format!("{}.w_ks.weight", prefix))?
+            .to_device(device)?
+            .to_dtype(dtype)?;
+        let w_v = state_dict
+            .get(&format!("{}.w_vs.weight", prefix))?
+            .to_device(device)?
+            .to_dtype(dtype)?;
+        let fc = state_dict
+            .get(&format!("{}.fc.weight", prefix))?
+            .to_device(device)?
+            .to_dtype(dtype)?;
+        let fc_bias = state_dict
+            .get(&format!("{}.fc.bias", prefix))?
+            .to_device(device)?
+            .to_dtype(dtype)?;
 
         let hidden_dim = w_q.dims()[0];
         let n_heads = 2;
         let head_dim = hidden_dim / n_heads;
 
         Ok(Self {
-            w_q, w_k, w_v, fc, fc_bias, n_heads, head_dim,
+            w_q,
+            w_k,
+            w_v,
+            fc,
+            fc_bias,
+            n_heads,
+            head_dim,
         })
     }
 
@@ -152,19 +175,30 @@ impl MultiHeadSelfAttention {
         let v = self.linear_2d(&x, &self.w_v)?;
 
         // Reshape: [batch, seq, heads, head_dim] -> [batch, heads, seq, head_dim]
-        let q = q.reshape((batch, seq, self.n_heads, self.head_dim))?.transpose(1, 2)?.contiguous()?;
-        let k = k.reshape((batch, seq, self.n_heads, self.head_dim))?.transpose(1, 2)?.contiguous()?;
-        let v = v.reshape((batch, seq, self.n_heads, self.head_dim))?.transpose(1, 2)?.contiguous()?;
+        let q = q
+            .reshape((batch, seq, self.n_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let k = k
+            .reshape((batch, seq, self.n_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
+        let v = v
+            .reshape((batch, seq, self.n_heads, self.head_dim))?
+            .transpose(1, 2)?
+            .contiguous()?;
 
         // Scaled dot-product attention
         let scale = (self.head_dim as f64).sqrt().recip();
         let k_t = k.transpose(2, 3)?;
-        let scale_t = Tensor::full(scale as f32, &[batch, self.n_heads, seq, seq], q.device())?.to_dtype(q.dtype())?;
+        let scale_t = Tensor::full(scale as f32, &[batch, self.n_heads, seq, seq], q.device())?
+            .to_dtype(q.dtype())?;
         let scores = q.matmul(&k_t)?.broadcast_mul(&scale_t)?;
 
         // Apply mask if provided
         let scores = if let Some(m) = mask {
-            let neg_inf = Tensor::full(-1e9f32, scores.dims(), scores.device())?.to_dtype(scores.dtype())?;
+            let neg_inf =
+                Tensor::full(-1e9f32, scores.dims(), scores.device())?.to_dtype(scores.dtype())?;
             let m_cast = m.to_dtype(scores.dtype())?;
             let m_expanded = m_cast.reshape((batch, 1, seq, seq))?;
             let mask_val = m_expanded.broadcast_mul(&neg_inf)?;
@@ -177,12 +211,16 @@ impl MultiHeadSelfAttention {
         let out = attn.matmul(&v)?; // [batch, heads, seq, head_dim]
 
         // Reshape: [batch, heads, seq, head_dim] -> [batch, seq, hidden]
-        let out = out.transpose(1, 2)?.contiguous()?.reshape((batch, seq, hidden))?;
+        let out = out
+            .transpose(1, 2)?
+            .contiguous()?
+            .reshape((batch, seq, hidden))?;
 
         // Output projection using 2D reshape
         let out = self.linear_2d(&out, &self.fc)?;
         let bias_2d = self.fc_bias.reshape((1, 1, self.fc_bias.dims()[0]))?;
-        out.broadcast_add(&bias_2d).map_err(|e| crate::Error::InferenceError(e.to_string()))
+        out.broadcast_add(&bias_2d)
+            .map_err(|e| crate::Error::InferenceError(e.to_string()))
     }
 
     fn linear_2d(&self, x: &Tensor, weight: &Tensor) -> Result<Tensor> {
@@ -192,7 +230,8 @@ impl MultiHeadSelfAttention {
         let x_2d = x.reshape((d[0] * d[1], d[2]))?;
         let w_t = weight.transpose(0, 1)?;
         let result = x_2d.matmul(&w_t)?;
-        result.reshape((d[0], d[1], weight.dims()[0]))
+        result
+            .reshape((d[0], d[1], weight.dims()[0]))
             .map_err(|e| crate::Error::InferenceError(e.to_string()))
     }
 }
@@ -260,7 +299,7 @@ impl RefEnc {
         let x_attn_input = if mask.dims()[1] == 1 {
             let m_2d = mask.reshape((batch, time))?.to_dtype(x.dtype())?; // [batch, time]
             let m_3d = m_2d.unsqueeze(2)?; // [batch, time, 1]
-            x.broadcast_mul(&m_3d)?  // zeros invalid positions
+            x.broadcast_mul(&m_3d)? // zeros invalid positions
         } else {
             x.clone()
         };
@@ -276,7 +315,9 @@ impl RefEnc {
             None
         };
 
-        let x = self.self_attn.forward(&x_attn_input, slf_attn_mask.as_ref())?;
+        let x = self
+            .self_attn
+            .forward(&x_attn_input, slf_attn_mask.as_ref())?;
 
         // === fc ===
         let x = self.fc.forward(&x)?;
@@ -285,7 +326,7 @@ impl RefEnc {
         // Python: if mask exists, mask_fill padded positions to 0, then sum / count
         // refer_mask is [batch, 1, time] with 1=valid, 0=invalid
         let valid_mask = if mask.dims()[1] == 1 {
-            Some(mask.squeeze(1)?)  // [batch, time], 1=valid
+            Some(mask.squeeze(1)?) // [batch, time], 1=valid
         } else {
             None
         };
@@ -293,7 +334,8 @@ impl RefEnc {
         let w = self.temporal_avg_pool(&x, valid_mask.as_ref())?;
 
         // Return [batch, 512, 1]
-        w.unsqueeze(2).map_err(|e| crate::Error::InferenceError(e.to_string()))
+        w.unsqueeze(2)
+            .map_err(|e| crate::Error::InferenceError(e.to_string()))
     }
 
     fn temporal_avg_pool(&self, x: &Tensor, valid_mask: Option<&Tensor>) -> Result<Tensor> {

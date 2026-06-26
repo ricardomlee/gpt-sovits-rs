@@ -190,9 +190,7 @@ impl TextNormalizer {
             .replace("vs.", "versus ");
 
         // Common Chinese abbreviations
-        result = result
-            .replace("等.", "等等")
-            .replace("例.", "例如");
+        result = result.replace("等.", "等等").replace("例.", "例如");
 
         result
     }

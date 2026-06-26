@@ -2,9 +2,11 @@
 //!
 //! Implementation of transformer encoder-decoder architecture
 
-use candle_core::{Tensor, Device, D, DType};
+use crate::utils::{
+    Embedding, KvCacheManager, LayerNorm, Linear, StateDict, StaticKvLayer, StaticKvManager,
+};
 use crate::Result;
-use crate::utils::{StateDict, Embedding, Linear, LayerNorm, KvCacheManager, StaticKvLayer, StaticKvManager};
+use candle_core::{DType, Device, Tensor, D};
 
 /// Multi-head attention mechanism
 #[derive(Debug, Clone)]
@@ -26,16 +28,41 @@ impl MultiHeadAttention {
         let out_features = q.out_features();
         let head_dim = out_features / n_heads;
         let scale = 1.0 / (head_dim as f64).sqrt();
-        Self { wq: q, wk: k, wv: v, wo: o, w_qkv: None, n_heads, head_dim, scale }
+        Self {
+            wq: q,
+            wk: k,
+            wv: v,
+            wo: o,
+            w_qkv: None,
+            n_heads,
+            head_dim,
+            scale,
+        }
     }
 
     /// Constructor that keeps the fused QKV weight for a single matmul at inference time.
     /// `w_qkv` weight is [3*hidden, hidden], bias is [3*hidden].
-    pub fn new_fused(q: Linear, k: Linear, v: Linear, o: Linear, n_heads: usize, w_qkv: Linear) -> Self {
+    pub fn new_fused(
+        q: Linear,
+        k: Linear,
+        v: Linear,
+        o: Linear,
+        n_heads: usize,
+        w_qkv: Linear,
+    ) -> Self {
         let out_features = q.out_features();
         let head_dim = out_features / n_heads;
         let scale = 1.0 / (head_dim as f64).sqrt();
-        Self { wq: q, wk: k, wv: v, wo: o, w_qkv: Some(w_qkv), n_heads, head_dim, scale }
+        Self {
+            wq: q,
+            wk: k,
+            wv: v,
+            wo: o,
+            w_qkv: Some(w_qkv),
+            n_heads,
+            head_dim,
+            scale,
+        }
     }
 
     /// Compute Q, K, V — uses fused matmul when available, else 3 separate projections.
@@ -48,7 +75,11 @@ impl MultiHeadAttention {
             let v = qkv.narrow(D::Minus1, hidden * 2, hidden)?.contiguous()?;
             Ok((q, k, v))
         } else {
-            Ok((self.wq.forward(x)?, self.wk.forward(x)?, self.wv.forward(x)?))
+            Ok((
+                self.wq.forward(x)?,
+                self.wk.forward(x)?,
+                self.wv.forward(x)?,
+            ))
         }
     }
 
@@ -108,10 +139,11 @@ impl MultiHeadAttention {
 
         // Concatenate heads: [batch, seq_len, hidden_size]
         // Must call contiguous() after transpose since reshape requires contiguous layout
-        let attn_output = attn_output
-            .transpose(1, 2)?
-            .contiguous()?
-            .reshape((batch_size, seq_len, self.n_heads * self.head_dim))?;
+        let attn_output = attn_output.transpose(1, 2)?.contiguous()?.reshape((
+            batch_size,
+            seq_len,
+            self.n_heads * self.head_dim,
+        ))?;
 
         // Output projection
         self.wo.forward(&attn_output)
@@ -197,10 +229,11 @@ impl MultiHeadAttention {
         let attn_output = attn_probs.matmul(&v_contiguous)?;
 
         // Concatenate heads (contiguous needed before reshape after transpose)
-        let attn_output = attn_output
-            .transpose(1, 2)?
-            .contiguous()?
-            .reshape((batch_size, seq_len, self.n_heads * self.head_dim))?;
+        let attn_output = attn_output.transpose(1, 2)?.contiguous()?.reshape((
+            batch_size,
+            seq_len,
+            self.n_heads * self.head_dim,
+        ))?;
 
         // Output projection
         self.wo.forward(&attn_output)
@@ -218,7 +251,7 @@ impl MultiHeadAttention {
         let (batch, seq, _) = x.dims3()?;
 
         let (q, k, v) = self.project_qkv(x)?;
-        let q = self.split_heads(&q, batch, seq)?;  // [1, n_heads, 1, head_dim]
+        let q = self.split_heads(&q, batch, seq)?; // [1, n_heads, 1, head_dim]
         let k = self.split_heads(&k, batch, seq)?;
         let v = self.split_heads(&v, batch, seq)?;
 
@@ -226,7 +259,7 @@ impl MultiHeadAttention {
         // Mask is built AFTER this so the new token's K is included in valid positions.
         static_cache.append(&k, &v)?;
 
-        let k_full = static_cache.k();  // [1, n_heads, max_len, head_dim]
+        let k_full = static_cache.k(); // [1, n_heads, max_len, head_dim]
         let v_full = static_cache.v();
 
         // Q @ K^T: [1, n_heads, 1, max_len] — shape is FIXED regardless of cache length
@@ -243,12 +276,13 @@ impl MultiHeadAttention {
         let attn_weights = attn_weights.add(&mask_exp)?;
 
         let attn_probs = candle_nn::ops::softmax(&attn_weights, D::Minus1)?;
-        let attn_output = attn_probs.contiguous()?.matmul(&v_full.contiguous()?)?;  // [1, n_heads, 1, head_dim]
+        let attn_output = attn_probs.contiguous()?.matmul(&v_full.contiguous()?)?; // [1, n_heads, 1, head_dim]
 
-        let attn_output = attn_output
-            .transpose(1, 2)?
-            .contiguous()?
-            .reshape((batch, seq, self.n_heads * self.head_dim))?;
+        let attn_output = attn_output.transpose(1, 2)?.contiguous()?.reshape((
+            batch,
+            seq,
+            self.n_heads * self.head_dim,
+        ))?;
 
         self.wo.forward(&attn_output)
     }
@@ -265,8 +299,8 @@ impl MultiHeadAttention {
     pub fn forward_kv_graphable(
         &self,
         x: &Tensor,
-        static_cache: &StaticKvLayer,  // immutable: caller updated pos_idx externally
-        attn_mask: &Tensor,            // [1, n_heads, 1, max_len] — pre-expanded, contiguous
+        static_cache: &StaticKvLayer, // immutable: caller updated pos_idx externally
+        attn_mask: &Tensor,           // [1, n_heads, 1, max_len] — pre-expanded, contiguous
     ) -> Result<Tensor> {
         let (batch, seq, _) = x.dims3()?;
 
@@ -305,8 +339,8 @@ impl MultiHeadAttention {
 /// Feed-forward network with SwiGLU activation
 #[derive(Debug, Clone)]
 pub struct FeedForward {
-    linear1: Linear,  // up projection [hidden, intermediate]
-    linear2: Linear,  // down projection [intermediate, hidden]
+    linear1: Linear, // up projection [hidden, intermediate]
+    linear2: Linear, // down projection [intermediate, hidden]
 }
 
 impl FeedForward {
@@ -340,8 +374,18 @@ pub struct TransformerBlock {
 }
 
 impl TransformerBlock {
-    pub fn new(attn: MultiHeadAttention, ff: FeedForward, attn_norm: LayerNorm, ffn_norm: LayerNorm) -> Self {
-        Self { attention: attn, feed_forward: ff, attn_norm, ffn_norm }
+    pub fn new(
+        attn: MultiHeadAttention,
+        ff: FeedForward,
+        attn_norm: LayerNorm,
+        ffn_norm: LayerNorm,
+    ) -> Self {
+        Self {
+            attention: attn,
+            feed_forward: ff,
+            attn_norm,
+            ffn_norm,
+        }
     }
 
     pub fn forward(&self, x: &Tensor, mask: Option<&Tensor>) -> Result<Tensor> {
@@ -386,7 +430,9 @@ impl TransformerBlock {
         static_cache: &StaticKvLayer,
         attn_mask: &Tensor,
     ) -> Result<Tensor> {
-        let attn_output = self.attention.forward_kv_graphable(x, static_cache, attn_mask)?;
+        let attn_output = self
+            .attention
+            .forward_kv_graphable(x, static_cache, attn_mask)?;
         let x = self.attn_norm.forward(&x.add(&attn_output)?)?;
         let ff_output = self.feed_forward.forward(&x)?;
         self.ffn_norm.forward(&x.add(&ff_output)?)
@@ -409,7 +455,11 @@ impl TransformerBlock {
     }
 
     /// Forward debug with Q,K,V projections and attention output exposed
-    pub fn forward_debug_qkv(&self, x: &Tensor, mask: Option<&Tensor>) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
+    pub fn forward_debug_qkv(
+        &self,
+        x: &Tensor,
+        mask: Option<&Tensor>,
+    ) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
         // Post-LN: QKV on raw x
         let q_raw = self.attention.wq.forward(x)?;
         let k_raw = self.attention.wk.forward(x)?;
@@ -464,7 +514,8 @@ impl Transformer {
         let token_embedding = weights.get_embedding("tok_emb.weight")?;
 
         // Create position embeddings
-        let pos_emb = weights.get("pos_emb.weight")?
+        let pos_emb = weights
+            .get("pos_emb.weight")?
             .narrow(0, 0, config.max_seq_len)?
             .to_device(device)?
             .clone();
@@ -483,23 +534,49 @@ impl Transformer {
 
             // Feed-forward network (ReLU)
             let w1 = Linear::new(
-                weights.get(&format!("{}.ffn.w1.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?,
-                weights.get(&format!("{}.ffn.w1.bias", prefix)).ok().and_then(|t| t.to_device(device).ok()).and_then(|t| t.to_dtype(DType::F32).ok())
+                weights
+                    .get(&format!("{}.ffn.w1.weight", prefix))?
+                    .to_device(device)?
+                    .to_dtype(DType::F32)?,
+                weights
+                    .get(&format!("{}.ffn.w1.bias", prefix))
+                    .ok()
+                    .and_then(|t| t.to_device(device).ok())
+                    .and_then(|t| t.to_dtype(DType::F32).ok()),
             );
             let w2 = Linear::new(
-                weights.get(&format!("{}.ffn.w2.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?,
-                weights.get(&format!("{}.ffn.w2.bias", prefix)).ok().and_then(|t| t.to_device(device).ok()).and_then(|t| t.to_dtype(DType::F32).ok())
+                weights
+                    .get(&format!("{}.ffn.w2.weight", prefix))?
+                    .to_device(device)?
+                    .to_dtype(DType::F32)?,
+                weights
+                    .get(&format!("{}.ffn.w2.bias", prefix))
+                    .ok()
+                    .and_then(|t| t.to_device(device).ok())
+                    .and_then(|t| t.to_dtype(DType::F32).ok()),
             );
             let ff = FeedForward::new(w1, w2);
 
             // Layer norms with F32 conversion
             let attn_norm = LayerNorm::new(
-                weights.get(&format!("{}.attn_norm.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?,
-                weights.get(&format!("{}.attn_norm.bias", prefix))?.to_device(device)?.to_dtype(DType::F32)?
+                weights
+                    .get(&format!("{}.attn_norm.weight", prefix))?
+                    .to_device(device)?
+                    .to_dtype(DType::F32)?,
+                weights
+                    .get(&format!("{}.attn_norm.bias", prefix))?
+                    .to_device(device)?
+                    .to_dtype(DType::F32)?,
             );
             let ffn_norm = LayerNorm::new(
-                weights.get(&format!("{}.ffn_norm.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?,
-                weights.get(&format!("{}.ffn_norm.bias", prefix))?.to_device(device)?.to_dtype(DType::F32)?
+                weights
+                    .get(&format!("{}.ffn_norm.weight", prefix))?
+                    .to_device(device)?
+                    .to_dtype(DType::F32)?,
+                weights
+                    .get(&format!("{}.ffn_norm.bias", prefix))?
+                    .to_device(device)?
+                    .to_dtype(DType::F32)?,
             );
 
             let block = TransformerBlock::new(attn, ff, attn_norm, ffn_norm);
@@ -508,14 +585,27 @@ impl Transformer {
 
         // Create final norm with F32 conversion
         let norm = LayerNorm::new(
-            weights.get("norm.weight")?.to_device(device)?.to_dtype(DType::F32)?,
-            weights.get("norm.bias")?.to_device(device)?.to_dtype(DType::F32)?
+            weights
+                .get("norm.weight")?
+                .to_device(device)?
+                .to_dtype(DType::F32)?,
+            weights
+                .get("norm.bias")?
+                .to_device(device)?
+                .to_dtype(DType::F32)?,
         );
 
         // Create output projection with F32 conversion
         let output_projection = Linear::new(
-            weights.get("output.weight")?.to_device(device)?.to_dtype(DType::F32)?,
-            weights.get("output.bias").ok().and_then(|t| t.to_device(device).ok()).and_then(|t| t.to_dtype(DType::F32).ok())
+            weights
+                .get("output.weight")?
+                .to_device(device)?
+                .to_dtype(DType::F32)?,
+            weights
+                .get("output.bias")
+                .ok()
+                .and_then(|t| t.to_device(device).ok())
+                .and_then(|t| t.to_dtype(DType::F32).ok()),
         );
 
         Ok(Self {
@@ -532,7 +622,11 @@ impl Transformer {
     /// Create causal attention mask
     pub fn create_causal_mask(seq_len: usize, device: &Device) -> Result<Tensor> {
         let mask: Vec<f32> = (0..seq_len)
-            .flat_map(|i| (0..seq_len).map(move |j| if i >= j { 1.0f32 } else { 0.0f32 }).collect::<Vec<_>>())
+            .flat_map(|i| {
+                (0..seq_len)
+                    .map(move |j| if i >= j { 1.0f32 } else { 0.0f32 })
+                    .collect::<Vec<_>>()
+            })
             .collect();
         Tensor::from_vec(mask, (seq_len, seq_len), device).map_err(|e| e.into())
     }
@@ -613,9 +707,8 @@ impl Transformer {
                 .enumerate()
                 .map(|(i, p)| (p, i))
                 .collect();
-            indexed_probs.sort_by(|a, b| {
-                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
-            });
+            indexed_probs
+                .sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
             // Apply top-k
             if top_k < indexed_probs.len() && top_k > 0 {
@@ -697,7 +790,12 @@ pub struct TransformerGPTSoVITS {
 }
 
 impl TransformerGPTSoVITS {
-    pub fn new(config: TransformerConfig, weights: &StateDict, device: &Device, dtype: DType) -> Result<Self> {
+    pub fn new(
+        config: TransformerConfig,
+        weights: &StateDict,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
         // Load text embedding with dtype conversion
         let token_embedding_weight = weights
             .get("model.ar_text_embedding.word_embeddings.weight")?
@@ -712,11 +810,13 @@ impl TransformerGPTSoVITS {
 
             // Load fused QKV projection: weight [3*hidden, hidden], bias [3*hidden]
             // Keep the fused weight for a single matmul at inference time.
-            let in_proj_weight = weights.get(&format!("{}.self_attn.in_proj_weight", prefix))?
+            let in_proj_weight = weights
+                .get(&format!("{}.self_attn.in_proj_weight", prefix))?
                 .to_device(device)?
                 .to_dtype(dtype)?
                 .contiguous()?;
-            let in_proj_bias = weights.get(&format!("{}.self_attn.in_proj_bias", prefix))?
+            let in_proj_bias = weights
+                .get(&format!("{}.self_attn.in_proj_bias", prefix))?
                 .to_device(device)?
                 .to_dtype(dtype)?
                 .contiguous()?;
@@ -735,27 +835,34 @@ impl TransformerGPTSoVITS {
             let wv = Linear::new(v_weight, Some(v_bias));
 
             // Load output projection with dtype conversion
-            let wo_weight = weights.get(&format!("{}.self_attn.out_proj.weight", prefix))?
+            let wo_weight = weights
+                .get(&format!("{}.self_attn.out_proj.weight", prefix))?
                 .to_device(device)?
                 .to_dtype(dtype)?;
-            let wo_bias = weights.get(&format!("{}.self_attn.out_proj.bias", prefix))?
+            let wo_bias = weights
+                .get(&format!("{}.self_attn.out_proj.bias", prefix))?
                 .to_device(device)?
                 .to_dtype(dtype)?;
             let wo = Linear::new(wo_weight, Some(wo_bias));
 
-            let attn = MultiHeadAttention::new_fused(wq, wk, wv, wo, config.num_attention_heads, w_qkv);
+            let attn =
+                MultiHeadAttention::new_fused(wq, wk, wv, wo, config.num_attention_heads, w_qkv);
 
             // Load FFN with dtype conversion
-            let linear1_weight = weights.get(&format!("{}.linear1.weight", prefix))?
+            let linear1_weight = weights
+                .get(&format!("{}.linear1.weight", prefix))?
                 .to_device(device)?
                 .to_dtype(dtype)?;
-            let linear1_bias = weights.get(&format!("{}.linear1.bias", prefix))?
+            let linear1_bias = weights
+                .get(&format!("{}.linear1.bias", prefix))?
                 .to_device(device)?
                 .to_dtype(dtype)?;
-            let linear2_weight = weights.get(&format!("{}.linear2.weight", prefix))?
+            let linear2_weight = weights
+                .get(&format!("{}.linear2.weight", prefix))?
                 .to_device(device)?
                 .to_dtype(dtype)?;
-            let linear2_bias = weights.get(&format!("{}.linear2.bias", prefix))?
+            let linear2_bias = weights
+                .get(&format!("{}.linear2.bias", prefix))?
                 .to_device(device)?
                 .to_dtype(dtype)?;
 
@@ -766,12 +873,24 @@ impl TransformerGPTSoVITS {
             let ff = FeedForward::new(w1, w2);
 
             // Load layer norms: keep F32 for numerical stability
-            let attn_norm_weight = weights.get(&format!("{}.norm1.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
-            let attn_norm_bias = weights.get(&format!("{}.norm1.bias", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
+            let attn_norm_weight = weights
+                .get(&format!("{}.norm1.weight", prefix))?
+                .to_device(device)?
+                .to_dtype(DType::F32)?;
+            let attn_norm_bias = weights
+                .get(&format!("{}.norm1.bias", prefix))?
+                .to_device(device)?
+                .to_dtype(DType::F32)?;
             let attn_norm = LayerNorm::new(attn_norm_weight, attn_norm_bias);
 
-            let ffn_norm_weight = weights.get(&format!("{}.norm2.weight", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
-            let ffn_norm_bias = weights.get(&format!("{}.norm2.bias", prefix))?.to_device(device)?.to_dtype(DType::F32)?;
+            let ffn_norm_weight = weights
+                .get(&format!("{}.norm2.weight", prefix))?
+                .to_device(device)?
+                .to_dtype(DType::F32)?;
+            let ffn_norm_bias = weights
+                .get(&format!("{}.norm2.bias", prefix))?
+                .to_device(device)?
+                .to_dtype(DType::F32)?;
             let ffn_norm = LayerNorm::new(ffn_norm_weight, ffn_norm_bias);
 
             let block = TransformerBlock::new(attn, ff, attn_norm, ffn_norm);
@@ -891,7 +1010,11 @@ impl TransformerGPTSoVITS {
     }
 
     /// Forward through all transformer layers with provided mask
-    pub fn forward_all_layers_with_mask(&self, embeddings: &Tensor, mask: &Tensor) -> Result<Tensor> {
+    pub fn forward_all_layers_with_mask(
+        &self,
+        embeddings: &Tensor,
+        mask: &Tensor,
+    ) -> Result<Tensor> {
         let mut x = embeddings.clone();
         for layer in &self.layers {
             x = layer.forward(&x, Some(mask))?;

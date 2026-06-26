@@ -1,7 +1,7 @@
 //! BERT feature extractor — pure candle (chinese-roberta-wwm-ext-large).
 
-use candle_core::{Device, Tensor};
 use crate::Result;
+use candle_core::{Device, Tensor};
 
 fn device_str(dev: &Device) -> &'static str {
     match dev {
@@ -41,15 +41,26 @@ impl BertModel {
         } else {
             std::path::PathBuf::from("models/bert/tokenizer.json")
         };
-        let model = super::bert_candle::BertCandleModel::load_with_dtype(weights_path, &tokenizer_path, device, dtype)?;
-        Ok(Self { model, device: device_str(device), max_length: 512 })
+        let model = super::bert_candle::BertCandleModel::load_with_dtype(
+            weights_path,
+            &tokenizer_path,
+            device,
+            dtype,
+        )?;
+        Ok(Self {
+            model,
+            device: device_str(device),
+            max_length: 512,
+        })
     }
 
     pub fn extract(&mut self, text: &str) -> Result<Tensor> {
         self.model.extract(text)
     }
 
-    pub fn device(&self) -> &str { self.device }
+    pub fn device(&self) -> &str {
+        self.device
+    }
 }
 
 impl crate::models::Model for BertModel {
@@ -57,7 +68,9 @@ impl crate::models::Model for BertModel {
         Self::load(path)
     }
 
-    fn device(&self) -> &str { self.device }
+    fn device(&self) -> &str {
+        self.device
+    }
 
     fn to_device(&mut self, _device: &str) -> Result<()> {
         Ok(())
