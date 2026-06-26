@@ -1,0 +1,37 @@
+services:
+  gpt-sovits:
+    build:
+      context: .
+      dockerfile: Dockerfile.cuda
+      args:
+        CUDA_COMPUTE_CAP: "${CUDA_COMPUTE_CAP:-89}"
+    image: gpt-sovits-rs:cuda
+    container_name: gpt-sovits-rs
+    restart: unless-stopped
+    gpus: all
+    environment:
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    ports:
+      - "${GPT_SOVITS_PORT:-9880}:9880"
+    volumes:
+      - "${MODELS_DIR:-./models}:/app/models:ro"
+      - "${VOICES_DIR:-./voices}:/app/voices:ro"
+      - "${OUTPUTS_DIR:-./outputs}:/app/outputs"
+    command:
+      - "--http"
+      - "--port"
+      - "9880"
+      - "--device"
+      - "cuda"
+      - "--half"
+      - "--voices-dir"
+      - "/app/voices"
+      - "--gpt-model"
+      - "${GPT_MODEL:-/app/models/gpt-model.safetensors}"
+      - "--sovits-model"
+      - "${SOVITS_MODEL:-/app/models/sovits-model.safetensors}"
+      - "--bert-model"
+      - "${BERT_MODEL:-/app/models/bert.safetensors}"
+      - "--hubert-model"
+      - "${HUBERT_MODEL:-/app/models/hubert.safetensors}"

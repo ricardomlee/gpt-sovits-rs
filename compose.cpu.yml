@@ -1,0 +1,30 @@
+services:
+  gpt-sovits:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: gpt-sovits-rs:cpu
+    container_name: gpt-sovits-rs
+    restart: unless-stopped
+    ports:
+      - "${GPT_SOVITS_PORT:-9880}:9880"
+    volumes:
+      - "${MODELS_DIR:-./models}:/app/models:ro"
+      - "${VOICES_DIR:-./voices}:/app/voices:ro"
+      - "${OUTPUTS_DIR:-./outputs}:/app/outputs"
+    command:
+      - "--http"
+      - "--port"
+      - "9880"
+      - "--device"
+      - "cpu"
+      - "--voices-dir"
+      - "/app/voices"
+      - "--gpt-model"
+      - "${GPT_MODEL:-/app/models/gpt-model.safetensors}"
+      - "--sovits-model"
+      - "${SOVITS_MODEL:-/app/models/sovits-model.safetensors}"
+      - "--bert-model"
+      - "${BERT_MODEL:-/app/models/bert.safetensors}"
+      - "--hubert-model"
+      - "${HUBERT_MODEL:-/app/models/hubert.safetensors}"

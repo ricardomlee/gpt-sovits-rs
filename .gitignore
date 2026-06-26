@@ -5,6 +5,7 @@
 # Model files (large binaries)
 /models/
 /voices/
+/outputs/
 *.ckpt
 *.pth
 *.pt
