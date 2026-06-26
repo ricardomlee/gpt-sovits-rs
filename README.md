@@ -313,7 +313,7 @@ cargo run --release --features "cuda,http-api" --bin gpt-sovits -- \
     --hubert-model models/hubert/hubert.safetensors
 ```
 
-服务启动后提供三个端点：
+服务启动后提供这些端点：
 
 **`GET /voices`** — 列出 `voices/` 下可用的 voice profile
 
@@ -377,6 +377,28 @@ done
 ```
 
 `/tts/batch` 每行 JSON 也会包含 `voice`、`language` 和 `text_chars`，方便把输出音频和原始请求对应起来。
+
+**`POST /v1/audio/speech`** — OpenAI-compatible TTS adapter，方便接入 agent 框架和助手客户端
+
+```bash
+curl -X POST http://localhost:9880/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "gpt-sovits",
+    "voice": "mao",
+    "input": "人民，只有人民，才是创造世界历史的动力。",
+    "response_format": "wav"
+  }' --output output.wav
+```
+
+这个接口当前支持 `response_format: "wav"` 和 `"pcm"`。`voice` 会映射到本地
+`voices/<name>/voice.json`。如果 agent 框架支持配置 OpenAI-compatible speech endpoint，可以把
+base URL 指到本服务，例如 `http://localhost:9880/v1`。
+
+OpenClaw 当前有自己的 TTS provider 层；接入时优先走 OpenAI-compatible provider，并强制
+`response_format` 为 `wav` 或 `pcm`。如果它的 OpenAI provider 不方便覆盖输出格式，也可以先走
+OpenClaw 的 Local CLI provider。更详细的接入策略见
+[docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md)。
 
 批量响应每行为：`{"index":0,"wav_base64":"...","sample_rate":32000,"duration_s":1.5,"inference_ms":820}`
 

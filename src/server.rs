@@ -47,6 +47,27 @@ struct TtsRequest {
     speed: Option<f32>,
 }
 
+#[derive(Deserialize)]
+struct OpenAiSpeechRequest {
+    #[allow(dead_code)]
+    model: Option<String>,
+    #[serde(alias = "text")]
+    input: String,
+    #[serde(alias = "speakerVoice", alias = "speakerVoiceId", alias = "voiceId")]
+    voice: String,
+    #[serde(
+        alias = "responseFormat",
+        alias = "output_format",
+        alias = "outputFormat"
+    )]
+    response_format: Option<String>,
+    #[serde(alias = "languageCode", alias = "lang", alias = "language")]
+    text_language: Option<String>,
+    #[allow(dead_code)]
+    instructions: Option<String>,
+    speed: Option<f32>,
+}
+
 /// POST /tts/batch — synthesize multiple texts in one call.
 /// Shared speaker features are computed once for all items.
 /// Results stream back as NDJSON (one JSON line per item) as each completes.
@@ -195,6 +216,31 @@ fn add_synthesis_headers(
     builder
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpeechOutputFormat {
+    Wav,
+    Pcm,
+}
+
+impl SpeechOutputFormat {
+    fn parse(format: Option<&str>) -> Result<Self, String> {
+        match format.unwrap_or("wav").to_ascii_lowercase().as_str() {
+            "wav" => Ok(Self::Wav),
+            "pcm" => Ok(Self::Pcm),
+            other => Err(format!(
+                "unsupported response_format: {other}; supported formats: wav, pcm"
+            )),
+        }
+    }
+
+    fn content_type(self) -> &'static str {
+        match self {
+            Self::Wav => "audio/wav",
+            Self::Pcm => "application/octet-stream",
+        }
+    }
+}
+
 fn resolve_synthesis(
     voice_name: Option<&str>,
     text_language: Option<&str>,
@@ -249,6 +295,88 @@ fn resolve_synthesis(
         refer_path,
         prompt_text,
     })
+}
+
+async fn openai_speech_handler(
+    State(state): State<AppState>,
+    Json(req): Json<OpenAiSpeechRequest>,
+) -> Result<Response<Body>, StatusCode> {
+    let response_format = match SpeechOutputFormat::parse(req.response_format.as_deref()) {
+        Ok(format) => format,
+        Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
+    };
+
+    let resolved = match resolve_synthesis(
+        Some(&req.voice),
+        req.text_language.as_deref(),
+        None,
+        None,
+        None,
+        None,
+        None,
+        req.speed,
+        &state.voices_dir,
+    ) {
+        Ok(resolved) => resolved,
+        Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
+    };
+    let text = req.input;
+    let text_chars = text.chars().count();
+    let voice = resolved.voice;
+    let language = resolved.language;
+    let refer_path = resolved.refer_path;
+    let prompt_text = resolved.prompt_text;
+    let options = resolved.options;
+    let pipeline = Arc::clone(&state.pipeline);
+
+    let result = tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Handle::current();
+        let mut pipeline = rt.block_on(pipeline.lock());
+        pipeline
+            .inference(&text, &refer_path, &prompt_text, &options)
+            .map_err(|e| format!("Inference failed: {}", e))
+    })
+    .await
+    .map_err(|e| {
+        error!("spawn_blocking join error: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+
+    match result {
+        Ok(audio) => {
+            let audio_bytes = match response_format {
+                SpeechOutputFormat::Wav => audio.to_wav_bytes().map_err(|e| {
+                    error!("Failed to encode WAV: {}", e);
+                    StatusCode::INTERNAL_SERVER_ERROR
+                })?,
+                SpeechOutputFormat::Pcm => samples_to_pcm(&audio.samples),
+            };
+
+            let builder =
+                add_synthesis_headers(Response::builder(), voice.as_deref(), language, text_chars);
+
+            Ok(builder
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, response_format.content_type())
+                .header("x-tts-api", "openai-audio-speech")
+                .header(
+                    "x-tts-response-format",
+                    match response_format {
+                        SpeechOutputFormat::Wav => "wav",
+                        SpeechOutputFormat::Pcm => "pcm",
+                    },
+                )
+                .header("x-tts-duration-s", format!("{:.3}", audio.duration()))
+                .header("x-tts-sample-rate", audio.sample_rate.to_string())
+                .header("x-tts-channels", audio.channels.to_string())
+                .body(Body::from(audio_bytes))
+                .unwrap())
+        }
+        Err(e) => {
+            error!("TTS inference failed: {}", e);
+            Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, e))
+        }
+    }
 }
 
 /// POST /tts/stream — streams WAV audio sentence-by-sentence as chunked HTTP.
@@ -612,6 +740,7 @@ pub fn run(
         .route("/tts", post(tts_handler))
         .route("/tts/stream", post(tts_stream_handler))
         .route("/tts/batch", post(tts_batch_handler))
+        .route("/v1/audio/speech", post(openai_speech_handler))
         .route("/health", get(health_handler))
         .route("/voices", get(voices_handler))
         .layer(TraceLayer::new_for_http())
@@ -627,6 +756,7 @@ pub fn run(
     println!("  POST /tts           - Single text → audio/wav");
     println!("  POST /tts/stream    - Single text → streaming audio/wav (sentence by sentence)");
     println!("  POST /tts/batch     - Multiple texts → NDJSON stream (one result per line)");
+    println!("  POST /v1/audio/speech - OpenAI-compatible speech endpoint");
     println!();
     println!("Example:");
     println!("  curl -X POST http://localhost:9880/tts \\");
@@ -769,5 +899,23 @@ mod tests {
     fn sanitizes_non_ascii_header_values() {
         assert_eq!(safe_header_value("mao"), "mao");
         assert_eq!(safe_header_value("角色 A"), "__ A");
+    }
+
+    #[test]
+    fn accepts_only_lossless_speech_formats_for_openai_endpoint() {
+        assert_eq!(
+            SpeechOutputFormat::parse(None).unwrap(),
+            SpeechOutputFormat::Wav
+        );
+        assert_eq!(
+            SpeechOutputFormat::parse(Some("wav")).unwrap(),
+            SpeechOutputFormat::Wav
+        );
+        assert_eq!(
+            SpeechOutputFormat::parse(Some("PCM")).unwrap(),
+            SpeechOutputFormat::Pcm
+        );
+        assert!(SpeechOutputFormat::parse(Some("mp3")).is_err());
+        assert!(SpeechOutputFormat::parse(Some("opus")).is_err());
     }
 }
