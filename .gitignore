@@ -4,6 +4,7 @@
 
 # Model files (large binaries)
 /models/
+/voices/
 *.ckpt
 *.pth
 *.pt
@@ -34,6 +35,7 @@ logs/
 
 # Test outputs
 test_outputs/
+quality_outputs/
 *.wav
 *.mp3
 *.ogg

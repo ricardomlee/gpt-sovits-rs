@@ -1,0 +1,202 @@
+//! Voice profile loading and defaults.
+
+use serde::Deserialize;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct VoiceProfile {
+    pub reference_audio: Option<String>,
+    pub reference_text: Option<String>,
+    pub language: Option<String>,
+    pub mode: Option<String>,
+    pub split_sentences: Option<bool>,
+    pub min_sentence_chars: Option<usize>,
+    pub sentence_gap_ms: Option<u32>,
+    pub sentence_fade_ms: Option<u32>,
+    pub top_k: Option<usize>,
+    pub top_p: Option<f32>,
+    pub temperature: Option<f32>,
+    pub speed: Option<f32>,
+    pub max_tokens: Option<usize>,
+    pub repetition_penalty: Option<f32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedVoiceProfile {
+    pub name: String,
+    pub dir: PathBuf,
+    pub profile: VoiceProfile,
+}
+
+impl LoadedVoiceProfile {
+    pub fn load(name: &str, voices_dir: &Path) -> Result<Self, String> {
+        let dir = voices_dir.join(name);
+        let path = dir.join("voice.json");
+        let data = std::fs::read_to_string(&path)
+            .map_err(|e| format!("Failed to read voice profile {:?}: {}", path, e))?;
+        let profile: VoiceProfile = serde_json::from_str(&data)
+            .map_err(|e| format!("Failed to parse voice profile {:?}: {}", path, e))?;
+        if let Some(mode) = profile.mode.as_deref() {
+            validate_mode(mode)?;
+        }
+        Ok(Self {
+            name: name.to_string(),
+            dir,
+            profile,
+        })
+    }
+
+    pub fn resolve_path(&self, path: &str) -> PathBuf {
+        let path = PathBuf::from(path);
+        if path.is_absolute() {
+            path
+        } else {
+            self.dir.join(path)
+        }
+    }
+
+    pub fn reference_audio_path(&self) -> Option<PathBuf> {
+        self.profile
+            .reference_audio
+            .as_deref()
+            .map(|path| self.resolve_path(path))
+    }
+
+    pub fn reference_text(&self) -> Option<&str> {
+        self.profile.reference_text.as_deref()
+    }
+}
+
+pub fn load_optional_voice_profile(
+    voice_name: Option<&str>,
+    voices_dir: &Path,
+) -> Result<Option<LoadedVoiceProfile>, String> {
+    match voice_name {
+        Some(name) => LoadedVoiceProfile::load(name, voices_dir).map(Some),
+        None => Ok(None),
+    }
+}
+
+pub fn validate_mode(mode: &str) -> Result<(), String> {
+    match mode {
+        "plain" | "kv" | "cuda-graph" => Ok(()),
+        _ => Err(format!(
+            "Invalid voice profile mode '{}'; expected plain, kv, or cuda-graph",
+            mode
+        )),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct VoiceDefaults {
+    pub language: String,
+    pub mode: String,
+    pub split_sentences: bool,
+    pub min_sentence_chars: usize,
+    pub sentence_gap_ms: u32,
+    pub sentence_fade_ms: u32,
+    pub top_k: usize,
+    pub top_p: f32,
+    pub temperature: f32,
+    pub speed: f32,
+    pub max_tokens: usize,
+    pub repetition_penalty: f32,
+}
+
+impl VoiceDefaults {
+    pub fn from_profile(profile: Option<&VoiceProfile>) -> Self {
+        Self {
+            language: profile
+                .and_then(|p| p.language.clone())
+                .unwrap_or_else(|| "zh".to_string()),
+            mode: profile
+                .and_then(|p| p.mode.clone())
+                .unwrap_or_else(|| "cuda-graph".to_string()),
+            split_sentences: profile.and_then(|p| p.split_sentences).unwrap_or(false),
+            min_sentence_chars: profile.and_then(|p| p.min_sentence_chars).unwrap_or(12),
+            sentence_gap_ms: profile.and_then(|p| p.sentence_gap_ms).unwrap_or(120),
+            sentence_fade_ms: profile.and_then(|p| p.sentence_fade_ms).unwrap_or(8),
+            top_k: profile.and_then(|p| p.top_k).unwrap_or(15),
+            top_p: profile.and_then(|p| p.top_p).unwrap_or(0.95),
+            temperature: profile.and_then(|p| p.temperature).unwrap_or(0.8),
+            speed: profile.and_then(|p| p.speed).unwrap_or(1.0),
+            max_tokens: profile.and_then(|p| p.max_tokens).unwrap_or(500),
+            repetition_penalty: profile.and_then(|p| p.repetition_penalty).unwrap_or(1.35),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_fill_missing_values() {
+        let defaults = VoiceDefaults::from_profile(None);
+        assert_eq!(defaults.language, "zh");
+        assert_eq!(defaults.mode, "cuda-graph");
+        assert_eq!(defaults.top_k, 15);
+        assert_eq!(defaults.max_tokens, 500);
+    }
+
+    #[test]
+    fn profile_overrides_defaults() {
+        let profile = VoiceProfile {
+            language: Some("en".to_string()),
+            mode: Some("kv".to_string()),
+            split_sentences: Some(true),
+            top_p: Some(0.8),
+            max_tokens: Some(128),
+            ..Default::default()
+        };
+        let defaults = VoiceDefaults::from_profile(Some(&profile));
+        assert_eq!(defaults.language, "en");
+        assert_eq!(defaults.mode, "kv");
+        assert!(defaults.split_sentences);
+        assert_eq!(defaults.top_p, 0.8);
+        assert_eq!(defaults.max_tokens, 128);
+    }
+
+    #[test]
+    fn rejects_invalid_mode() {
+        assert!(validate_mode("cuda-graph").is_ok());
+        assert!(validate_mode("fast").is_err());
+    }
+
+    #[test]
+    fn resolves_relative_reference_audio_from_voice_dir() {
+        let loaded = LoadedVoiceProfile {
+            name: "test".to_string(),
+            dir: PathBuf::from("/tmp/voices/test"),
+            profile: VoiceProfile {
+                reference_audio: Some("ref.wav".to_string()),
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            loaded.reference_audio_path().unwrap(),
+            PathBuf::from("/tmp/voices/test/ref.wav")
+        );
+    }
+
+    #[test]
+    fn loads_profile_from_disk() {
+        let temp = tempfile::tempdir().unwrap();
+        let voice_dir = temp.path().join("mao");
+        std::fs::create_dir(&voice_dir).unwrap();
+        std::fs::write(
+            voice_dir.join("voice.json"),
+            r#"{"reference_audio":"ref.wav","reference_text":"hello","mode":"kv"}"#,
+        )
+        .unwrap();
+
+        let loaded = LoadedVoiceProfile::load("mao", temp.path()).unwrap();
+        assert_eq!(loaded.name, "mao");
+        assert_eq!(loaded.reference_text(), Some("hello"));
+        assert_eq!(
+            loaded.reference_audio_path().unwrap(),
+            voice_dir.join("ref.wav")
+        );
+        assert_eq!(loaded.profile.mode.as_deref(), Some("kv"));
+    }
+}

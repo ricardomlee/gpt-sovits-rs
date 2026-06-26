@@ -24,15 +24,17 @@
 //! audio.save("output.wav").unwrap();
 //! ```
 
+pub mod audio_checks;
 pub mod config;
 pub mod inference;
 pub mod models;
 pub mod text_frontend;
 pub mod utils;
+pub mod voice;
 
 // Re-export main types
 pub use config::Config;
-pub use inference::{InferenceOptions, Pipeline, split_sentences};
+pub use inference::{split_sentences, InferenceOptions, Pipeline};
 pub use utils::AudioBuffer;
 
 /// Library version
@@ -89,8 +91,6 @@ pub enum Error {
 
     #[error("Candle error: {0}")]
     CandleError(#[from] candle_core::Error),
-
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
-

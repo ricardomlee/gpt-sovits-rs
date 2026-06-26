@@ -212,6 +212,52 @@ cargo run --release --features cuda --bin gpt-sovits -- \
 
 > BigVGAN 当前仍是实验加载入口，主推理路径使用 SoVITS 权重内置 decoder；普通 mel-to-waveform BigVGAN 不能直接替换 SoVITS latent decoder。
 
+### Voice Profile
+
+可以把常用角色音色保存为 `voices/<name>/voice.json`，CLI 通过 `--voice <name>` 自动读取参考音频、参考文本、语言、分句和采样默认值。配置里的相对路径按该 voice 目录解析：
+
+```json
+{
+  "reference_audio": "ref.wav",
+  "reference_text": "参考音频对应的文字",
+  "language": "zh",
+  "mode": "cuda-graph",
+  "split_sentences": true,
+  "top_k": 15,
+  "top_p": 0.95,
+  "temperature": 0.8,
+  "max_tokens": 500,
+  "repetition_penalty": 1.35
+}
+```
+
+```bash
+cargo run --release --features cuda --bin gpt-sovits -- \
+    --voice mao \
+    --text "人民，只有人民，才是创造世界历史的动力。" \
+    --gpt-model models/gpt-model.safetensors \
+    --sovits-model models/sovits-model.safetensors \
+    --bert-model models/bert/bert.safetensors \
+    --hubert-model models/hubert/hubert.safetensors \
+    --output output.wav
+```
+
+命令行参数会覆盖 voice profile 中的默认值。长期产品目标见 [docs/PRODUCT_GOAL.md](docs/PRODUCT_GOAL.md)。
+
+### 自动质量 Smoke Test
+
+`quality_smoke` 会按 voice profile 生成一组固定句子，保存 WAV，并输出 `report.json`。它会自动检查时长、RMS、削波比例、静音比例、DC offset 和 NaN/Inf；发现明显坏样本时返回非零退出码：
+
+```bash
+cargo run --release --features cuda --example quality_smoke -- \
+    --voice mao \
+    --gpt-model models/gpt-model.safetensors \
+    --sovits-model models/sovits-model.safetensors \
+    --bert-model models/bert/bert.safetensors \
+    --hubert-model models/hubert/hubert.safetensors \
+    --output-dir quality_outputs/mao
+```
+
 ## Rust API
 
 ```rust

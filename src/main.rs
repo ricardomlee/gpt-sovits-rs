@@ -1,6 +1,7 @@
 //! GPT-SoVITS CLI - Command line interface for TTS inference
 
 use clap::Parser;
+use gpt_sovits_rs::voice::{load_optional_voice_profile, LoadedVoiceProfile, VoiceDefaults};
 use gpt_sovits_rs::{split_sentences, AudioBuffer, Config, InferenceOptions, Language, Pipeline};
 use std::path::PathBuf;
 use tracing::{error, info};
@@ -14,6 +15,14 @@ struct Args {
     /// Input text for synthesis
     #[arg(short, long)]
     text: Option<String>,
+
+    /// Voice profile name under --voices-dir, e.g. voices/mao/voice.json
+    #[arg(long)]
+    voice: Option<String>,
+
+    /// Directory containing voice profiles
+    #[arg(long, default_value = "voices")]
+    voices_dir: PathBuf,
 
     /// Inspect model file
     #[arg(long)]
@@ -48,56 +57,56 @@ struct Args {
     reference_text: Option<String>,
 
     /// Language of reference audio
-    #[arg(long, default_value = "zh")]
-    language: String,
+    #[arg(long)]
+    language: Option<String>,
 
     /// Output WAV file path
     #[arg(short, long)]
     output: Option<PathBuf>,
 
     /// Top-k sampling
-    #[arg(long, default_value = "15")]
-    top_k: usize,
+    #[arg(long)]
+    top_k: Option<usize>,
 
     /// Top-p sampling
-    #[arg(long, default_value = "0.95")]
-    top_p: f32,
+    #[arg(long)]
+    top_p: Option<f32>,
 
     /// Sampling temperature
-    #[arg(long, default_value = "0.8")]
-    temperature: f32,
+    #[arg(long)]
+    temperature: Option<f32>,
 
     /// Speed multiplier
-    #[arg(long, default_value = "1.0")]
-    speed: f32,
+    #[arg(long)]
+    speed: Option<f32>,
 
     /// Maximum semantic tokens to generate. Use higher values for long sentences.
-    #[arg(long, default_value = "500")]
-    max_tokens: usize,
+    #[arg(long)]
+    max_tokens: Option<usize>,
 
     /// Repetition penalty applied during GPT sampling.
-    #[arg(long, default_value = "1.35")]
-    repetition_penalty: f32,
+    #[arg(long)]
+    repetition_penalty: Option<f32>,
 
     /// Inference mode
-    #[arg(long, default_value = "cuda-graph", value_parser = ["plain", "kv", "cuda-graph"])]
-    mode: String,
+    #[arg(long, value_parser = ["plain", "kv", "cuda-graph"])]
+    mode: Option<String>,
 
     /// Split long text by sentence and concatenate audio chunks.
     #[arg(long)]
     split_sentences: bool,
 
     /// Minimum characters per sentence chunk when --split-sentences is enabled.
-    #[arg(long, default_value = "12")]
-    min_sentence_chars: usize,
+    #[arg(long)]
+    min_sentence_chars: Option<usize>,
 
     /// Silence inserted between sentence chunks.
-    #[arg(long, default_value = "120")]
-    sentence_gap_ms: u32,
+    #[arg(long)]
+    sentence_gap_ms: Option<u32>,
 
     /// Fade in/out each sentence chunk before concatenation.
-    #[arg(long, default_value = "8")]
-    sentence_fade_ms: u32,
+    #[arg(long)]
+    sentence_fade_ms: Option<u32>,
 
     /// Enable half-precision (FP16)
     #[arg(long)]
@@ -135,6 +144,21 @@ fn main() {
     tracing_subscriber::fmt::init();
 
     info!("Starting GPT-SoVITS TTS Engine");
+
+    let voice_profile = match load_optional_voice_profile(args.voice.as_deref(), &args.voices_dir) {
+        Ok(profile) => profile,
+        Err(e) => {
+            error!("{}", e);
+            std::process::exit(1);
+        }
+    };
+    if let Some(voice) = voice_profile.as_ref() {
+        info!(
+            "Loaded voice profile '{}' from {:?}",
+            voice.name,
+            voice.dir.join("voice.json")
+        );
+    }
 
     // HTTP mode
     if args.http {
@@ -188,18 +212,18 @@ fn main() {
         }
     };
 
-    let reference_audio = match &args.reference_audio {
-        Some(a) => a.clone(),
+    let reference_audio = match resolve_reference_audio(&args, voice_profile.as_ref()) {
+        Some(a) => a,
         None => {
-            eprintln!("Error: --reference-audio is required in CLI mode");
+            eprintln!("Error: --reference-audio is required in CLI mode unless --voice provides reference_audio");
             std::process::exit(1);
         }
     };
 
-    let reference_text = match &args.reference_text {
-        Some(t) => t.clone(),
+    let reference_text = match resolve_reference_text(&args, voice_profile.as_ref()) {
+        Some(t) => t,
         None => {
-            eprintln!("Error: --reference-text is required in CLI mode");
+            eprintln!("Error: --reference-text is required in CLI mode unless --voice provides reference_text");
             std::process::exit(1);
         }
     };
@@ -285,17 +309,37 @@ fn main() {
     }
 
     // Parse language
-    let language = Language::from_str(&args.language).unwrap_or(Language::Chinese);
+    let voice_defaults = VoiceDefaults::from_profile(voice_profile.as_ref().map(|v| &v.profile));
+    let language_text = args.language.as_deref().unwrap_or(&voice_defaults.language);
+    let language = Language::from_str(language_text).unwrap_or(Language::Chinese);
+    let mode = args
+        .mode
+        .clone()
+        .unwrap_or_else(|| voice_defaults.mode.clone());
+    let split_sentences = args.split_sentences || voice_defaults.split_sentences;
+    let min_sentence_chars = args
+        .min_sentence_chars
+        .unwrap_or(voice_defaults.min_sentence_chars);
+    let sentence_gap_ms = args
+        .sentence_gap_ms
+        .unwrap_or(voice_defaults.sentence_gap_ms);
+    let sentence_fade_ms = args
+        .sentence_fade_ms
+        .unwrap_or(voice_defaults.sentence_fade_ms);
 
     // Create inference options
     let options = InferenceOptions::builder()
-        .top_k(args.top_k)
-        .top_p(args.top_p)
-        .temperature(args.temperature)
-        .speed(args.speed)
+        .top_k(args.top_k.unwrap_or(voice_defaults.top_k))
+        .top_p(args.top_p.unwrap_or(voice_defaults.top_p))
+        .temperature(args.temperature.unwrap_or(voice_defaults.temperature))
+        .speed(args.speed.unwrap_or(voice_defaults.speed))
         .language(language)
-        .max_tokens(args.max_tokens)
-        .repetition_penalty(args.repetition_penalty)
+        .max_tokens(args.max_tokens.unwrap_or(voice_defaults.max_tokens))
+        .repetition_penalty(resolve_f32(
+            args.repetition_penalty,
+            Some(voice_defaults.repetition_penalty),
+            voice_defaults.repetition_penalty,
+        ))
         .build();
 
     // Run inference
@@ -304,17 +348,17 @@ fn main() {
     info!("  Reference: {:?}", reference_audio);
     info!("  Language: {:?}", language);
 
-    let result = if args.split_sentences {
+    let result = if split_sentences {
         run_split_inference(
             &mut pipeline,
             &text,
             &reference_audio,
             &reference_text,
             &options,
-            &args.mode,
-            args.min_sentence_chars,
-            args.sentence_gap_ms,
-            args.sentence_fade_ms,
+            &mode,
+            min_sentence_chars,
+            sentence_gap_ms,
+            sentence_fade_ms,
         )
     } else {
         run_inference(
@@ -323,7 +367,7 @@ fn main() {
             &reference_audio,
             &reference_text,
             &options,
-            &args.mode,
+            &mode,
         )
     };
 
@@ -418,6 +462,22 @@ fn run_split_inference(
     output.ok_or_else(|| {
         gpt_sovits_rs::Error::InferenceError("No sentence chunks generated".to_string())
     })
+}
+
+fn resolve_reference_audio(args: &Args, voice: Option<&LoadedVoiceProfile>) -> Option<PathBuf> {
+    args.reference_audio
+        .clone()
+        .or_else(|| voice.and_then(|v| v.reference_audio_path()))
+}
+
+fn resolve_reference_text(args: &Args, voice: Option<&LoadedVoiceProfile>) -> Option<String> {
+    args.reference_text
+        .clone()
+        .or_else(|| voice.and_then(|v| v.reference_text().map(str::to_string)))
+}
+
+fn resolve_f32(cli: Option<f32>, profile: Option<f32>, default: f32) -> f32 {
+    cli.or(profile).unwrap_or(default)
 }
 
 /// Inspect model file
