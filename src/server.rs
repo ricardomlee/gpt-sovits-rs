@@ -9,7 +9,9 @@ use axum::{
     Json, Router,
 };
 use base64::Engine as _;
-use gpt_sovits_rs::voice::{list_voice_profiles, LoadedVoiceProfile, VoiceDefaults};
+use gpt_sovits_rs::voice::{
+    list_voice_profiles, InferenceOptionOverrides, LoadedVoiceProfile, VoiceDefaults,
+};
 use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
 use serde::Deserialize;
 use serde::Serialize;
@@ -183,15 +185,16 @@ fn resolve_synthesis(
         })
         .unwrap_or_default();
 
-    let options = InferenceOptions::builder()
-        .top_k(top_k.unwrap_or(defaults.top_k))
-        .top_p(top_p.unwrap_or(defaults.top_p))
-        .temperature(temperature.unwrap_or(defaults.temperature))
-        .speed(speed.unwrap_or(defaults.speed))
-        .language(language)
-        .max_tokens(defaults.max_tokens)
-        .repetition_penalty(defaults.repetition_penalty)
-        .build();
+    let options = defaults.to_inference_options(
+        language,
+        InferenceOptionOverrides {
+            top_k,
+            top_p,
+            temperature,
+            speed,
+            ..Default::default()
+        },
+    );
 
     Ok(ResolvedSynthesis {
         language,

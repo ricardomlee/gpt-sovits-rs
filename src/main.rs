@@ -1,7 +1,9 @@
 //! GPT-SoVITS CLI - Command line interface for TTS inference
 
 use clap::Parser;
-use gpt_sovits_rs::voice::{load_optional_voice_profile, LoadedVoiceProfile, VoiceDefaults};
+use gpt_sovits_rs::voice::{
+    load_optional_voice_profile, InferenceOptionOverrides, LoadedVoiceProfile, VoiceDefaults,
+};
 use gpt_sovits_rs::{split_sentences, AudioBuffer, Config, InferenceOptions, Language, Pipeline};
 use std::path::PathBuf;
 use tracing::{error, info};
@@ -332,19 +334,17 @@ fn main() {
         .unwrap_or(voice_defaults.sentence_fade_ms);
 
     // Create inference options
-    let options = InferenceOptions::builder()
-        .top_k(args.top_k.unwrap_or(voice_defaults.top_k))
-        .top_p(args.top_p.unwrap_or(voice_defaults.top_p))
-        .temperature(args.temperature.unwrap_or(voice_defaults.temperature))
-        .speed(args.speed.unwrap_or(voice_defaults.speed))
-        .language(language)
-        .max_tokens(args.max_tokens.unwrap_or(voice_defaults.max_tokens))
-        .repetition_penalty(resolve_f32(
-            args.repetition_penalty,
-            Some(voice_defaults.repetition_penalty),
-            voice_defaults.repetition_penalty,
-        ))
-        .build();
+    let options = voice_defaults.to_inference_options(
+        language,
+        InferenceOptionOverrides {
+            top_k: args.top_k,
+            top_p: args.top_p,
+            temperature: args.temperature,
+            speed: args.speed,
+            max_tokens: args.max_tokens,
+            repetition_penalty: args.repetition_penalty,
+        },
+    );
 
     // Run inference
     info!("Running inference...");
@@ -478,10 +478,6 @@ fn resolve_reference_text(args: &Args, voice: Option<&LoadedVoiceProfile>) -> Op
     args.reference_text
         .clone()
         .or_else(|| voice.and_then(|v| v.reference_text().map(str::to_string)))
-}
-
-fn resolve_f32(cli: Option<f32>, profile: Option<f32>, default: f32) -> f32 {
-    cli.or(profile).unwrap_or(default)
 }
 
 /// Inspect model file

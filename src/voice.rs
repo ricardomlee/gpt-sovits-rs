@@ -1,5 +1,6 @@
 //! Voice profile loading and defaults.
 
+use crate::{InferenceOptions, Language};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -123,6 +124,16 @@ pub struct VoiceDefaults {
     pub repetition_penalty: f32,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct InferenceOptionOverrides {
+    pub top_k: Option<usize>,
+    pub top_p: Option<f32>,
+    pub temperature: Option<f32>,
+    pub speed: Option<f32>,
+    pub max_tokens: Option<usize>,
+    pub repetition_penalty: Option<f32>,
+}
+
 impl VoiceDefaults {
     pub fn from_profile(profile: Option<&VoiceProfile>) -> Self {
         Self {
@@ -143,6 +154,26 @@ impl VoiceDefaults {
             max_tokens: profile.and_then(|p| p.max_tokens).unwrap_or(500),
             repetition_penalty: profile.and_then(|p| p.repetition_penalty).unwrap_or(1.35),
         }
+    }
+
+    pub fn to_inference_options(
+        &self,
+        language: Language,
+        overrides: InferenceOptionOverrides,
+    ) -> InferenceOptions {
+        InferenceOptions::builder()
+            .top_k(overrides.top_k.unwrap_or(self.top_k))
+            .top_p(overrides.top_p.unwrap_or(self.top_p))
+            .temperature(overrides.temperature.unwrap_or(self.temperature))
+            .speed(overrides.speed.unwrap_or(self.speed))
+            .language(language)
+            .max_tokens(overrides.max_tokens.unwrap_or(self.max_tokens))
+            .repetition_penalty(
+                overrides
+                    .repetition_penalty
+                    .unwrap_or(self.repetition_penalty),
+            )
+            .build()
     }
 }
 
@@ -175,6 +206,35 @@ mod tests {
         assert!(defaults.split_sentences);
         assert_eq!(defaults.top_p, 0.8);
         assert_eq!(defaults.max_tokens, 128);
+    }
+
+    #[test]
+    fn builds_inference_options_with_overrides() {
+        let profile = VoiceProfile {
+            top_k: Some(11),
+            top_p: Some(0.8),
+            temperature: Some(0.6),
+            speed: Some(1.1),
+            max_tokens: Some(123),
+            repetition_penalty: Some(1.2),
+            ..Default::default()
+        };
+        let defaults = VoiceDefaults::from_profile(Some(&profile));
+        let options = defaults.to_inference_options(
+            Language::Chinese,
+            InferenceOptionOverrides {
+                top_k: Some(22),
+                temperature: Some(0.5),
+                ..Default::default()
+            },
+        );
+
+        assert_eq!(options.top_k, 22);
+        assert!((options.top_p - 0.8).abs() < 0.001);
+        assert!((options.temperature - 0.5).abs() < 0.001);
+        assert!((options.speed - 1.1).abs() < 0.001);
+        assert_eq!(options.max_tokens, 123);
+        assert!((options.repetition_penalty - 1.2).abs() < 0.001);
     }
 
     #[test]

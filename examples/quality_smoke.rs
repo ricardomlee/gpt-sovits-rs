@@ -5,7 +5,7 @@ use gpt_sovits_rs::audio_checks::{
     validate_audio_quality, AudioQualityMetrics, AudioQualityThresholds,
 };
 use gpt_sovits_rs::voice::{LoadedVoiceProfile, VoiceDefaults};
-use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
+use gpt_sovits_rs::{Config, Language, Pipeline};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::time::Instant;
@@ -96,15 +96,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         pipeline.load_semantic_tokenizer(&args.sovits_model)?;
     }
 
-    let options = InferenceOptions::builder()
-        .top_k(defaults.top_k)
-        .top_p(defaults.top_p)
-        .temperature(defaults.temperature)
-        .speed(defaults.speed)
-        .language(language)
-        .max_tokens(defaults.max_tokens)
-        .repetition_penalty(defaults.repetition_penalty)
-        .build();
+    let options = defaults.to_inference_options(language, Default::default());
 
     let texts = if args.text.is_empty() {
         vec![
