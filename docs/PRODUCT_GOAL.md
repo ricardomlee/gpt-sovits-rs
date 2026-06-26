@@ -1,125 +1,40 @@
-# Product Goal: Personal GPT-SoVITS TTS
+# 产品目标：本地个人语音服务
 
-This project should become a local-first, lightweight TTS service built on GPT-SoVITS inference. It should be easy to run on a PC or NAS, simple to integrate with a personal assistant, and capable of speaking with selected character voices without per-sentence parameter tuning.
+这个项目的目标不是做一个“Rust 版 GPT-SoVITS demo”，而是做成一个普通用户也愿意长期运行的本地 TTS 服务。
 
-## End State
+最终效果应该是：我把它部署在自己的 PC 或 NAS 上，选一个喜欢的音色，接到自己的智能助手里。之后助手只需要发送文字和音色名，就能得到自然、稳定、延迟可接受的语音，不需要我每句话手动调参数。
 
-- One binary or Docker Compose service starts a local TTS server.
-- Models and voices live in mounted folders, so upgrades do not overwrite user data.
-- Assistant integrations call a stable API with `voice`, `text`, and optional `style`.
-- Users manage voice profiles instead of raw reference audio and sampling parameters.
-- The inference engine keeps evolving with the best practical CPU/GPU backends and algorithms.
+## 用户应该感受到什么
 
-## Product Principles
+- 部署简单：下载二进制或启动 Docker Compose，就能跑起来。
+- 数据清楚：模型、音色、输出文件都放在固定目录里，升级不会覆盖。
+- 使用简单：日常只选择“音色”，不用关心参考音频路径、prompt 文本和采样参数。
+- 接入简单：智能助手通过稳定的 HTTP API 调用，不需要了解内部实现。
+- 长文本稳定：一段较长回复也能自然分句、合成和拼接。
+- 声音可信：尽量减少静音、爆音、截断、节奏突兀和明显机械感。
+- 本地私有：正常推理不依赖云服务。
 
-- **Local first**: no cloud dependency for normal synthesis.
-- **Simple deployment**: PC and NAS users should not need Python or PyTorch for inference.
-- **Voice profiles over knobs**: users choose a voice/style; the system chooses stable defaults.
-- **Inference-only Rust core**: training and fine-tuning stay in the Python GPT-SoVITS ecosystem.
-- **Measurable progress**: performance, stability, and quality changes should be benchmarkable.
+## 这个仓库负责什么
 
-## Architecture
+- 做好 GPT-SoVITS 的本地推理。
+- 做好 PC / NAS 上的轻量部署。
+- 做好音色配置、HTTP 服务、批量测试和质量检查。
+- 持续优化速度、稳定性和音质。
 
-1. **Inference Core**
-   - Rust + Candle GPT-SoVITS inference.
-   - CPU, CUDA, and future backend-specific optimizations.
-   - KV cache, CUDA graph, sentence splitting, and speaker feature cache.
+## 暂时不做什么
 
-2. **Voice Profile Layer**
-   - `voices/<name>/voice.json` stores reference audio, reference text, language, and defaults.
-   - Relative paths are resolved from the voice profile directory.
-   - CLI and HTTP APIs should accept `voice` instead of raw reference paths.
+- 不在 Rust 版本里做训练和微调。
+- 不把每个底层参数都暴露给普通用户。
+- 不追求一次性支持所有前端、插件和平台。
 
-3. **Automatic Strategy Layer**
-   - Choose split mode based on text length.
-   - Choose sampling defaults from the voice profile and text shape.
-   - Insert stable sentence gaps/fades.
-   - Detect likely bad generations, such as hitting `max_tokens`, and retry with safer settings.
+训练、微调、制作高质量音色，仍然交给 Python 版 GPT-SoVITS 生态。这个仓库专注于“训练好以后，怎么稳定、快速、简单地用起来”。
 
-4. **Service Layer**
-   - CLI remains the debug and batch interface.
-   - HTTP exposes assistant-friendly endpoints.
-   - Docker Compose handles deployment on PC/NAS.
+## 近期方向
 
-## Voice Profile Format
+1. 让音色管理更简单：用 `voices/<name>/voice.json` 管理音色。
+2. 让助手接入更简单：HTTP API 以 `voice + text` 为核心。
+3. 让长文本更稳定：自动分句、拼接、检测截断和坏音频。
+4. 让质量验证更自动：少靠手动听，多靠 smoke test 和音频指标先筛问题。
+5. 让推理更快：持续优化 CPU / GPU 后端、缓存、解码和 benchmark。
 
-```json
-{
-  "reference_audio": "ref.wav",
-  "reference_text": "参考音频对应的文字",
-  "language": "zh",
-  "mode": "cuda-graph",
-  "split_sentences": true,
-  "min_sentence_chars": 12,
-  "sentence_gap_ms": 120,
-  "sentence_fade_ms": 8,
-  "top_k": 15,
-  "top_p": 0.95,
-  "temperature": 0.8,
-  "speed": 1.0,
-  "max_tokens": 500,
-  "repetition_penalty": 1.35
-}
-```
-
-Example layout:
-
-```text
-voices/
-  mao/
-    voice.json
-    ref.wav
-```
-
-CLI usage:
-
-```bash
-cargo run --release --features cuda --bin gpt-sovits -- \
-  --voice mao \
-  --text "人民，只有人民，才是创造世界历史的动力。" \
-  --gpt-model models/gpt-model.safetensors \
-  --sovits-model models/sovits-model.safetensors \
-  --bert-model models/bert/bert.safetensors \
-  --hubert-model models/hubert/hubert.safetensors \
-  --output output.wav
-```
-
-Command-line values override profile defaults.
-
-## Roadmap
-
-### Phase 1: Usable Local Voice Profiles
-
-- Add CLI `--voice` support.
-- Add profile-based reference audio/text/language/default sampling.
-- Keep raw CLI arguments for debugging and overrides.
-- Add documentation and a sample profile.
-
-### Phase 2: Assistant-Friendly HTTP
-
-- Add `voice` to `/tts`, `/tts/stream`, and `/tts/batch`.
-- Add `GET /voices` so assistant clients can discover available voice profiles.
-- Load voice profiles at server start or lazily on first use.
-- Preload/cache selected voice features.
-- Return structured errors for missing voices and invalid profiles.
-- Keep legacy `refer_wav_path` / `prompt_text` request fields for debugging and compatibility.
-
-### Phase 3: Automatic Quality Strategy
-
-- Centralize text-length and punctuation-based strategy selection.
-- Add automatic long-text splitting.
-- Add retry-on-truncation with safer sampling.
-- Add quality smoke tests that generate a fixed sentence matrix and fail on objective audio defects.
-- Track objective audio metrics before listening: duration, RMS, peak, clipping ratio, silence ratio, DC offset, and non-finite samples.
-
-### Phase 4: Deployment Packaging
-
-- Add Docker Compose templates for CPU and CUDA.
-- Keep `models/`, `voices/`, and `outputs/` as mounted volumes.
-- Document NAS deployment expectations and fallback CPU settings.
-
-### Phase 5: Continuous Optimization
-
-- Keep benchmark targets under `benches/`.
-- Track RTF, latency, token count, and max-token hits by voice/text set.
-- Continue GPT decode, SoVITS decode, feature extraction, and backend optimizations.
+判断这个项目是否成功，不看内部用了多少技巧，而看用户能不能轻松部署、轻松接入、长期稳定使用，并且愿意真的让自己的智能助手每天用它说话。
