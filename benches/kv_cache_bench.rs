@@ -3,7 +3,10 @@
 /// Measures wall-clock time for full end-to-end synthesis with and without KV cache.
 /// Uses multiple text lengths to show how speedup scales with sequence length.
 use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
+use std::path::PathBuf;
 use std::time::Instant;
+
+const DEFAULT_REF_TEXT: &str = "会战兵力是八十万对六十万，优势在我";
 
 fn main() {
     if let Err(e) = run_benchmark() {
@@ -26,14 +29,30 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     let mut pipeline = Pipeline::new(config)?;
-    pipeline.load_gpt("models/gpt-model.safetensors")?;
-    pipeline.load_sovits("models/sovits-model.safetensors")?;
-    let _ = pipeline.load_bert("models/bert/bert.safetensors");
-    let _ = pipeline.load_hubert("models/hubert/hubert.safetensors");
+    pipeline.load_gpt(model_path(
+        "GPT_SOVITS_GPT_MODEL",
+        &["models/gpt-model.safetensors"],
+    )?)?;
+    pipeline.load_sovits(model_path(
+        "GPT_SOVITS_SOVITS_MODEL",
+        &["models/sovits-model.safetensors"],
+    )?)?;
+    let _ = pipeline.load_bert(model_path(
+        "GPT_SOVITS_BERT_MODEL",
+        &["models/bert.safetensors", "models/bert/bert.safetensors"],
+    )?);
+    let _ = pipeline.load_hubert(model_path(
+        "GPT_SOVITS_HUBERT_MODEL",
+        &[
+            "models/hubert.safetensors",
+            "models/hubert/hubert.safetensors",
+        ],
+    )?);
     println!("Models loaded.\n");
 
-    let ref_audio = "ref.wav";
-    let ref_text = "先帝创业未半而中道崩殂";
+    let ref_audio = ref_audio_path()?;
+    let ref_text =
+        std::env::var("GPT_SOVITS_REF_TEXT").unwrap_or_else(|_| DEFAULT_REF_TEXT.to_string());
 
     // Test with different text lengths to show KV cache scaling
     let test_cases: &[(&str, &str)] = &[
@@ -58,8 +77,8 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
 
     for (label, input_text) in test_cases {
         // 1 warmup + 2 timed runs each
-        let _ = pipeline.inference(input_text, ref_audio, ref_text, &options)?;
-        let _ = pipeline.inference_kv_cache(input_text, ref_audio, ref_text, &options)?;
+        let _ = pipeline.inference(input_text, &ref_audio, &ref_text, &options)?;
+        let _ = pipeline.inference_kv_cache(input_text, &ref_audio, &ref_text, &options)?;
 
         let mut t_plain = 0.0f64;
         let mut t_kv = 0.0f64;
@@ -67,13 +86,13 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
 
         for _ in 0..2 {
             let t = Instant::now();
-            let audio = pipeline.inference(input_text, ref_audio, ref_text, &options)?;
+            let audio = pipeline.inference(input_text, &ref_audio, &ref_text, &options)?;
             t_plain += t.elapsed().as_secs_f64();
             token_count = audio.samples.len() / (audio.sample_rate as usize / 25);
         }
         for _ in 0..2 {
             let t = Instant::now();
-            let _ = pipeline.inference_kv_cache(input_text, ref_audio, ref_text, &options)?;
+            let _ = pipeline.inference_kv_cache(input_text, &ref_audio, &ref_text, &options)?;
             t_kv += t.elapsed().as_secs_f64();
         }
 
@@ -89,4 +108,28 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\nNote: speedup grows with sequence length (O(n²) vs O(n) attention cost).");
     Ok(())
+}
+
+fn model_path(env_key: &str, candidates: &[&str]) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Ok(path) = std::env::var(env_key) {
+        return Ok(PathBuf::from(path));
+    }
+    candidates
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.exists())
+        .ok_or_else(|| {
+            format!("missing model; set {env_key} or create one of {candidates:?}").into()
+        })
+}
+
+fn ref_audio_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Ok(path) = std::env::var("GPT_SOVITS_REF_AUDIO") {
+        return Ok(PathBuf::from(path));
+    }
+    ["mao.wav", "ref.wav"]
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.exists())
+        .ok_or_else(|| "missing reference audio; set GPT_SOVITS_REF_AUDIO".into())
 }

@@ -2,6 +2,7 @@
 /// Loads models twice (once per dtype) and runs N warm+timed calls each,
 /// reporting median latency, throughput (chars/s), and RTF.
 use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 const TEXTS: &[&str] = &[
@@ -9,8 +10,7 @@ const TEXTS: &[&str] = &[
     "今天天气晴朗，阳光明媚，适合出门散步。",
     "人工智能技术正在快速发展，深刻改变着人类的生活方式。",
 ];
-const REF_AUDIO: &str = "ref.wav";
-const REF_TEXT: &str = "先帝创业未半而中道崩殂";
+const DEFAULT_REF_TEXT: &str = "会战兵力是八十万对六十万，优势在我";
 const WARMUP: usize = 1;
 const RUNS: usize = 3;
 
@@ -20,14 +20,32 @@ fn make_pipeline(half: bool) -> Result<Pipeline, Box<dyn std::error::Error>> {
         .with_half_precision(half)
         .build();
     let mut p = Pipeline::new(config)?;
-    p.load_gpt("models/gpt-model.safetensors")?;
-    p.load_sovits("models/sovits-model.safetensors")?;
-    let _ = p.load_bert("models/bert/bert.safetensors");
-    let _ = p.load_hubert("models/hubert/hubert.safetensors");
+    p.load_gpt(model_path(
+        "GPT_SOVITS_GPT_MODEL",
+        &["models/gpt-model.safetensors"],
+    )?)?;
+    p.load_sovits(model_path(
+        "GPT_SOVITS_SOVITS_MODEL",
+        &["models/sovits-model.safetensors"],
+    )?)?;
+    let _ = p.load_bert(model_path(
+        "GPT_SOVITS_BERT_MODEL",
+        &["models/bert.safetensors", "models/bert/bert.safetensors"],
+    )?);
+    let _ = p.load_hubert(model_path(
+        "GPT_SOVITS_HUBERT_MODEL",
+        &[
+            "models/hubert.safetensors",
+            "models/hubert/hubert.safetensors",
+        ],
+    )?);
     Ok(p)
 }
 
 fn run_bench(pipeline: &mut Pipeline, label: &str) -> Vec<(usize, Duration, f32)> {
+    let ref_audio = ref_audio_path().expect("reference audio not found");
+    let ref_text =
+        std::env::var("GPT_SOVITS_REF_TEXT").unwrap_or_else(|_| DEFAULT_REF_TEXT.to_string());
     let opts = InferenceOptions::builder()
         .top_k(15)
         .top_p(0.95)
@@ -43,7 +61,7 @@ fn run_bench(pipeline: &mut Pipeline, label: &str) -> Vec<(usize, Duration, f32)
 
         // Warmup (also populates speaker cache)
         for _ in 0..WARMUP {
-            let _ = pipeline.inference_kv_cache(text, REF_AUDIO, REF_TEXT, &opts);
+            let _ = pipeline.inference_kv_cache(text, &ref_audio, &ref_text, &opts);
         }
 
         // Timed runs
@@ -52,7 +70,7 @@ fn run_bench(pipeline: &mut Pipeline, label: &str) -> Vec<(usize, Duration, f32)
         for _ in 0..RUNS {
             let t = Instant::now();
             let audio = pipeline
-                .inference_kv_cache(text, REF_AUDIO, REF_TEXT, &opts)
+                .inference_kv_cache(text, &ref_audio, &ref_text, &opts)
                 .expect("inference failed");
             times.push(t.elapsed());
             audio_dur_s = audio.samples.len() as f32 / audio.sample_rate as f32;
@@ -132,4 +150,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     println!("{:>43}{:>9.2}x", "avg speedup: ", avg);
 
     Ok(())
+}
+
+fn model_path(env_key: &str, candidates: &[&str]) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Ok(path) = std::env::var(env_key) {
+        return Ok(PathBuf::from(path));
+    }
+    candidates
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.exists())
+        .ok_or_else(|| {
+            format!("missing model; set {env_key} or create one of {candidates:?}").into()
+        })
+}
+
+fn ref_audio_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    if let Ok(path) = std::env::var("GPT_SOVITS_REF_AUDIO") {
+        return Ok(PathBuf::from(path));
+    }
+    ["mao.wav", "ref.wav"]
+        .iter()
+        .map(PathBuf::from)
+        .find(|path| path.exists())
+        .ok_or_else(|| "missing reference audio; set GPT_SOVITS_REF_AUDIO".into())
 }
