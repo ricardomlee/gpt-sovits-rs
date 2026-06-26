@@ -101,6 +101,7 @@ Command-line values override profile defaults.
 - Load voice profiles at server start or lazily on first use.
 - Preload/cache selected voice features.
 - Return structured errors for missing voices and invalid profiles.
+- Keep legacy `refer_wav_path` / `prompt_text` request fields for debugging and compatibility.
 
 ### Phase 3: Automatic Quality Strategy
 

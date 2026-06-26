@@ -347,6 +347,15 @@ curl -X POST http://localhost:9880/tts \
   }' --output output.wav
 ```
 
+使用 voice profile 时，智能助手只需要传 `voice` 和 `text`：
+
+```bash
+curl -X POST http://localhost:9880/tts \
+  -H 'Content-Type: application/json' \
+  -d '{"voice":"mao","text":"人民，只有人民，才是创造世界历史的动力。"}' \
+  --output output.wav
+```
+
 **`POST /tts/stream`** — 单条文本，逐句流式返回 WAV（低延迟，可边下边播）
 
 ```bash

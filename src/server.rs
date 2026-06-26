@@ -9,9 +9,11 @@ use axum::{
     Json, Router,
 };
 use base64::Engine as _;
+use gpt_sovits_rs::voice::{LoadedVoiceProfile, VoiceDefaults};
 use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
 use serde::Deserialize;
 use serde::Serialize;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt as _};
@@ -23,12 +25,14 @@ pub struct AppState {
     /// tokio async mutex: concurrent requests await the lock without blocking OS threads.
     /// The GPU is single-threaded; this enforces sequential inference with async queuing.
     pipeline: Arc<Mutex<Pipeline>>,
+    voices_dir: Arc<PathBuf>,
     #[allow(dead_code)]
     config: Arc<Config>,
 }
 
 #[derive(Deserialize)]
 struct TtsRequest {
+    voice: Option<String>,
     text: String,
     text_language: Option<String>,
     refer_wav_path: Option<String>,
@@ -48,6 +52,7 @@ struct TtsRequest {
 struct TtsBatchRequest {
     /// List of texts to synthesize (processed sequentially on GPU).
     texts: Vec<String>,
+    voice: Option<String>,
     text_language: Option<String>,
     refer_wav_path: Option<String>,
     prompt_text: Option<String>,
@@ -55,6 +60,13 @@ struct TtsBatchRequest {
     top_p: Option<f32>,
     temperature: Option<f32>,
     speed: Option<f32>,
+}
+
+struct ResolvedSynthesis {
+    language: Language,
+    options: InferenceOptions,
+    refer_path: String,
+    prompt_text: String,
 }
 
 #[derive(Serialize)]
@@ -109,29 +121,96 @@ fn samples_to_pcm(samples: &[f32]) -> Vec<u8> {
     out
 }
 
+fn json_error(status: StatusCode, message: impl AsRef<str>) -> Response<Body> {
+    let error_json = serde_json::json!({
+        "success": false,
+        "message": message.as_ref(),
+    });
+    Response::builder()
+        .status(status)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(error_json.to_string()))
+        .unwrap()
+}
+
+fn resolve_synthesis(
+    voice_name: Option<&str>,
+    text_language: Option<&str>,
+    refer_wav_path: Option<String>,
+    prompt_text: Option<String>,
+    top_k: Option<usize>,
+    top_p: Option<f32>,
+    temperature: Option<f32>,
+    speed: Option<f32>,
+    voices_dir: &Path,
+) -> Result<ResolvedSynthesis, String> {
+    let voice = voice_name
+        .map(|name| LoadedVoiceProfile::load(name, voices_dir))
+        .transpose()?;
+    let defaults = VoiceDefaults::from_profile(voice.as_ref().map(|v| &v.profile));
+
+    let language_text = text_language.unwrap_or(&defaults.language);
+    let language = Language::from_str(language_text)
+        .ok_or_else(|| format!("unsupported text_language: {language_text}"))?;
+
+    let refer_path = refer_wav_path
+        .or_else(|| {
+            voice
+                .as_ref()
+                .and_then(|v| v.reference_audio_path())
+                .map(|p| p.to_string_lossy().into_owned())
+        })
+        .unwrap_or_else(|| "ref.wav".to_string());
+    let prompt_text = prompt_text
+        .or_else(|| {
+            voice
+                .as_ref()
+                .and_then(|v| v.reference_text().map(str::to_string))
+        })
+        .unwrap_or_default();
+
+    let options = InferenceOptions::builder()
+        .top_k(top_k.unwrap_or(defaults.top_k))
+        .top_p(top_p.unwrap_or(defaults.top_p))
+        .temperature(temperature.unwrap_or(defaults.temperature))
+        .speed(speed.unwrap_or(defaults.speed))
+        .language(language)
+        .max_tokens(defaults.max_tokens)
+        .repetition_penalty(defaults.repetition_penalty)
+        .build();
+
+    Ok(ResolvedSynthesis {
+        language,
+        options,
+        refer_path,
+        prompt_text,
+    })
+}
+
 /// POST /tts/stream — streams WAV audio sentence-by-sentence as chunked HTTP.
 /// First byte arrives after the first sentence is synthesized (~1-2s for short sentences).
 async fn tts_stream_handler(
     State(state): State<AppState>,
     Json(req): Json<TtsRequest>,
 ) -> Result<Response<Body>, StatusCode> {
-    let language = req
-        .text_language
-        .as_deref()
-        .and_then(Language::from_str)
-        .unwrap_or(Language::Chinese);
-
-    let options = InferenceOptions::builder()
-        .top_k(req.top_k.unwrap_or(15))
-        .top_p(req.top_p.unwrap_or(0.95))
-        .temperature(req.temperature.unwrap_or(0.8))
-        .speed(req.speed.unwrap_or(1.0))
-        .language(language)
-        .build();
-
+    let resolved = match resolve_synthesis(
+        req.voice.as_deref(),
+        req.text_language.as_deref(),
+        req.refer_wav_path,
+        req.prompt_text,
+        req.top_k,
+        req.top_p,
+        req.temperature,
+        req.speed,
+        &state.voices_dir,
+    ) {
+        Ok(resolved) => resolved,
+        Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
+    };
     let text = req.text.clone();
-    let refer_path = req.refer_wav_path.unwrap_or_else(|| "ref.wav".to_string());
-    let prompt_text = req.prompt_text.unwrap_or_default();
+    let refer_path = resolved.refer_path;
+    let prompt_text = resolved.prompt_text;
+    let options = resolved.options;
     let pipeline = Arc::clone(&state.pipeline);
 
     // Channel: inference thread sends PCM chunks; HTTP task streams them out
@@ -185,23 +264,24 @@ async fn tts_handler(
     State(state): State<AppState>,
     Json(req): Json<TtsRequest>,
 ) -> Result<Response<Body>, StatusCode> {
-    let language = req
-        .text_language
-        .as_deref()
-        .and_then(Language::from_str)
-        .unwrap_or(Language::Chinese);
-
-    let options = InferenceOptions::builder()
-        .top_k(req.top_k.unwrap_or(15))
-        .top_p(req.top_p.unwrap_or(0.95))
-        .temperature(req.temperature.unwrap_or(0.8))
-        .speed(req.speed.unwrap_or(1.0))
-        .language(language)
-        .build();
-
+    let resolved = match resolve_synthesis(
+        req.voice.as_deref(),
+        req.text_language.as_deref(),
+        req.refer_wav_path,
+        req.prompt_text,
+        req.top_k,
+        req.top_p,
+        req.temperature,
+        req.speed,
+        &state.voices_dir,
+    ) {
+        Ok(resolved) => resolved,
+        Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
+    };
     let text = req.text.clone();
-    let refer_path = req.refer_wav_path.unwrap_or_else(|| "ref.wav".to_string());
-    let prompt_text = req.prompt_text.unwrap_or_default();
+    let refer_path = resolved.refer_path;
+    let prompt_text = resolved.prompt_text;
+    let options = resolved.options;
     let pipeline = Arc::clone(&state.pipeline);
 
     let result = tokio::task::spawn_blocking(move || {
@@ -236,15 +316,7 @@ async fn tts_handler(
         }
         Err(e) => {
             error!("TTS inference failed: {}", e);
-            let error_json = serde_json::json!({
-                "success": false,
-                "message": e,
-            });
-            Ok(Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(Body::from(error_json.to_string()))
-                .unwrap())
+            Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, e))
         }
     }
 }
@@ -270,21 +342,25 @@ async fn tts_batch_handler(
             .unwrap());
     }
 
-    let language = req
-        .text_language
-        .as_deref()
-        .and_then(Language::from_str)
-        .unwrap_or(Language::Chinese);
-    let options = InferenceOptions::builder()
-        .top_k(req.top_k.unwrap_or(15))
-        .top_p(req.top_p.unwrap_or(0.95))
-        .temperature(req.temperature.unwrap_or(0.8))
-        .speed(req.speed.unwrap_or(1.0))
-        .language(language)
-        .build();
+    let resolved = match resolve_synthesis(
+        req.voice.as_deref(),
+        req.text_language.as_deref(),
+        req.refer_wav_path,
+        req.prompt_text,
+        req.top_k,
+        req.top_p,
+        req.temperature,
+        req.speed,
+        &state.voices_dir,
+    ) {
+        Ok(resolved) => resolved,
+        Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
+    };
 
-    let refer_path = req.refer_wav_path.unwrap_or_else(|| "ref.wav".to_string());
-    let prompt_text = req.prompt_text.unwrap_or_default();
+    let refer_path = resolved.refer_path;
+    let prompt_text = resolved.prompt_text;
+    let language = resolved.language;
+    let options = resolved.options;
     let texts = req.texts;
     let pipeline = Arc::clone(&state.pipeline);
 
@@ -387,6 +463,7 @@ pub fn run(
     bigvgan_model: Option<&std::path::Path>,
     bert_model: Option<&std::path::Path>,
     hubert_model: Option<&std::path::Path>,
+    voices_dir: &std::path::Path,
 ) -> Result<(), String> {
     let config = Config::builder()
         .with_device(device)
@@ -435,6 +512,7 @@ pub fn run(
 
     let state = AppState {
         pipeline: Arc::new(tokio::sync::Mutex::new(pipeline)),
+        voices_dir: Arc::new(voices_dir.to_path_buf()),
         config: Arc::new(config),
     };
 
@@ -475,4 +553,121 @@ pub fn run(
                 .map_err(|e| format!("Server error: {}", e))?;
             Ok::<(), String>(())
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolves_legacy_reference_fields_without_voice() {
+        let resolved = resolve_synthesis(
+            None,
+            Some("zh"),
+            Some("ref.wav".to_string()),
+            Some("prompt".to_string()),
+            Some(20),
+            Some(0.9),
+            Some(0.7),
+            Some(1.1),
+            Path::new("voices"),
+        )
+        .unwrap();
+
+        assert_eq!(resolved.language, Language::Chinese);
+        assert_eq!(resolved.refer_path, "ref.wav");
+        assert_eq!(resolved.prompt_text, "prompt");
+        assert_eq!(resolved.options.top_k, 20);
+        assert!((resolved.options.top_p - 0.9).abs() < 0.001);
+        assert!((resolved.options.temperature - 0.7).abs() < 0.001);
+        assert!((resolved.options.speed - 1.1).abs() < 0.001);
+    }
+
+    #[test]
+    fn resolves_voice_profile_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        let voice_dir = temp.path().join("mao");
+        std::fs::create_dir(&voice_dir).unwrap();
+        std::fs::write(
+            voice_dir.join("voice.json"),
+            r#"{
+                "reference_audio":"ref.wav",
+                "reference_text":"会战兵力是八十万对六十万，优势在我",
+                "language":"zh",
+                "top_k":11,
+                "top_p":0.8,
+                "temperature":0.6,
+                "speed":1.2,
+                "max_tokens":123,
+                "repetition_penalty":1.2
+            }"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_synthesis(
+            Some("mao"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            temp.path(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved.refer_path,
+            voice_dir.join("ref.wav").to_string_lossy()
+        );
+        assert_eq!(resolved.prompt_text, "会战兵力是八十万对六十万，优势在我");
+        assert_eq!(resolved.options.top_k, 11);
+        assert!((resolved.options.top_p - 0.8).abs() < 0.001);
+        assert!((resolved.options.temperature - 0.6).abs() < 0.001);
+        assert!((resolved.options.speed - 1.2).abs() < 0.001);
+        assert_eq!(resolved.options.max_tokens, 123);
+        assert!((resolved.options.repetition_penalty - 1.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn request_values_override_voice_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        let voice_dir = temp.path().join("mao");
+        std::fs::create_dir(&voice_dir).unwrap();
+        std::fs::write(
+            voice_dir.join("voice.json"),
+            r#"{
+                "reference_audio":"voice.wav",
+                "reference_text":"voice prompt",
+                "language":"zh",
+                "top_k":11,
+                "top_p":0.8,
+                "temperature":0.6,
+                "speed":1.2
+            }"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_synthesis(
+            Some("mao"),
+            Some("en"),
+            Some("request.wav".to_string()),
+            Some("request prompt".to_string()),
+            Some(33),
+            Some(0.7),
+            Some(0.5),
+            Some(0.9),
+            temp.path(),
+        )
+        .unwrap();
+
+        assert_eq!(resolved.language, Language::English);
+        assert_eq!(resolved.refer_path, "request.wav");
+        assert_eq!(resolved.prompt_text, "request prompt");
+        assert_eq!(resolved.options.top_k, 33);
+        assert!((resolved.options.top_p - 0.7).abs() < 0.001);
+        assert!((resolved.options.temperature - 0.5).abs() < 0.001);
+        assert!((resolved.options.speed - 0.9).abs() < 0.001);
+    }
 }

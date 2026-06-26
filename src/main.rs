@@ -176,6 +176,7 @@ fn main() {
                 args.bigvgan_model.as_deref(),
                 args.bert_model.as_deref(),
                 args.hubert_model.as_deref(),
+                &args.voices_dir,
             ) {
                 error!("HTTP server error: {}", e);
                 std::process::exit(1);
