@@ -344,6 +344,10 @@ curl -X POST http://localhost:9880/tts \
   --output output.wav
 ```
 
+`/tts` 响应会带上便于客户端记录和排障的元信息 header，例如
+`X-TTS-Voice`、`X-TTS-Language`、`X-TTS-Text-Chars`、
+`X-TTS-Duration-S`、`X-TTS-Sample-Rate` 和 `X-TTS-Channels`。
+
 **`POST /tts/stream`** — 单条文本，逐句流式返回 WAV（低延迟，可边下边播）
 
 ```bash
@@ -369,8 +373,10 @@ d=json.load(sys.stdin)
 open(f'out_{d[\"index\"]}.wav','wb').write(base64.b64decode(d['wav_base64']))
 print(f'[{d[\"index\"]}] {d[\"duration_s\"]:.2f}s  {d[\"inference_ms\"]}ms')
 "
-  done
+done
 ```
+
+`/tts/batch` 每行 JSON 也会包含 `voice`、`language` 和 `text_chars`，方便把输出音频和原始请求对应起来。
 
 批量响应每行为：`{"index":0,"wav_base64":"...","sample_rate":32000,"duration_s":1.5,"inference_ms":820}`
 

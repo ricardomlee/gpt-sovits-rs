@@ -65,6 +65,7 @@ struct TtsBatchRequest {
 }
 
 struct ResolvedSynthesis {
+    voice: Option<String>,
     language: Language,
     options: InferenceOptions,
     refer_path: String,
@@ -74,6 +75,10 @@ struct ResolvedSynthesis {
 #[derive(Serialize)]
 struct BatchItemResult {
     index: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    voice: Option<String>,
+    language: &'static str,
+    text_chars: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     wav_base64: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -149,6 +154,47 @@ fn json_error(status: StatusCode, message: impl AsRef<str>) -> Response<Body> {
         .unwrap()
 }
 
+fn language_code(language: Language) -> &'static str {
+    match language {
+        Language::Chinese => "zh",
+        Language::English => "en",
+        Language::Japanese => "ja",
+        Language::Korean => "ko",
+        Language::Cantonese => "yue",
+        Language::Auto => "auto",
+    }
+}
+
+fn safe_header_value(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii() && !ch.is_ascii_control() {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+fn add_synthesis_headers(
+    mut builder: axum::http::response::Builder,
+    voice: Option<&str>,
+    language: Language,
+    text_chars: usize,
+) -> axum::http::response::Builder {
+    builder = builder
+        .header("x-tts-language", language_code(language))
+        .header("x-tts-text-chars", text_chars.to_string());
+
+    if let Some(voice) = voice {
+        builder = builder.header("x-tts-voice", safe_header_value(voice));
+    }
+
+    builder
+}
+
 fn resolve_synthesis(
     voice_name: Option<&str>,
     text_language: Option<&str>,
@@ -197,6 +243,7 @@ fn resolve_synthesis(
     );
 
     Ok(ResolvedSynthesis {
+        voice: voice.map(|v| v.name),
         language,
         options,
         refer_path,
@@ -225,6 +272,9 @@ async fn tts_stream_handler(
         Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
     };
     let text = req.text.clone();
+    let text_chars = text.chars().count();
+    let voice = resolved.voice;
+    let language = resolved.language;
     let refer_path = resolved.refer_path;
     let prompt_text = resolved.prompt_text;
     let options = resolved.options;
@@ -269,10 +319,14 @@ async fn tts_stream_handler(
 
     let stream = ReceiverStream::new(rx).map(|item| item.map_err(|e| std::io::Error::other(e)));
 
-    Ok(Response::builder()
+    let builder =
+        add_synthesis_headers(Response::builder(), voice.as_deref(), language, text_chars);
+
+    Ok(builder
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "audio/wav")
         .header(header::TRANSFER_ENCODING, "chunked")
+        .header("x-tts-streaming", "true")
         .body(Body::from_stream(stream))
         .unwrap())
 }
@@ -296,6 +350,9 @@ async fn tts_handler(
         Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
     };
     let text = req.text.clone();
+    let text_chars = text.chars().count();
+    let voice = resolved.voice;
+    let language = resolved.language;
     let refer_path = resolved.refer_path;
     let prompt_text = resolved.prompt_text;
     let options = resolved.options;
@@ -321,13 +378,19 @@ async fn tts_handler(
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
 
-            Ok(Response::builder()
+            let builder =
+                add_synthesis_headers(Response::builder(), voice.as_deref(), language, text_chars);
+
+            Ok(builder
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "audio/wav")
                 .header(
                     header::CONTENT_DISPOSITION,
                     "attachment; filename=\"tts_output.wav\"",
                 )
+                .header("x-tts-duration-s", format!("{:.3}", audio.duration()))
+                .header("x-tts-sample-rate", audio.sample_rate.to_string())
+                .header("x-tts-channels", audio.channels.to_string())
                 .body(Body::from(wav_bytes))
                 .unwrap())
         }
@@ -377,6 +440,8 @@ async fn tts_batch_handler(
     let refer_path = resolved.refer_path;
     let prompt_text = resolved.prompt_text;
     let language = resolved.language;
+    let language_code = language_code(language);
+    let voice = resolved.voice;
     let options = resolved.options;
     let texts = req.texts;
     let pipeline = Arc::clone(&state.pipeline);
@@ -412,6 +477,9 @@ async fn tts_batch_handler(
                                 base64::engine::general_purpose::STANDARD.encode(&wav_bytes);
                             BatchItemResult {
                                 index: idx,
+                                voice: voice.clone(),
+                                language: language_code,
+                                text_chars: text.chars().count(),
                                 wav_base64: Some(wav_b64),
                                 error: None,
                                 sample_rate,
@@ -421,6 +489,9 @@ async fn tts_batch_handler(
                         }
                         Err(e) => BatchItemResult {
                             index: idx,
+                            voice: voice.clone(),
+                            language: language_code,
+                            text_chars: text.chars().count(),
                             wav_base64: None,
                             error: Some(format!("WAV encode failed: {e}")),
                             sample_rate: 0,
@@ -431,6 +502,9 @@ async fn tts_batch_handler(
                 }
                 Err(e) => BatchItemResult {
                     index: idx,
+                    voice: voice.clone(),
+                    language: language_code,
+                    text_chars: text.chars().count(),
                     wav_base64: None,
                     error: Some(e.to_string()),
                     sample_rate: 0,
@@ -636,6 +710,7 @@ mod tests {
         )
         .unwrap();
 
+        assert_eq!(resolved.voice.as_deref(), Some("mao"));
         assert_eq!(
             resolved.refer_path,
             voice_dir.join("ref.wav").to_string_lossy()
@@ -688,5 +763,11 @@ mod tests {
         assert!((resolved.options.top_p - 0.7).abs() < 0.001);
         assert!((resolved.options.temperature - 0.5).abs() < 0.001);
         assert!((resolved.options.speed - 0.9).abs() < 0.001);
+    }
+
+    #[test]
+    fn sanitizes_non_ascii_header_values() {
+        assert_eq!(safe_header_value("mao"), "mao");
+        assert_eq!(safe_header_value("角色 A"), "__ A");
     }
 }
