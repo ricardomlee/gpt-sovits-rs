@@ -1040,7 +1040,7 @@ impl GPTModel {
             use std::sync::Arc;
 
             let candle_core::Device::Cuda(cuda_dev) = &self.device else {
-                return self.generate_with_static_kv(
+                return self.generate_with_prompts_aligned_bert_kv_cache(
                     phoneme_ids,
                     prompt_tokens,
                     pre_aligned_bert,
@@ -1049,29 +1049,8 @@ impl GPTModel {
                     temperature,
                     repetition_penalty,
                     max_new_tokens,
-                    max_kv_len,
                 );
             };
-
-            // CUDA graph capture is unsafe when BERT features are present: intermediate
-            // BERT tensors freed to the default async-malloc pool before capture disturb
-            // the pool's free-list, causing cuMemAllocAsync inside the graph to get
-            // different virtual addresses on the second replay → CUDA_ERROR_ILLEGAL_ADDRESS.
-            // Fall back to the static-kv (eager) path which still uses pre-allocated KV
-            // cache for GPU efficiency without the graph launch optimisation.
-            if pre_aligned_bert.is_some() {
-                return self.generate_with_static_kv(
-                    phoneme_ids,
-                    prompt_tokens,
-                    pre_aligned_bert,
-                    top_k,
-                    top_p,
-                    temperature,
-                    repetition_penalty,
-                    max_new_tokens,
-                    max_kv_len,
-                );
-            }
 
             let audio_vocab_size = self.ar_predict_layer.dims()[0];
             let text_seq = phoneme_ids.len();
@@ -1338,12 +1317,12 @@ impl GPTModel {
                         .squeeze(0)?)
                 };
 
-            // ── Warmup: 3 eager steps to prime the allocator pool ─────────────────
-            // Also unmask each new KV position in attn_mask_buf: warmup steps write to
-            // positions total_prefill..total_prefill+WARMUP in the KV cache, and the
-            // graph's attention must see those positions as valid (0.0) on replay.
-            const WARMUP: usize = 3;
-            for step in 1..=WARMUP {
+            // Delay capture until the output survives a short eager prefix. This avoids
+            // paying graph setup cost for short utterances that are already near EOS.
+            // The eager steps also prime the stream-ordered allocator pool.
+            const EAGER_PREFIX: usize = 32;
+            let mut reached_eos = false;
+            for step in 1..=EAGER_PREFIX {
                 if generated.len() >= max_new_tokens {
                     break;
                 }
@@ -1368,11 +1347,12 @@ impl GPTModel {
                     &mut sampling_scratch,
                 )?;
                 if tok >= audio_vocab_size - 1 || (!is_eos && ag == audio_vocab_size - 1) {
+                    reached_eos = true;
                     break;
                 }
                 generated.push(tok);
             }
-            if generated.len() >= max_new_tokens {
+            if reached_eos || generated.len() >= max_new_tokens {
                 return Ok(generated);
             }
 
@@ -1394,11 +1374,8 @@ impl GPTModel {
                 .synchronize()
                 .map_err(|e| candle_core::Error::Msg(format!("sync before capture: {e:?}")))?;
 
-            // Trim the memory pool: release all free-listed blocks (e.g. from BERT prefill
-            // intermediate tensors) back to the OS before capture.  After trim the pool's
-            // free-list is empty, so every cuMemAllocAsync during graph capture is the
-            // first (and only) tenant of its address — guaranteeing the same pointer is
-            // returned on every subsequent replay.
+            // Release free-listed prefill blocks, including BERT intermediates, before
+            // capture. The graph then owns a stable allocator state across replays.
             unsafe {
                 use candle_core::cuda_backend::cudarc::driver;
                 let cu_device = driver::result::device::get(0)
@@ -1515,8 +1492,8 @@ impl GPTModel {
             }
 
             tracing::info!(
-                "[GPT cuda-graph] Graph captured ({} warmup + 1 capture steps); replaying",
-                WARMUP
+                "[GPT cuda-graph] Graph captured ({} eager + 1 capture steps); replaying",
+                EAGER_PREFIX
             );
 
             // ── Graph replay loop ─────────────────────────────────────────────────
@@ -1586,7 +1563,8 @@ impl GPTModel {
         }
         #[cfg(not(feature = "cuda"))]
         {
-            self.generate_with_static_kv(
+            let _ = max_kv_len;
+            self.generate_with_prompts_aligned_bert_kv_cache(
                 phoneme_ids,
                 prompt_tokens,
                 pre_aligned_bert,
@@ -1595,7 +1573,6 @@ impl GPTModel {
                 temperature,
                 repetition_penalty,
                 max_new_tokens,
-                max_kv_len,
             )
         }
     }

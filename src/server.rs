@@ -87,6 +87,7 @@ struct TtsBatchRequest {
 
 struct ResolvedSynthesis {
     voice: Option<String>,
+    mode: String,
     language: Language,
     options: InferenceOptions,
     refer_path: String,
@@ -268,14 +269,20 @@ fn resolve_synthesis(
                 .and_then(|v| v.reference_audio_path())
                 .map(|p| p.to_string_lossy().into_owned())
         })
-        .unwrap_or_else(|| "ref.wav".to_string());
+        .ok_or_else(|| {
+            "reference audio is required; select a configured voice or pass refer_wav_path"
+                .to_string()
+        })?;
     let prompt_text = prompt_text
         .or_else(|| {
             voice
                 .as_ref()
                 .and_then(|v| v.reference_text().map(str::to_string))
         })
-        .unwrap_or_default();
+        .filter(|text| !text.trim().is_empty())
+        .ok_or_else(|| {
+            "reference text is required; select a configured voice or pass prompt_text".to_string()
+        })?;
 
     let options = defaults.to_inference_options(
         language,
@@ -290,6 +297,7 @@ fn resolve_synthesis(
 
     Ok(ResolvedSynthesis {
         voice: voice.map(|v| v.name),
+        mode: defaults.mode,
         language,
         options,
         refer_path,
@@ -323,6 +331,7 @@ async fn openai_speech_handler(
     let text = req.input;
     let text_chars = text.chars().count();
     let voice = resolved.voice;
+    let mode = resolved.mode;
     let language = resolved.language;
     let refer_path = resolved.refer_path;
     let prompt_text = resolved.prompt_text;
@@ -333,7 +342,7 @@ async fn openai_speech_handler(
         let rt = tokio::runtime::Handle::current();
         let mut pipeline = rt.block_on(pipeline.lock());
         pipeline
-            .inference(&text, &refer_path, &prompt_text, &options)
+            .inference_with_mode(&mode, &text, &refer_path, &prompt_text, &options)
             .map_err(|e| format!("Inference failed: {}", e))
     })
     .await
@@ -402,6 +411,7 @@ async fn tts_stream_handler(
     let text = req.text.clone();
     let text_chars = text.chars().count();
     let voice = resolved.voice;
+    let mode = resolved.mode;
     let language = resolved.language;
     let refer_path = resolved.refer_path;
     let prompt_text = resolved.prompt_text;
@@ -428,7 +438,9 @@ async fn tts_stream_handler(
         }
 
         // Stream each sentence
-        for result in pipeline.inference_sentences(&text, &refer_path, &prompt_text, &options, 5) {
+        for result in
+            pipeline.inference_sentences(&text, &refer_path, &prompt_text, &options, &mode, 5)
+        {
             match result {
                 Ok(audio) => {
                     let pcm = samples_to_pcm(&audio.samples);
@@ -480,6 +492,7 @@ async fn tts_handler(
     let text = req.text.clone();
     let text_chars = text.chars().count();
     let voice = resolved.voice;
+    let mode = resolved.mode;
     let language = resolved.language;
     let refer_path = resolved.refer_path;
     let prompt_text = resolved.prompt_text;
@@ -490,7 +503,7 @@ async fn tts_handler(
         let rt = tokio::runtime::Handle::current();
         let mut pipeline = rt.block_on(pipeline.lock());
         pipeline
-            .inference(&text, &refer_path, &prompt_text, &options)
+            .inference_with_mode(&mode, &text, &refer_path, &prompt_text, &options)
             .map_err(|e| format!("Inference failed: {}", e))
     })
     .await
@@ -570,6 +583,7 @@ async fn tts_batch_handler(
     let language = resolved.language;
     let language_code = language_code(language);
     let voice = resolved.voice;
+    let mode = resolved.mode;
     let options = resolved.options;
     let texts = req.texts;
     let pipeline = Arc::clone(&state.pipeline);
@@ -592,7 +606,7 @@ async fn tts_batch_handler(
         for (idx, text) in texts.iter().enumerate() {
             let t = std::time::Instant::now();
             let inference_result =
-                pipeline.inference_cuda_graph(text, &refer_path, &prompt_text, &options);
+                pipeline.inference_with_mode(&mode, text, &refer_path, &prompt_text, &options);
             let inference_ms = t.elapsed().as_millis() as u64;
 
             let item = match inference_result {
@@ -841,6 +855,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolved.voice.as_deref(), Some("mao"));
+        assert_eq!(resolved.mode, "cuda-graph");
         assert_eq!(
             resolved.refer_path,
             voice_dir.join("ref.wav").to_string_lossy()
@@ -893,6 +908,56 @@ mod tests {
         assert!((resolved.options.top_p - 0.7).abs() < 0.001);
         assert!((resolved.options.temperature - 0.5).abs() < 0.001);
         assert!((resolved.options.speed - 0.9).abs() < 0.001);
+    }
+
+    #[test]
+    fn resolves_voice_inference_mode() {
+        let temp = tempfile::tempdir().unwrap();
+        let voice_dir = temp.path().join("fast");
+        std::fs::create_dir(&voice_dir).unwrap();
+        std::fs::write(
+            voice_dir.join("voice.json"),
+            r#"{
+                "reference_audio":"ref.wav",
+                "reference_text":"prompt",
+                "mode":"cuda-graph"
+            }"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_synthesis(
+            Some("fast"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            temp.path(),
+        )
+        .unwrap();
+
+        assert_eq!(resolved.mode, "cuda-graph");
+    }
+
+    #[test]
+    fn rejects_requests_without_reference_data() {
+        let error = resolve_synthesis(
+            None,
+            Some("zh"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Path::new("voices"),
+        )
+        .err()
+        .expect("missing reference data should fail");
+
+        assert!(error.contains("reference audio is required"));
     }
 
     #[test]

@@ -85,6 +85,22 @@ mod tests {
     }
 
     #[test]
+    fn test_inference_mode_rejects_unknown_value() {
+        let mut pipeline = Pipeline::new(Config::default()).unwrap();
+        let error = pipeline
+            .inference_with_mode(
+                "fast",
+                "test",
+                "ref.wav",
+                "reference",
+                &InferenceOptions::default(),
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, Error::ConfigError(_)));
+    }
+
+    #[test]
     fn test_split_sentences_merges_short_chunks() {
         let chunks = split_sentences("你好。世界。今天测试长文本。", 5);
         assert_eq!(chunks, vec!["你好。世界。", "今天测试长文本。"]);

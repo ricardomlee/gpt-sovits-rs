@@ -116,6 +116,9 @@ pub struct ConfigBuilder {
 
 impl ConfigBuilder {
     pub fn with_device(mut self, device: &str) -> Self {
+        if device.eq_ignore_ascii_case("auto") {
+            return self.with_auto_device();
+        }
         self.device = Some(match device.to_lowercase().as_str() {
             "cuda" => Device::Cuda,
             "cpu" => Device::Cpu,
@@ -171,5 +174,19 @@ impl ConfigBuilder {
             half_precision: self.half_precision.unwrap_or(true),
             model_version: self.model_version.unwrap_or_default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn auto_device_builds_a_supported_device() {
+        let config = Config::builder().with_device("auto").build();
+        assert!(matches!(
+            config.device,
+            Device::Cuda | Device::Cpu | Device::Mps
+        ));
     }
 }

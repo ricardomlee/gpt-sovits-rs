@@ -1,6 +1,8 @@
 /// Full GPU E2E test: GPT → SoVITS with reference audio
 /// Tests complete pipeline on GPU with KV cache
+use gpt_sovits_rs::model_paths::{ModelPathOverrides, ModelPaths};
 use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
+use std::path::Path;
 
 fn main() {
     if let Err(e) = run() {
@@ -18,25 +20,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     let mut pipeline = Pipeline::new(config)?;
+    let paths = ModelPaths::discover(Path::new("models"), ModelPathOverrides::default())?;
 
     println!("Loading models...");
-    pipeline.load_gpt("models/gpt-model.safetensors")?;
+    pipeline.load_gpt(&paths.gpt)?;
     println!("  [OK] GPT");
-    pipeline.load_sovits("models/sovits-model.safetensors")?;
+    pipeline.load_sovits(&paths.sovits)?;
     println!("  [OK] SoVITS");
 
-    match pipeline.load_bert("models/bert/bert.safetensors") {
-        Ok(_) => println!("  [OK] BERT"),
-        Err(e) => println!("  [SKIP] BERT: {}", e),
+    match paths.bert.as_ref().map(|path| pipeline.load_bert(path)) {
+        Some(Ok(_)) => println!("  [OK] BERT"),
+        Some(Err(e)) => println!("  [SKIP] BERT: {}", e),
+        None => println!("  [SKIP] BERT: model not found"),
     }
-    match pipeline.load_hubert("models/hubert/hubert.safetensors") {
-        Ok(_) => println!("  [OK] HuBERT"),
-        Err(e) => println!("  [SKIP] HuBERT: {}", e),
+    match paths.hubert.as_ref().map(|path| pipeline.load_hubert(path)) {
+        Some(Ok(_)) => {
+            pipeline.load_semantic_tokenizer(&paths.sovits)?;
+            println!("  [OK] HuBERT + semantic tokenizer");
+        }
+        Some(Err(e)) => println!("  [SKIP] HuBERT: {}", e),
+        None => println!("  [SKIP] HuBERT: model not found"),
     }
 
     let input_text = "你好世界";
-    let ref_audio = "ref.wav";
-    let ref_text = "先帝创业未半而中道崩殂"; // transcription of reference audio
+    let ref_audio = "mao.wav";
+    let ref_text = "会战兵力是八十万对六十万，优势在我";
 
     let options = InferenceOptions::builder()
         .top_k(15)

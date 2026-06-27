@@ -268,6 +268,7 @@ impl Pipeline {
         reference_audio: P,
         reference_text: &'a str,
         options: &'a InferenceOptions,
+        mode: &str,
         min_sentence_chars: usize,
     ) -> impl Iterator<Item = Result<AudioBuffer>> + 'a {
         let sentences = split_sentences(text, min_sentence_chars);
@@ -278,6 +279,28 @@ impl Pipeline {
             reference_audio: reference_audio.as_ref().to_path_buf(),
             reference_text,
             options,
+            mode: mode.to_string(),
+        }
+    }
+
+    /// Run synthesis through the selected GPT decoding implementation.
+    pub fn inference_with_mode<P: AsRef<Path>>(
+        &mut self,
+        mode: &str,
+        text: &str,
+        reference_audio: P,
+        reference_text: &str,
+        options: &InferenceOptions,
+    ) -> Result<AudioBuffer> {
+        match mode {
+            "plain" => self.inference(text, reference_audio, reference_text, options),
+            "kv" => self.inference_kv_cache(text, reference_audio, reference_text, options),
+            "cuda-graph" => {
+                self.inference_cuda_graph(text, reference_audio, reference_text, options)
+            }
+            _ => Err(Error::ConfigError(format!(
+                "Unsupported inference mode: {mode}"
+            ))),
         }
     }
 
@@ -900,6 +923,7 @@ struct SentenceIterator<'a> {
     reference_audio: std::path::PathBuf,
     reference_text: &'a str,
     options: &'a InferenceOptions,
+    mode: String,
 }
 
 impl<'a> Iterator for SentenceIterator<'a> {
@@ -917,7 +941,8 @@ impl<'a> Iterator for SentenceIterator<'a> {
             self.sentences.len(),
             text
         );
-        Some(self.pipeline.inference_kv_cache(
+        Some(self.pipeline.inference_with_mode(
+            &self.mode,
             &text,
             &self.reference_audio,
             self.reference_text,

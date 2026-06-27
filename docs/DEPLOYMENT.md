@@ -14,7 +14,7 @@ outputs/  输出文件和测试报告，可选
 cp .env.example .env
 ```
 
-如果模型路径或文件名不一样，改 `.env`。想试 voice profile，可以把 `voices.example/mao` 复制到 `voices/mao`，再把对应参考音频放到 `voices/mao/ref.wav`。
+模型按 README 中的目录和文件名放好即可。文件名不同时，在 `.env` 里改对应路径。想试 voice profile，可以把 `voices.example/mao` 复制到 `voices/mao`，再把对应参考音频放到 `voices/mao/ref.wav`。
 
 ## CPU
 

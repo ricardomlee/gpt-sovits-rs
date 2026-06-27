@@ -1,8 +1,9 @@
-/// Benchmark comparing inference() vs inference_kv_cache() on GPU.
+/// Benchmark comparing plain, dynamic KV, and CUDA Graph modes on GPU.
 ///
-/// Measures wall-clock time for full end-to-end synthesis with and without KV cache.
-/// Uses multiple text lengths to show how speedup scales with sequence length.
+/// BERT stays enabled so every mode uses the same quality path.
+use gpt_sovits_rs::model_paths::{ModelPathOverrides, ModelPaths};
 use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
+use std::path::Path;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -28,26 +29,17 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
         .with_half_precision(true)
         .build();
 
+    let paths = benchmark_model_paths()?;
     let mut pipeline = Pipeline::new(config)?;
-    pipeline.load_gpt(model_path(
-        "GPT_SOVITS_GPT_MODEL",
-        &["models/gpt-model.safetensors"],
-    )?)?;
-    pipeline.load_sovits(model_path(
-        "GPT_SOVITS_SOVITS_MODEL",
-        &["models/sovits-model.safetensors"],
-    )?)?;
-    let _ = pipeline.load_bert(model_path(
-        "GPT_SOVITS_BERT_MODEL",
-        &["models/bert.safetensors", "models/bert/bert.safetensors"],
-    )?);
-    let _ = pipeline.load_hubert(model_path(
-        "GPT_SOVITS_HUBERT_MODEL",
-        &[
-            "models/hubert.safetensors",
-            "models/hubert/hubert.safetensors",
-        ],
-    )?);
+    pipeline.load_gpt(&paths.gpt)?;
+    pipeline.load_sovits(&paths.sovits)?;
+    if let Some(path) = paths.bert.as_ref() {
+        pipeline.load_bert(path)?;
+    }
+    if let Some(path) = paths.hubert.as_ref() {
+        pipeline.load_hubert(path)?;
+        pipeline.load_semantic_tokenizer(&paths.sovits)?;
+    }
     println!("Models loaded.\n");
 
     let ref_audio = ref_audio_path()?;
@@ -62,65 +54,80 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     let options = InferenceOptions::builder()
-        .top_k(15)
+        .top_k(1)
         .top_p(1.0)
         .temperature(1.0)
         .language(Language::Chinese)
-        .max_tokens(1000)
+        .max_tokens(300)
         .build();
 
     println!(
-        "{:<8} {:<8} {:<10} {:<10} {:<8}",
-        "length", "tokens", "plain(s)", "kv(s)", "speedup"
+        "{:<8} {:<9} {:<10} {:<10} {:<10} {:<9} {:<9}",
+        "length", "audio(s)", "plain(s)", "kv(s)", "graph(s)", "kv/plain", "graph/kv"
     );
-    println!("{}", "-".repeat(52));
+    println!("{}", "-".repeat(82));
 
     for (label, input_text) in test_cases {
-        // 1 warmup + 2 timed runs each
-        let _ = pipeline.inference(input_text, &ref_audio, &ref_text, &options)?;
-        let _ = pipeline.inference_kv_cache(input_text, &ref_audio, &ref_text, &options)?;
+        pipeline.preload_speaker(&ref_audio, &ref_text, options.language)?;
+
+        // One warmup per mode, followed by two timed runs.
+        for mode in ["plain", "kv", "cuda-graph"] {
+            let _ =
+                pipeline.inference_with_mode(mode, input_text, &ref_audio, &ref_text, &options)?;
+        }
 
         let mut t_plain = 0.0f64;
         let mut t_kv = 0.0f64;
-        let mut token_count = 0usize;
+        let mut t_static = 0.0f64;
+        let mut audio_duration = 0.0f32;
 
         for _ in 0..2 {
             let t = Instant::now();
             let audio = pipeline.inference(input_text, &ref_audio, &ref_text, &options)?;
             t_plain += t.elapsed().as_secs_f64();
-            token_count = audio.samples.len() / (audio.sample_rate as usize / 25);
+            audio_duration = audio.duration();
         }
         for _ in 0..2 {
             let t = Instant::now();
             let _ = pipeline.inference_kv_cache(input_text, &ref_audio, &ref_text, &options)?;
             t_kv += t.elapsed().as_secs_f64();
         }
+        for _ in 0..2 {
+            let t = Instant::now();
+            let _ = pipeline.inference_cuda_graph(input_text, &ref_audio, &ref_text, &options)?;
+            t_static += t.elapsed().as_secs_f64();
+        }
 
         let avg_plain = t_plain / 2.0;
         let avg_kv = t_kv / 2.0;
-        let speedup = avg_plain / avg_kv;
+        let avg_static = t_static / 2.0;
 
         println!(
-            "{:<8} {:<8} {:<10.2} {:<10.2} {:.2}x",
-            label, token_count, avg_plain, avg_kv, speedup
+            "{:<8} {:<9.2} {:<10.2} {:<10.2} {:<10.2} {:>8.2}x {:>8.2}x",
+            label,
+            audio_duration,
+            avg_plain,
+            avg_kv,
+            avg_static,
+            avg_plain / avg_kv,
+            avg_kv / avg_static,
         );
     }
 
-    println!("\nNote: speedup grows with sequence length (O(n²) vs O(n) attention cost).");
+    println!("\ngraph(s) uses the same BERT features as plain and dynamic KV modes.");
     Ok(())
 }
 
-fn model_path(env_key: &str, candidates: &[&str]) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    if let Ok(path) = std::env::var(env_key) {
-        return Ok(PathBuf::from(path));
-    }
-    candidates
-        .iter()
-        .map(PathBuf::from)
-        .find(|path| path.exists())
-        .ok_or_else(|| {
-            format!("missing model; set {env_key} or create one of {candidates:?}").into()
-        })
+fn benchmark_model_paths() -> Result<ModelPaths, Box<dyn std::error::Error>> {
+    Ok(ModelPaths::discover(
+        Path::new("models"),
+        ModelPathOverrides {
+            gpt: std::env::var_os("GPT_SOVITS_GPT_MODEL").map(PathBuf::from),
+            sovits: std::env::var_os("GPT_SOVITS_SOVITS_MODEL").map(PathBuf::from),
+            bert: std::env::var_os("GPT_SOVITS_BERT_MODEL").map(PathBuf::from),
+            hubert: std::env::var_os("GPT_SOVITS_HUBERT_MODEL").map(PathBuf::from),
+        },
+    )?)
 }
 
 fn ref_audio_path() -> Result<PathBuf, Box<dyn std::error::Error>> {

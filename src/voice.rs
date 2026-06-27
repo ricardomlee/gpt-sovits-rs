@@ -40,6 +40,14 @@ impl LoadedVoiceProfile {
         if let Some(mode) = profile.mode.as_deref() {
             validate_mode(mode)?;
         }
+        if let Some(language) = profile.language.as_deref() {
+            if Language::from_str(language).is_none() {
+                return Err(format!(
+                    "Invalid language '{}' in voice profile {:?}; expected zh, en, ja, ko, yue, or auto",
+                    language, path
+                ));
+            }
+        }
         Ok(Self {
             name: name.to_string(),
             dir,
@@ -241,6 +249,17 @@ mod tests {
     fn rejects_invalid_mode() {
         assert!(validate_mode("cuda-graph").is_ok());
         assert!(validate_mode("fast").is_err());
+    }
+
+    #[test]
+    fn rejects_invalid_profile_language() {
+        let temp = tempfile::tempdir().unwrap();
+        let voice_dir = temp.path().join("test");
+        std::fs::create_dir(&voice_dir).unwrap();
+        std::fs::write(voice_dir.join("voice.json"), r#"{"language":"xx"}"#).unwrap();
+
+        let error = LoadedVoiceProfile::load("test", temp.path()).unwrap_err();
+        assert!(error.contains("Invalid language 'xx'"));
     }
 
     #[test]

@@ -46,7 +46,7 @@ SoVITS 使用语义 token 和参考音频的 mel 频谱，通过 Flow 模型和 
 | BERT/HuBERT | Python + PyTorch | Candle |
 | 重采样 | librosa / soxr | libsoxr |
 | API | Gradio Web UI | CLI / Rust 库 / HTTP |
-| KV Cache | 无 | prefill + 单 token 解码 |
+| KV Cache | 动态 KV + SDPA | 动态 KV；另有静态 KV 和实验性 CUDA Graph |
 
 ## 特性
 
@@ -159,18 +159,16 @@ BERT 权重需使用 Hugging Face safetensors 格式，并把对应的 `tokenize
 
 ### 运行推理
 
+程序会从 `models/` 自动找到上面的四个模型。设备也会自动选择，CUDA 可用时用 CUDA，否则用 CPU。
+
 ```bash
 cargo run --release --features cuda --bin gpt-sovits -- \
-    --device cuda \
-    --gpt-model models/gpt-model.safetensors \
-    --sovits-model models/sovits-model.safetensors \
-    --bert-model models/bert/bert.safetensors \
-    --hubert-model models/hubert/hubert.safetensors \
     --text "你好，世界！" \
     --reference-audio ref.wav \
-    --reference-text "参考音频对应的文字" \
-    --output output.wav
+    --reference-text "参考音频对应的文字"
 ```
+
+默认输出为 `output.wav`。模型不在 `models/` 时，可以用 `--models-dir` 指定整个目录，也可以用 `--gpt-model` 等参数单独覆盖。
 
 长文本建议开启分句合成。它会复用同一参考音频特征，再逐句拼接；目前比一次性生成整段更稳：
 
@@ -179,17 +177,13 @@ cargo run --release --features cuda --bin gpt-sovits -- \
     --device cuda --mode cuda-graph --split-sentences \
     --min-sentence-chars 12 --sentence-gap-ms 120 --sentence-fade-ms 8 \
     --max-tokens 500 --repetition-penalty 1.35 \
-    --gpt-model models/gpt-model.safetensors \
-    --sovits-model models/sovits-model.safetensors \
-    --bert-model models/bert/bert.safetensors \
-    --hubert-model models/hubert/hubert.safetensors \
     --text "第一句话。第二句话。第三句话。" \
     --reference-audio ref.wav \
     --reference-text "参考音频对应的文字" \
     --output output_long.wav
 ```
 
-`--mode` 可选 `plain`、`kv`、`cuda-graph`。CLI 日志会输出 `profile mode=... target=... ref=... target_bert=... gpt=... sovits=... total=...`，便于看时间花在哪里。
+`--mode` 可选 `plain`、`kv`、`cuda-graph`，默认用 `cuda-graph`。短输出会在 capture 前结束；CPU 和非 CUDA 构建会自动使用动态 KV。CLI 日志会输出 `profile mode=... target=... ref=... target_bert=... gpt=... sovits=... total=...`，便于看时间花在哪里。
 
 > BigVGAN 当前仍是实验加载入口，主推理路径使用 SoVITS 权重内置 decoder；普通 mel-to-waveform BigVGAN 不能直接替换 SoVITS latent decoder。
 
@@ -215,15 +209,16 @@ cargo run --release --features cuda --bin gpt-sovits -- \
 ```bash
 cargo run --release --features cuda --bin gpt-sovits -- \
     --voice mao \
-    --text "人民，只有人民，才是创造世界历史的动力。" \
-    --gpt-model models/gpt-model.safetensors \
-    --sovits-model models/sovits-model.safetensors \
-    --bert-model models/bert/bert.safetensors \
-    --hubert-model models/hubert/hubert.safetensors \
-    --output output.wav
+    --text "人民，只有人民，才是创造世界历史的动力。"
 ```
 
 命令行参数会覆盖 voice profile 中的默认值。长期产品目标见 [docs/PRODUCT_GOAL.md](docs/PRODUCT_GOAL.md)。
+
+查看已有音色不需要加载模型：
+
+```bash
+cargo run --release --bin gpt-sovits -- --list-voices
+```
 
 ### 自动质量 Smoke Test
 
@@ -232,10 +227,6 @@ cargo run --release --features cuda --bin gpt-sovits -- \
 ```bash
 cargo run --release --features cuda --example quality_smoke -- \
     --voice mao \
-    --gpt-model models/gpt-model.safetensors \
-    --sovits-model models/sovits-model.safetensors \
-    --bert-model models/bert/bert.safetensors \
-    --hubert-model models/hubert/hubert.safetensors \
     --output-dir quality_outputs/mao
 ```
 
@@ -287,30 +278,30 @@ audio.save("output.wav")?;
 
 | | `inference()` | `inference_kv_cache()` | `inference_cuda_graph()` |
 |---|---|---|---|
-| GPT 策略 | 每步重算全序列 O(n²) | prefill + 单 token 解码 O(n) | prefill + CUDA graph 单步 |
-| 适用场景 | 短文本、调试 | 长文本 | 高频调用、延迟敏感 |
+| GPT 策略 | 每步重算全序列 O(n²) | prefill + 单 token 解码 O(n) | 静态 KV；长输出延迟捕获 CUDA Graph |
+| 适用场景 | 对照和调试 | CPU 或手动指定 | CUDA 默认 |
 | 要求 | 无 | 无 | `cuda` feature |
 | 音质 | 相同 | 相同 | 相同 |
 
-RTX 4060 Ti 实测（`cargo bench --features cuda --bench kv_cache_bench`）：
+RTX 4060 Ti 实测如下。测试加载 BERT、HuBERT 和 semantic tokenizer，先预热说话人缓存，使用 `top_k=1`、`max_tokens=300`，每种模式预热一次后取两次平均值。
 
-| 文本长度 | plain | kv cache | 加速比 |
-|----------|-------|----------|--------|
-| 短（4 字） | 3.95s | 2.00s | **1.97x** |
-| 中（28 字）| 16.94s | 7.16s | **2.37x** |
-| 长（43 字）| 41.86s | 13.08s | **3.20x** |
+| 文本 | 音频时长 | plain | 动态 KV | CUDA Graph | KV 加速 | Graph 相对 KV |
+|---|---:|---:|---:|---:|---:|---:|
+| 短 | 0.92s | 0.50s | 0.38s | 0.40s | 1.31x | 0.95x |
+| 中 | 7.00s | 5.19s | 2.58s | 2.49s | 2.01x | 1.04x |
+| 长 | 12.00s | 14.48s | 4.32s | 2.53s | 3.36x | 1.70x |
 
-文本越长，KV cache 的收益越明显。
+Graph 会先用 static KV 生成 32 个 token。短句在此之前结束，不需要 capture；长句则用后续 token 摊薄初始化成本。BERT 在三种模式下均保持开启。复现命令：
+
+```bash
+cargo bench --features cuda --bench kv_cache_bench
+```
 
 ## HTTP API
 
 ```bash
 cargo run --release --features "cuda,http-api" --bin gpt-sovits -- \
-    --http --port 9880 --device cuda \
-    --gpt-model models/gpt-model.safetensors \
-    --sovits-model models/sovits-model.safetensors \
-    --bert-model models/bert/bert.safetensors \
-    --hubert-model models/hubert/hubert.safetensors
+    --http --port 9880
 ```
 
 服务启动后提供这些端点：

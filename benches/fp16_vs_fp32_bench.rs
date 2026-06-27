@@ -39,6 +39,10 @@ fn make_pipeline(half: bool) -> Result<Pipeline, Box<dyn std::error::Error>> {
             "models/hubert/hubert.safetensors",
         ],
     )?);
+    p.load_semantic_tokenizer(model_path(
+        "GPT_SOVITS_SOVITS_MODEL",
+        &["models/sovits-model.safetensors"],
+    )?)?;
     Ok(p)
 }
 

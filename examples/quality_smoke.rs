@@ -4,6 +4,7 @@ use clap::Parser;
 use gpt_sovits_rs::audio_checks::{
     validate_audio_quality, AudioQualityMetrics, AudioQualityThresholds,
 };
+use gpt_sovits_rs::model_paths::{ModelPathOverrides, ModelPaths};
 use gpt_sovits_rs::voice::{LoadedVoiceProfile, VoiceDefaults};
 use gpt_sovits_rs::{Config, Language, Pipeline};
 use serde::Serialize;
@@ -19,11 +20,14 @@ struct Args {
     #[arg(long, default_value = "voices")]
     voices_dir: PathBuf,
 
-    #[arg(long)]
-    gpt_model: PathBuf,
+    #[arg(long, default_value = "models")]
+    models_dir: PathBuf,
 
     #[arg(long)]
-    sovits_model: PathBuf,
+    gpt_model: Option<PathBuf>,
+
+    #[arg(long)]
+    sovits_model: Option<PathBuf>,
 
     #[arg(long)]
     bert_model: Option<PathBuf>,
@@ -31,7 +35,7 @@ struct Args {
     #[arg(long)]
     hubert_model: Option<PathBuf>,
 
-    #[arg(long, default_value = "cuda", value_parser = ["cuda", "cpu", "mps"])]
+    #[arg(long, default_value = "auto", value_parser = ["auto", "cuda", "cpu", "mps"])]
     device: String,
 
     #[arg(long)]
@@ -71,6 +75,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     std::fs::create_dir_all(&args.output_dir)?;
 
+    let model_paths = ModelPaths::discover(
+        &args.models_dir,
+        ModelPathOverrides {
+            gpt: args.gpt_model,
+            sovits: args.sovits_model,
+            bert: args.bert_model,
+            hubert: args.hubert_model,
+        },
+    )?;
+
     let voice = LoadedVoiceProfile::load(&args.voice, &args.voices_dir)?;
     let defaults = VoiceDefaults::from_profile(Some(&voice.profile));
     let language = Language::from_str(&defaults.language).unwrap_or(Language::Chinese);
@@ -86,14 +100,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .with_half_precision(args.half)
         .build();
     let mut pipeline = Pipeline::new(config)?;
-    pipeline.load_gpt(&args.gpt_model)?;
-    pipeline.load_sovits(&args.sovits_model)?;
-    if let Some(path) = args.bert_model.as_ref() {
+    pipeline.load_gpt(&model_paths.gpt)?;
+    pipeline.load_sovits(&model_paths.sovits)?;
+    if let Some(path) = model_paths.bert.as_ref() {
         pipeline.load_bert(path)?;
     }
-    if let Some(path) = args.hubert_model.as_ref() {
+    if let Some(path) = model_paths.hubert.as_ref() {
         pipeline.load_hubert(path)?;
-        pipeline.load_semantic_tokenizer(&args.sovits_model)?;
+        pipeline.load_semantic_tokenizer(&model_paths.sovits)?;
     }
 
     let options = defaults.to_inference_options(language, Default::default());

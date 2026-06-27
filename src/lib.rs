@@ -27,6 +27,7 @@
 pub mod audio_checks;
 pub mod config;
 pub mod inference;
+pub mod model_paths;
 pub mod models;
 pub mod text_frontend;
 pub mod utils;

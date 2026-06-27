@@ -1,8 +1,10 @@
 //! GPT-SoVITS CLI - Command line interface for TTS inference
 
 use clap::Parser;
+use gpt_sovits_rs::model_paths::{ModelPathOverrides, ModelPaths};
 use gpt_sovits_rs::voice::{
-    load_optional_voice_profile, InferenceOptionOverrides, LoadedVoiceProfile, VoiceDefaults,
+    list_voice_profiles, load_optional_voice_profile, InferenceOptionOverrides, LoadedVoiceProfile,
+    VoiceDefaults,
 };
 use gpt_sovits_rs::{split_sentences, AudioBuffer, Config, InferenceOptions, Language, Pipeline};
 use std::path::PathBuf;
@@ -29,6 +31,10 @@ struct Args {
     #[arg(long, default_value = "voices")]
     voices_dir: PathBuf,
 
+    /// List available voice profiles and exit
+    #[arg(long)]
+    list_voices: bool,
+
     /// Inspect model file
     #[arg(long)]
     inspect: Option<PathBuf>,
@@ -36,6 +42,10 @@ struct Args {
     /// Path to GPT model file
     #[arg(long)]
     gpt_model: Option<PathBuf>,
+
+    /// Directory searched for models not passed explicitly
+    #[arg(long, default_value = "models")]
+    models_dir: PathBuf,
 
     /// Path to SoVITS model file
     #[arg(long)]
@@ -66,8 +76,8 @@ struct Args {
     language: Option<String>,
 
     /// Output WAV file path
-    #[arg(short, long)]
-    output: Option<PathBuf>,
+    #[arg(short, long, default_value = "output.wav")]
+    output: PathBuf,
 
     /// Top-k sampling
     #[arg(long)]
@@ -118,7 +128,7 @@ struct Args {
     half: bool,
 
     /// Device to use
-    #[arg(long, default_value = "cuda", value_parser = ["cuda", "cpu", "mps"])]
+    #[arg(long, default_value = "auto", value_parser = ["auto", "cuda", "cpu", "mps"])]
     device: String,
 
     /// Start HTTP server mode
@@ -150,6 +160,24 @@ fn main() {
 
     info!("Starting GPT-SoVITS TTS Engine");
 
+    if args.list_voices {
+        match list_voice_profiles(&args.voices_dir) {
+            Ok(voices) if voices.is_empty() => {
+                println!("No voices found in {}", args.voices_dir.display())
+            }
+            Ok(voices) => {
+                for voice in voices {
+                    println!("{voice}");
+                }
+            }
+            Err(e) => {
+                error!("{}", e);
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     let voice_profile = match load_optional_voice_profile(args.voice.as_deref(), &args.voices_dir) {
         Ok(profile) => profile,
         Err(e) => {
@@ -165,6 +193,44 @@ fn main() {
         );
     }
 
+    if !args.http && args.text.is_none() {
+        eprintln!("Error: --text is required in CLI mode");
+        eprintln!("Usage: gpt-sovits --voice <VOICE> --text <TEXT> [OPTIONS]");
+        eprintln!("       gpt-sovits --http [OPTIONS]");
+        std::process::exit(1);
+    }
+    if let Some(language) = args.language.as_deref() {
+        if Language::from_str(language).is_none() {
+            error!(
+                "Unsupported language '{}'; expected zh, en, ja, ko, yue, or auto",
+                language
+            );
+            std::process::exit(1);
+        }
+    }
+
+    let model_paths = match ModelPaths::discover(
+        &args.models_dir,
+        ModelPathOverrides {
+            gpt: args.gpt_model.clone(),
+            sovits: args.sovits_model.clone(),
+            bert: args.bert_model.clone(),
+            hubert: args.hubert_model.clone(),
+        },
+    ) {
+        Ok(paths) => paths,
+        Err(e) => {
+            error!("{}", e);
+            std::process::exit(1);
+        }
+    };
+    if model_paths.bert.is_none() {
+        tracing::warn!("BERT model not found; speech quality will be reduced");
+    }
+    if model_paths.hubert.is_none() {
+        tracing::warn!("HuBERT model not found; voice similarity will be reduced");
+    }
+
     // HTTP mode
     if args.http {
         #[cfg(feature = "http-api")]
@@ -173,11 +239,11 @@ fn main() {
                 args.port,
                 &args.device,
                 args.half,
-                args.gpt_model.as_deref(),
-                args.sovits_model.as_deref(),
+                Some(&model_paths.gpt),
+                Some(&model_paths.sovits),
                 args.bigvgan_model.as_deref(),
-                args.bert_model.as_deref(),
-                args.hubert_model.as_deref(),
+                model_paths.bert.as_deref(),
+                model_paths.hubert.as_deref(),
                 &args.voices_dir,
             ) {
                 error!("HTTP server error: {}", e);
@@ -192,31 +258,10 @@ fn main() {
     }
 
     // CLI mode - validate required arguments
-    let text = match &args.text {
-        Some(t) => t.clone(),
-        None => {
-            eprintln!("Error: --text is required in CLI mode");
-            eprintln!("Usage: gpt-sovits --text <TEXT> --output <OUTPUT> [OPTIONS]");
-            eprintln!("       gpt-sovits --http [OPTIONS]");
-            std::process::exit(1);
-        }
-    };
+    let text = args.text.clone().expect("text was validated above");
 
-    let gpt_model = match &args.gpt_model {
-        Some(m) => m.clone(),
-        None => {
-            eprintln!("Error: --gpt-model is required in CLI mode");
-            std::process::exit(1);
-        }
-    };
-
-    let sovits_model = match &args.sovits_model {
-        Some(m) => m.clone(),
-        None => {
-            eprintln!("Error: --sovits-model is required in CLI mode");
-            std::process::exit(1);
-        }
-    };
+    let gpt_model = model_paths.gpt;
+    let sovits_model = model_paths.sovits;
 
     let reference_audio = match resolve_reference_audio(&args, voice_profile.as_ref()) {
         Some(a) => a,
@@ -234,13 +279,7 @@ fn main() {
         }
     };
 
-    let output = match &args.output {
-        Some(o) => o.clone(),
-        None => {
-            eprintln!("Error: --output is required in CLI mode");
-            std::process::exit(1);
-        }
-    };
+    let output = args.output;
 
     info!("Loading models...");
     info!("  GPT model: {:?}", gpt_model);
@@ -287,7 +326,7 @@ fn main() {
     }
 
     // Load BERT model (optional, significantly improves quality)
-    if let Some(ref bert_path) = args.bert_model {
+    if let Some(ref bert_path) = model_paths.bert {
         info!("Loading BERT model...");
         if let Err(e) = pipeline.load_bert(bert_path) {
             error!("Failed to load BERT model: {}", e);
@@ -297,7 +336,7 @@ fn main() {
     }
 
     // Load Hubert model (optional, needed for semantic token extraction)
-    if let Some(ref hubert_path) = args.hubert_model {
+    if let Some(ref hubert_path) = model_paths.hubert {
         info!("Loading Hubert model...");
         if let Err(e) = pipeline.load_hubert(hubert_path) {
             error!("Failed to load Hubert model: {}", e);
@@ -307,7 +346,7 @@ fn main() {
     }
 
     // Load semantic tokenizer (optional, uses SoVITS weights for prompt token extraction)
-    if args.hubert_model.is_some() {
+    if model_paths.hubert.is_some() {
         info!("Loading semantic tokenizer from SoVITS weights...");
         if let Err(e) = pipeline.load_semantic_tokenizer(&sovits_model) {
             error!("Failed to load semantic tokenizer: {}", e);
@@ -317,7 +356,16 @@ fn main() {
     // Parse language
     let voice_defaults = VoiceDefaults::from_profile(voice_profile.as_ref().map(|v| &v.profile));
     let language_text = args.language.as_deref().unwrap_or(&voice_defaults.language);
-    let language = Language::from_str(language_text).unwrap_or(Language::Chinese);
+    let language = match Language::from_str(language_text) {
+        Some(language) => language,
+        None => {
+            error!(
+                "Unsupported language '{}'; expected zh, en, ja, ko, yue, or auto",
+                language_text
+            );
+            std::process::exit(1);
+        }
+    };
     let mode = args
         .mode
         .clone()
@@ -399,14 +447,7 @@ fn run_inference(
     options: &InferenceOptions,
     mode: &str,
 ) -> gpt_sovits_rs::Result<AudioBuffer> {
-    match mode {
-        "plain" => pipeline.inference(text, reference_audio, reference_text, options),
-        "kv" => pipeline.inference_kv_cache(text, reference_audio, reference_text, options),
-        "cuda-graph" => {
-            pipeline.inference_cuda_graph(text, reference_audio, reference_text, options)
-        }
-        _ => unreachable!("validated by clap"),
-    }
+    pipeline.inference_with_mode(mode, text, reference_audio, reference_text, options)
 }
 
 #[allow(clippy::too_many_arguments)]
