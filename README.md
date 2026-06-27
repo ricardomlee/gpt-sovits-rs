@@ -174,7 +174,7 @@ cargo run --release --features cuda --bin gpt-sovits -- \
 
 ```bash
 cargo run --release --features cuda --bin gpt-sovits -- \
-    --device cuda --mode cuda-graph --split-sentences \
+    --device cuda --mode kv --split-sentences \
     --min-sentence-chars 12 --sentence-gap-ms 120 --sentence-fade-ms 8 \
     --max-tokens 500 --repetition-penalty 1.35 \
     --text "第一句话。第二句话。第三句话。" \
@@ -183,7 +183,7 @@ cargo run --release --features cuda --bin gpt-sovits -- \
     --output output_long.wav
 ```
 
-`--mode` 可选 `plain`、`kv`、`cuda-graph`，默认用 `cuda-graph`。短输出会在 capture 前结束；CPU 和非 CUDA 构建会自动使用动态 KV。CLI 日志会输出 `profile mode=... target=... ref=... target_bert=... gpt=... sovits=... total=...`，便于看时间花在哪里。
+`--mode` 可选 `plain`、`kv`、`cuda-graph`，默认用稳定的 `kv`。`cuda-graph` 的长音频仍在验证，目前会自动回退到 `kv`；开发测试时设置 `GPT_SOVITS_EXPERIMENTAL_CUDA_GRAPH=1` 才会实际启用。CLI 日志会输出 `profile mode=... target=... ref=... target_bert=... gpt=... sovits=... total=...`，便于看时间花在哪里。
 
 > BigVGAN 当前仍是实验加载入口，主推理路径使用 SoVITS 权重内置 decoder；普通 mel-to-waveform BigVGAN 不能直接替换 SoVITS latent decoder。
 
@@ -196,7 +196,7 @@ cargo run --release --features cuda --bin gpt-sovits -- \
   "reference_audio": "ref.wav",
   "reference_text": "参考音频对应的文字",
   "language": "zh",
-  "mode": "cuda-graph",
+  "mode": "kv",
   "split_sentences": true,
   "top_k": 15,
   "top_p": 0.95,

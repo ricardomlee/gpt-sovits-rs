@@ -2,7 +2,7 @@
   "reference_audio": "ref.wav",
   "reference_text": "会战兵力是八十万对六十万，优势在我",
   "language": "zh",
-  "mode": "cuda-graph",
+  "mode": "kv",
   "split_sentences": true,
   "min_sentence_chars": 12,
   "sentence_gap_ms": 120,

@@ -309,9 +309,6 @@ impl Decoder {
 
     /// Generate waveform from latent features
     pub fn forward(&self, x: &Tensor, g: Option<&Tensor>) -> Result<Vec<f32>> {
-        // Sync for accurate CUDA timing
-        let _ = x.device().synchronize();
-
         // x: [batch, channels, time]
         let mut x = self.conv_pre.forward(x)?;
 
@@ -371,7 +368,6 @@ impl Decoder {
 
         // Convert to Vec<f32> — cast to F32 first since weights may be F16
         let output: Vec<f32> = x.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?;
-        let _ = x.device().synchronize();
         Ok(output)
     }
 

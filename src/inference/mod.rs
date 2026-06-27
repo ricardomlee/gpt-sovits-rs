@@ -10,6 +10,7 @@ use crate::{Error, Language, Result};
 use candle_core::{Device, Tensor};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Once;
 use std::time::Instant;
 
 /// Split text into sentence-level chunks for streaming inference.
@@ -717,6 +718,16 @@ impl Pipeline {
         reference_text: &str,
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
+        if std::env::var("GPT_SOVITS_EXPERIMENTAL_CUDA_GRAPH").as_deref() != Ok("1") {
+            static WARNED: Once = Once::new();
+            WARNED.call_once(|| {
+                tracing::warn!(
+                    "CUDA Graph is disabled because its long-generation output is not yet stable; using KV cache"
+                );
+            });
+            return self.inference_kv_cache(text, reference_audio, reference_text, options);
+        }
+
         let total_start = Instant::now();
         let target_start = Instant::now();
         let (target_phoneme_ids, target_word2ph) = self

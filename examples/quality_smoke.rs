@@ -124,7 +124,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     pipeline.preload_speaker(&reference_audio, reference_text, language)?;
 
-    let thresholds = AudioQualityThresholds::default();
+    let mut thresholds = AudioQualityThresholds::default();
+    // Semantic tokens represent roughly 40 ms of audio. Reaching this duration means
+    // generation exhausted max_tokens instead of producing EOS, which often leaves a noisy tail.
+    thresholds.max_duration_s = Some(options.max_tokens as f32 / 25.0 - 0.01);
     let mut report = Vec::new();
     for (index, text) in texts.iter().enumerate() {
         let start = Instant::now();
