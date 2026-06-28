@@ -858,8 +858,7 @@ impl GPTModel {
         // Autoregressive generation: single token per forward pass
         for step in 1..max_new_tokens {
             let prev_token = *generated_tokens.last().unwrap();
-            let new_ids = Tensor::new(&[prev_token as i64], &self.device)?.unsqueeze(0)?;
-            let new_emb = self.lookup_tokens(&self.audio_embedding, &new_ids, 1)?;
+            let new_emb = self.lookup_audio_token(prev_token)?;
             let audio_pe_pos = prompt_seq + generated_tokens.len() - 1;
             let new_pos = self.add_sine_positional_at(&new_emb, audio_pe_pos)?;
 
@@ -995,8 +994,7 @@ impl GPTModel {
         // ── Autoregressive decode with static KV ─────────────────────────────────
         for step in 1..max_new_tokens {
             let prev_token = *generated_tokens.last().unwrap();
-            let new_ids = Tensor::new(&[prev_token as i64], &self.device)?.unsqueeze(0)?;
-            let new_emb = self.lookup_tokens(&self.audio_embedding, &new_ids, 1)?;
+            let new_emb = self.lookup_audio_token(prev_token)?;
             let pe_pos = prompt_seq + generated_tokens.len() - 1;
             let new_pos = self.add_sine_positional_at(&new_emb, pe_pos)?;
 
@@ -1340,8 +1338,7 @@ impl GPTModel {
             let eager_step =
                 |gen: &Vec<usize>, static_kv: &mut StaticKvManager| -> Result<Tensor> {
                     let prev = *gen.last().unwrap();
-                    let ids = Tensor::new(&[prev as i64], &self.device)?.unsqueeze(0)?;
-                    let emb = self.lookup_tokens(&self.audio_embedding, &ids, 1)?;
+                    let emb = self.lookup_audio_token(prev)?;
                     let pe_pos = prompt_seq + gen.len() - 1;
                     let pos_emb = self.add_sine_positional_at(&emb, pe_pos)?;
                     let hidden = self
@@ -1733,8 +1730,7 @@ impl GPTModel {
 
             generated_tokens.push(next_token);
 
-            let new_ids = Tensor::new(&[next_token as i64], &self.device)?.unsqueeze(0)?;
-            let new_emb = self.lookup_tokens(&self.audio_embedding, &new_ids, 1)?;
+            let new_emb = self.lookup_audio_token(next_token)?;
             // Audio PE position = prompt_seq + generated_so_far (not text_seq + total_audio)
             let audio_pe_pos = prompt_seq + generated_tokens.len() - 1;
             let new_pos = self.add_sine_positional_at(&new_emb, audio_pe_pos)?;
@@ -1894,6 +1890,19 @@ impl GPTModel {
         flat_emb
             .reshape(out_dims)
             .map_err(|e| crate::Error::InferenceError(e.to_string()))
+    }
+
+    fn lookup_audio_token(&self, token: usize) -> Result<Tensor> {
+        if token >= self.audio_embedding.dim(0)? {
+            return Err(Error::InferenceError(format!(
+                "audio token {token} exceeds embedding vocabulary {}",
+                self.audio_embedding.dim(0)?
+            )));
+        }
+        self.audio_embedding
+            .narrow(0, token, 1)?
+            .unsqueeze(0)
+            .map_err(Into::into)
     }
 
     /// Add sinusoidal positional encoding with learned alpha scaling
