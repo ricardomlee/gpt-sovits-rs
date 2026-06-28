@@ -126,8 +126,3 @@ harness = false
 name = "kv_cache_bench"
 harness = false
 required-features = ["cuda"]
-
-[[bench]]
-name = "fp16_vs_fp32_bench"
-harness = false
-required-features = ["cuda"]

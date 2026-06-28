@@ -38,6 +38,7 @@ struct Args {
     #[arg(long, default_value = "auto", value_parser = ["auto", "cuda", "cpu", "mps"])]
     device: String,
 
+    /// Request half precision (SoVITS currently falls back to F32).
     #[arg(long)]
     half: bool,
 

@@ -430,15 +430,14 @@ cargo run --features cuda --example e2e_quick
 # GPU KV Cache 基准对比
 cargo bench --features cuda --bench kv_cache_bench
 
-# FP16 / FP32 推理基准对比
-cargo bench --features cuda --bench fp16_vs_fp32_bench
-
 # 全流程时间分析
 cargo run --features cuda --example profile_kv_cache
 
 # 单元 + 集成测试
 cargo test
 ```
+
+SoVITS 当前固定使用 F32。全模型 FP16 会在 CUDA 上生成静音，`--half` 暂时只保留兼容性并自动回退到 F32。
 
 ### 快速增量构建（开发用）
 

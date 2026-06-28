@@ -764,7 +764,7 @@ impl EncP {
     ) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
         let device = quantized.device();
 
-        // Create mask for quantized — cast to match quantized dtype (F16 in FP16 mode)
+        // Create mask for quantized and match the model dtype.
         let y_max_len = quantized.dims()[2] as i64;
         let y_mask = self
             .sequence_mask(y_lengths, y_max_len, device)?

@@ -178,6 +178,11 @@ pub struct Pipeline {
 
 impl Pipeline {
     pub fn new(config: Config) -> Result<Self> {
+        if config.half_precision {
+            tracing::warn!(
+                "FP16 SoVITS is disabled because it can produce silent audio; using F32"
+            );
+        }
         let device = config.candle_device();
         Ok(Self {
             config,

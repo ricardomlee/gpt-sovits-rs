@@ -22,7 +22,7 @@ fn run_profile() -> Result<(), Box<dyn std::error::Error>> {
 
     let config = Config::builder()
         .with_device("cuda")
-        .with_half_precision(true)
+        .with_half_precision(false)
         .build();
 
     let mut pipeline = Pipeline::new(config)?;

@@ -10,6 +10,7 @@
 use crate::utils::{load_safetensors, StateDict};
 use crate::{Error, Result};
 use candle_core::{DType, Device, Tensor};
+use std::time::Instant;
 
 use crate::models::sovits_decoder::Decoder;
 use crate::models::sovits_encp::EncP;
@@ -74,13 +75,10 @@ impl Quantizer {
         let seq_len = dims[1];
 
         let indices: Vec<i64> = codes.flatten_all()?.to_vec1()?;
-        let mut embeddings = Vec::new();
-
-        for &idx in &indices {
-            let emb = self.codebook.get(idx as usize)?;
-            embeddings.push(emb);
+        let mut embeddings = Vec::with_capacity(indices.len());
+        for &index in &indices {
+            embeddings.push(self.codebook.get(index as usize)?);
         }
-
         let stacked = Tensor::stack(&embeddings, 0)?;
         let result = stacked.reshape((batch, seq_len, self.dimension))?;
         Ok(result.transpose(1, 2)?) // [batch, dimension, seq_len]
@@ -121,31 +119,24 @@ fn build_sequence_mask_typed(
 /// Nearest-neighbor 2x upsampling along the time dimension
 /// Input: [batch, channels, time] → Output: [batch, channels, time*2]
 fn nearest_upsample_2x(x: &Tensor) -> Result<Tensor> {
-    let orig_dtype = x.dtype();
-    let x_f32 = x.to_dtype(DType::F32)?;
-    let dims = x_f32.dims();
-    let batch = dims[0];
-    let channels = dims[1];
-    let time = dims[2];
-    let new_time = time * 2;
-
-    let mut result = Vec::with_capacity(batch * channels * new_time);
-    let flat: Vec<f32> = x_f32.flatten_all()?.to_vec1()?;
-
-    for b in 0..batch {
-        for c in 0..channels {
-            for t in 0..time {
-                let idx = b * channels * time + c * time + t;
-                let val = flat[idx];
-                result.push(val);
-                result.push(val);
-            }
-        }
+    let (batch, channels, time) = x.dims3()?;
+    if x.device().is_cpu() {
+        return Ok(x.upsample_nearest1d(time * 2)?);
     }
 
-    Tensor::from_vec(result, (batch, channels, new_time), x.device())
-        .and_then(|t| t.to_dtype(orig_dtype))
-        .map_err(|e| crate::Error::InferenceError(e.to_string()))
+    // Candle 0.10 has no CUDA nearest-1d kernel, and composing repeat/broadcast
+    // produces invalid output on this path. Use the small, proven host fallback.
+    let original_dtype = x.dtype();
+    let values = x.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
+    let mut repeated = Vec::with_capacity(batch * channels * time * 2);
+    for value in values {
+        repeated.push(value);
+        repeated.push(value);
+    }
+    Ok(
+        Tensor::from_vec(repeated, (batch, channels, time * 2), x.device())?
+            .to_dtype(original_dtype)?,
+    )
 }
 
 impl SoVITSModel {
@@ -233,6 +224,7 @@ impl SoVITSModel {
         ref_audio_mel: Option<&Tensor>,
         noise_scale: f32,
     ) -> Result<Vec<f32>> {
+        let profile_start = Instant::now();
         if semantic_tokens.is_empty() {
             return Err(Error::InferenceError("Empty semantic tokens".to_string()));
         }
@@ -266,8 +258,10 @@ impl SoVITSModel {
         } else {
             Tensor::zeros((1, 512, 1), self.dtype, &self.device)?
         };
+        let ref_enc_ms = profile_start.elapsed().as_millis();
 
         // Decode semantic codes using quantizer
+        let stage_start = Instant::now();
         let quantized = self.quantizer.decode(&codes)?;
 
         // 2x upsampling to match frame rate
@@ -280,27 +274,49 @@ impl SoVITSModel {
         // Build y_mask from y_lengths
         let time_len = quantized_up.dims()[2];
         let y_mask = build_sequence_mask_typed(&y_lengths, time_len, 1, &self.device, self.dtype)?;
+        let prepare_ms = stage_start.elapsed().as_millis();
 
         // Pass through enc_p
+        let stage_start = Instant::now();
         let (_y, m_p, logs_p, _y_mask_enc) =
             self.enc_p
                 .forward(&quantized_up, &y_lengths, &text, &text_lengths, &ge, 1.0)?;
+        let enc_p_ms = stage_start.elapsed().as_millis();
 
         // Sample from N(m, exp(logs)) to get latent z_p (matching Python: noise_scale=0.5)
+        let stage_start = Instant::now();
         let noise = self.sample_noise(&m_p)?;
         let logs_exp = logs_p.exp()?;
         let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(
             &Tensor::full(noise_scale, m_p.dims(), &self.device)?.to_dtype(m_p.dtype())?,
         )?)?;
+        let sample_ms = stage_start.elapsed().as_millis();
 
         // Invert flow transform: z_p → z (with ge conditioning, matching Python)
+        let stage_start = Instant::now();
         let z = self.flow.forward(&z_p, &y_mask, Some(&ge), true)?;
 
         // Apply mask
         let z_masked = z.broadcast_mul(&y_mask)?;
+        let flow_ms = stage_start.elapsed().as_millis();
 
         // Pass through decoder with full 512-dim ge (matching Python: o = self.dec((z * y_mask), g=ge))
+        let stage_start = Instant::now();
         let output = self.decoder.forward(&z_masked, Some(&ge))?;
+        let decoder_ms = stage_start.elapsed().as_millis();
+
+        if self.device.is_cpu() {
+            tracing::debug!(
+                "profile sovits ref_enc={}ms prepare={}ms enc_p={}ms sample={}ms flow={}ms decoder={}ms total={}ms",
+                ref_enc_ms,
+                prepare_ms,
+                enc_p_ms,
+                sample_ms,
+                flow_ms,
+                decoder_ms,
+                profile_start.elapsed().as_millis()
+            );
+        }
 
         Ok(output)
     }
@@ -598,6 +614,41 @@ impl crate::models::Model for SoVITSModel {
         .map_err(|e| Error::ModelLoadError(e.to_string()))?;
 
         self.device = new_device;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nearest_upsample_repeats_each_frame() -> Result<()> {
+        let input = Tensor::new(&[[[1f32, 2., 3.], [4., 5., 6.]]], &Device::Cpu)?;
+        let output = nearest_upsample_2x(&input)?;
+
+        assert_eq!(output.dims(), &[1, 2, 6]);
+        assert_eq!(output.dtype(), DType::F32);
+        assert_eq!(
+            output.flatten_all()?.to_vec1::<f32>()?,
+            [1., 1., 2., 2., 3., 3., 4., 4., 5., 5., 6., 6.]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn quantizer_decodes_codes_without_changing_layout() -> Result<()> {
+        let device = Device::Cpu;
+        let codebook = Tensor::new(&[[1f32, 2.], [3., 4.], [5., 6.]], &device)?;
+        let quantizer = Quantizer::new(2, 3, codebook);
+        let codes = Tensor::new(&[[2i64, 0], [1, 2]], &device)?;
+
+        let output = quantizer.decode(&codes)?;
+        assert_eq!(output.dims(), &[2, 2, 2]);
+        assert_eq!(
+            output.flatten_all()?.to_vec1::<f32>()?,
+            [5., 1., 6., 2., 3., 5., 4., 6.]
+        );
         Ok(())
     }
 }

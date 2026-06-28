@@ -123,7 +123,7 @@ struct Args {
     #[arg(long)]
     sentence_fade_ms: Option<u32>,
 
-    /// Enable half-precision (FP16)
+    /// Request half precision (SoVITS currently falls back to F32 for audio quality)
     #[arg(long)]
     half: bool,
 

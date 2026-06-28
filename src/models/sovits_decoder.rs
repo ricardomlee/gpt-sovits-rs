@@ -2,15 +2,86 @@
 
 use crate::utils::{Conv1d, Conv1dWeightNorm, StateDict};
 use crate::Result;
-use candle_core::{DType, Device, Tensor};
+use candle_core::backend::BackendStorage;
+use candle_core::{cpu_backend, CpuStorage, CustomOp1, DType, Device, Layout, Shape, Tensor};
+use half::{bf16, f16};
+use std::time::{Duration, Instant};
+
+struct FusedLeakyRelu {
+    slope: f32,
+}
+
+impl CustomOp1 for FusedLeakyRelu {
+    fn name(&self) -> &'static str {
+        "fused-leaky-relu"
+    }
+
+    fn cpu_fwd(
+        &self,
+        storage: &CpuStorage,
+        layout: &Layout,
+    ) -> candle_core::Result<(CpuStorage, Shape)> {
+        let output = match storage {
+            CpuStorage::BF16(values) => {
+                let slope = bf16::from_f32(self.slope);
+                CpuStorage::BF16(cpu_backend::unary_map(values, layout, |value| {
+                    if value.is_sign_positive() {
+                        value
+                    } else {
+                        value * slope
+                    }
+                }))
+            }
+            CpuStorage::F16(values) => {
+                let slope = f16::from_f32(self.slope);
+                CpuStorage::F16(cpu_backend::unary_map(values, layout, |value| {
+                    if value.is_sign_positive() {
+                        value
+                    } else {
+                        value * slope
+                    }
+                }))
+            }
+            CpuStorage::F32(values) => {
+                CpuStorage::F32(cpu_backend::unary_map(values, layout, |value| {
+                    if value.is_sign_positive() {
+                        value
+                    } else {
+                        value * self.slope
+                    }
+                }))
+            }
+            CpuStorage::F64(values) => {
+                let slope = self.slope as f64;
+                CpuStorage::F64(cpu_backend::unary_map(values, layout, |value| {
+                    if value.is_sign_positive() {
+                        value
+                    } else {
+                        value * slope
+                    }
+                }))
+            }
+            _ => {
+                return Err(candle_core::Error::UnsupportedDTypeForOp(
+                    storage.dtype(),
+                    self.name(),
+                ))
+            }
+        };
+        Ok((output, layout.shape().clone()))
+    }
+}
 
 /// LeakyReLU activation: max(x, 0) + slope * min(x, 0)
 pub fn leaky_relu(x: &Tensor, slope: f32) -> Result<Tensor> {
+    if x.device().is_cpu() {
+        return Ok(x.apply_op1_no_bwd(&FusedLeakyRelu { slope })?);
+    }
     let zeros = Tensor::zeros_like(x)?;
     let positive = x.maximum(&zeros)?;
     let negative = x.minimum(&zeros)?;
-    let slope_t = Tensor::full(slope, x.dims(), x.device())?.to_dtype(x.dtype())?;
-    Ok(positive.add(&negative.broadcast_mul(&slope_t)?)?)
+    let slope = Tensor::full(slope, x.dims(), x.device())?.to_dtype(x.dtype())?;
+    Ok(positive.add(&negative.broadcast_mul(&slope)?)?)
 }
 
 fn conv_transpose1d(x: &Tensor, weight: &Tensor, padding: usize, stride: usize) -> Result<Tensor> {
@@ -321,6 +392,7 @@ impl Decoder {
 
     /// Generate waveform from latent features
     pub fn forward(&self, x: &Tensor, g: Option<&Tensor>) -> Result<Vec<f32>> {
+        let profile_start = Instant::now();
         // x: [batch, channels, time]
         let mut x = self.conv_pre.forward(x)?;
 
@@ -332,6 +404,9 @@ impl Decoder {
                 x = x.broadcast_add(&g_proj)?;
             }
         }
+        let pre_ms = profile_start.elapsed().as_millis();
+        let mut upsample_time = Duration::ZERO;
+        let mut resblock_time = Duration::ZERO;
 
         // Upsampling and resblocks
         for (i, up) in self.ups.iter().enumerate() {
@@ -339,9 +414,12 @@ impl Decoder {
             x = self.leaky_relu(&x, 0.1)?;
 
             // Upsample using transposed convolution
+            let stage_start = Instant::now();
             x = self.upsample_forward(&x, &up.conv, up.upsample_factor)?;
+            upsample_time += stage_start.elapsed();
 
             // Apply resblock group (3 resblocks per upsample)
+            let stage_start = Instant::now();
             let resblock_start = i * 3;
             let resblock_end = (resblock_start + 3).min(self.resblocks.len());
 
@@ -367,9 +445,11 @@ impl Decoder {
                     x = xs.broadcast_div(&divisor)?;
                 }
             }
+            resblock_time += stage_start.elapsed();
         }
 
         // Final activation (Python uses F.leaky_relu(x) with default slope=0.01)
+        let stage_start = Instant::now();
         x = self.leaky_relu(&x, 0.01)?;
 
         // Output projection
@@ -380,6 +460,16 @@ impl Decoder {
 
         // Convert to Vec<f32> — cast to F32 first since weights may be F16
         let output: Vec<f32> = x.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?;
+        if x.device().is_cpu() {
+            tracing::debug!(
+                "profile decoder pre={}ms upsample={}ms resblocks={}ms post={}ms total={}ms",
+                pre_ms,
+                upsample_time.as_millis(),
+                resblock_time.as_millis(),
+                stage_start.elapsed().as_millis(),
+                profile_start.elapsed().as_millis()
+            );
+        }
         Ok(output)
     }
 
@@ -459,11 +549,7 @@ impl Decoder {
     }
 
     fn leaky_relu(&self, x: &Tensor, slope: f32) -> Result<Tensor> {
-        let zeros = Tensor::zeros_like(x)?;
-        let positive = x.maximum(&zeros)?;
-        let negative = x.minimum(&zeros)?;
-        let slope_t = Tensor::full(slope, x.dims(), x.device())?.to_dtype(x.dtype())?;
-        Ok(positive.add(&negative.broadcast_mul(&slope_t)?)?)
+        leaky_relu(x, slope)
     }
 
     fn upsample_forward(
@@ -494,10 +580,19 @@ impl Decoder {
     }
 }
 
-#[cfg(all(test, feature = "mkl"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
+    #[test]
+    fn leaky_relu_uses_the_requested_negative_slope() -> Result<()> {
+        let input = Tensor::new(&[-2f32, 0., 3.], &Device::Cpu)?;
+        let output = leaky_relu(&input, 0.1)?;
+        assert_eq!(output.to_vec1::<f32>()?, [-0.2, 0., 3.]);
+        Ok(())
+    }
+
+    #[cfg(feature = "mkl")]
     #[test]
     fn cpu_transposed_conv_crop_matches_padded_convolution() -> Result<()> {
         let device = Device::Cpu;

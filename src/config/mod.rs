@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 pub struct Config {
     /// Device to use for inference
     pub device: Device,
-    /// Use half precision (FP16)
+    /// Request half precision (currently falls back to F32)
     pub half_precision: bool,
     /// Model version
     pub model_version: ModelVersion,
@@ -57,7 +57,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             device: Device::default(),
-            half_precision: true,
+            half_precision: false,
             model_version: ModelVersion::default(),
         }
     }
@@ -69,13 +69,12 @@ impl Config {
         ConfigBuilder::default()
     }
 
-    /// Dtype for SoVITS decoder/encoder/flow models (supports F16 safely)
+    /// Dtype for SoVITS decoder/encoder/flow models.
+    ///
+    /// F16 currently collapses the decoder output to silence on CUDA, so keep
+    /// the quality-critical path in F32 until mixed precision is validated per layer.
     pub fn candle_dtype(&self) -> candle_core::DType {
-        if self.half_precision {
-            candle_core::DType::F16
-        } else {
-            candle_core::DType::F32
-        }
+        candle_core::DType::F32
     }
 
     /// Dtype for the GPT autoregressive model — always F32.
@@ -171,7 +170,7 @@ impl ConfigBuilder {
                     Device::Cpu
                 }
             }),
-            half_precision: self.half_precision.unwrap_or(true),
+            half_precision: self.half_precision.unwrap_or(false),
             model_version: self.model_version.unwrap_or_default(),
         }
     }
@@ -188,5 +187,19 @@ mod tests {
             config.device,
             Device::Cuda | Device::Cpu | Device::Mps
         ));
+    }
+
+    #[test]
+    fn defaults_to_quality_safe_f32() {
+        let config = Config::builder().build();
+        assert!(!config.half_precision);
+        assert_eq!(config.candle_dtype(), candle_core::DType::F32);
+    }
+
+    #[test]
+    fn half_request_keeps_sovits_in_f32() {
+        let config = Config::builder().with_half_precision(true).build();
+        assert!(config.half_precision);
+        assert_eq!(config.candle_dtype(), candle_core::DType::F32);
     }
 }
