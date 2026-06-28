@@ -107,11 +107,7 @@ impl MultiHeadAttention {
         let q_contiguous = q.contiguous()?;
         let attn_weights = q_contiguous.matmul(&k_t)?;
 
-        // Apply scale - convert to match attn_weights dtype
-        let scale_val = self.scale as f32;
-        let scale_tensor = Tensor::full(scale_val, attn_weights.dims(), &attn_weights.device())?;
-        let scale_tensor = scale_tensor.to_dtype(attn_weights.dtype())?;
-        let attn_weights = attn_weights.broadcast_mul(&scale_tensor)?;
+        let attn_weights = attn_weights.affine(self.scale, 0.0)?;
 
         // Apply causal mask if provided
         let attn_weights = if let Some(m) = mask {
@@ -192,11 +188,7 @@ impl MultiHeadAttention {
         let q_contiguous = q.contiguous()?;
         let attn_weights = q_contiguous.matmul(&k_t)?;
 
-        // Apply scale
-        let scale_val = self.scale as f32;
-        let scale_tensor = Tensor::full(scale_val, attn_weights.dims(), &attn_weights.device())?;
-        let scale_tensor = scale_tensor.to_dtype(attn_weights.dtype())?;
-        let attn_weights = attn_weights.broadcast_mul(&scale_tensor)?;
+        let attn_weights = attn_weights.affine(self.scale, 0.0)?;
 
         // Apply causal mask if provided
         // For KV cache, attn_weights shape is [batch, heads, 1, total_seq_len]

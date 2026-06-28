@@ -23,12 +23,41 @@ pub struct GPTModel {
     mrte: Option<MRTE>,     // MRTE module for advanced cross-attention fusion
     transformer: TransformerGPTSoVITS,
     ar_predict_layer: Tensor, // output projection [vocab_size, hidden_size]
-    text_pos_alpha: f32,      // Learned alpha for text positional encoding
-    audio_pos_alpha: f32,     // Learned alpha for audio positional encoding
+    #[cfg(feature = "cuda")]
+    audio_pos_alpha: f32, // Learned alpha for CUDA Graph input updates
+    text_positional: Tensor,  // Precomputed scaled sine positions [1, max_seq_len, hidden_size]
+    audio_positional: Tensor, // Precomputed scaled sine positions [1, max_seq_len, hidden_size]
     device: Device,
     dtype: DType,
     vocab_size: usize,
     num_layers: usize, // Number of transformer layers for KV cache
+}
+
+fn build_scaled_sine_positions(
+    max_seq_len: usize,
+    hidden_size: usize,
+    alpha: f32,
+    device: &Device,
+    dtype: DType,
+) -> Result<Tensor> {
+    let half_dim = hidden_size / 2;
+    let div_term: Vec<f64> = (0..half_dim)
+        .map(|i| (-((i as f64) * 2.0) * (10000.0f64.ln()) / hidden_size as f64).exp())
+        .collect();
+    let mut positions = vec![0.0f32; max_seq_len * hidden_size];
+
+    for pos in 0..max_seq_len {
+        for (i, &scale) in div_term.iter().enumerate() {
+            let value = pos as f64 * scale;
+            positions[pos * hidden_size + 2 * i] = value.sin() as f32;
+            positions[pos * hidden_size + 2 * i + 1] = value.cos() as f32;
+        }
+    }
+
+    let positions =
+        Tensor::from_vec(positions, (1usize, max_seq_len, hidden_size), device)?.to_dtype(dtype)?;
+    let alpha = Tensor::full(alpha, positions.dims(), device)?.to_dtype(dtype)?;
+    positions.broadcast_mul(&alpha).map_err(Into::into)
 }
 
 struct SamplingScratch {
@@ -229,13 +258,14 @@ impl GPTModel {
         let intermediate_size = state_dict.get("model.h.layers.0.linear1.weight")?.dims()[0];
 
         // Create config for transformer
+        let max_seq_len = 2048;
         let config = TransformerConfig {
             vocab_size,
             hidden_size,
             intermediate_size,
             num_hidden_layers,
             num_attention_heads,
-            max_seq_len: 2048,
+            max_seq_len,
         };
 
         // Create transformer with GPT-SoVITS style weights
@@ -260,6 +290,10 @@ impl GPTModel {
             .get("model.ar_predict_layer.weight")?
             .to_device(device)?
             .to_dtype(dtype)?;
+        let text_positional =
+            build_scaled_sine_positions(max_seq_len, hidden_size, text_pos_alpha, device, dtype)?;
+        let audio_positional =
+            build_scaled_sine_positions(max_seq_len, hidden_size, audio_pos_alpha, device, dtype)?;
 
         Ok(Self {
             text_embedding,
@@ -269,8 +303,10 @@ impl GPTModel {
             mrte,
             transformer,
             ar_predict_layer,
-            text_pos_alpha,
+            #[cfg(feature = "cuda")]
             audio_pos_alpha,
+            text_positional,
+            audio_positional,
             device: device.clone(),
             dtype,
             vocab_size,
@@ -1880,35 +1916,21 @@ impl GPTModel {
     ) -> Result<Tensor> {
         let dims = x.dims();
         let seq = dims[1];
-        let hidden = dims[2];
-
-        let alpha = match kind {
-            "text" => self.text_pos_alpha,
-            _ => self.audio_pos_alpha,
+        let positions = match kind {
+            "text" => &self.text_positional,
+            _ => &self.audio_positional,
         };
-
-        // Generate sinusoidal positional encoding
-        let half_dim = hidden / 2;
-        let div_term: Vec<f64> = (0..half_dim)
-            .map(|i| (-((i as f64) * 2.0) * (10000.0f64.ln()) / (hidden as f64)).exp())
-            .collect();
-
-        let mut pe = vec![0.0f32; seq * hidden];
-        for t in 0..seq {
-            let pos = (start_pos + t) as f64;
-            for i in 0..half_dim {
-                let val = pos * div_term[i];
-                pe[t * hidden + 2 * i] = val.sin() as f32;
-                pe[t * hidden + 2 * i + 1] = val.cos() as f32;
-            }
+        if start_pos + seq > positions.dim(1)? {
+            return Err(Error::InferenceError(format!(
+                "position range {}..{} exceeds model limit {}",
+                start_pos,
+                start_pos + seq,
+                positions.dim(1)?
+            )));
         }
 
-        // output = x + alpha * pe  (cast pe to match x dtype for FP16 compatibility)
-        let pe_tensor =
-            Tensor::from_vec(pe, (1, seq, hidden), &self.device)?.to_dtype(x.dtype())?;
-        let scaled_pe = pe_tensor
-            .broadcast_mul(&Tensor::full(alpha, x.dims(), &self.device)?.to_dtype(x.dtype())?)?;
-        Ok(x.broadcast_add(&scaled_pe)?)
+        let positions = positions.narrow(1, start_pos, seq)?;
+        x.broadcast_add(&positions).map_err(Into::into)
     }
 
     // ========================
@@ -2083,5 +2105,27 @@ impl crate::models::Model for GPTModel {
 
         self.device = new_device;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn precomputes_scaled_sine_positions() {
+        let positions = build_scaled_sine_positions(2, 4, 2.0, &Device::Cpu, DType::F32).unwrap();
+        let values = positions.to_vec3::<f32>().unwrap();
+
+        assert_eq!(values[0][0], vec![0.0, 2.0, 0.0, 2.0]);
+        let expected = [
+            2.0 * 1.0f32.sin(),
+            2.0 * 1.0f32.cos(),
+            2.0 * 0.01f32.sin(),
+            2.0 * 0.01f32.cos(),
+        ];
+        for (actual, expected) in values[0][1].iter().zip(expected) {
+            assert!((actual - expected).abs() < 1e-6);
+        }
     }
 }
