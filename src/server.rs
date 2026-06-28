@@ -431,18 +431,20 @@ async fn tts_stream_handler(
             warn!("Failed to preload speaker: {}", e);
         }
 
-        // Send WAV header first (sample_rate and channels are fixed)
-        let header = streaming_wav_header(24000, 1);
-        if tx.blocking_send(Ok(header)).is_err() {
-            return;
-        }
-
         // Stream each sentence
+        let mut header_sent = false;
         for result in
             pipeline.inference_sentences(&text, &refer_path, &prompt_text, &options, &mode, 5)
         {
             match result {
                 Ok(audio) => {
+                    if !header_sent {
+                        let header = streaming_wav_header(audio.sample_rate, audio.channels);
+                        if tx.blocking_send(Ok(header)).is_err() {
+                            break;
+                        }
+                        header_sent = true;
+                    }
                     let pcm = samples_to_pcm(&audio.samples);
                     if tx.blocking_send(Ok(pcm)).is_err() {
                         break; // client disconnected
@@ -982,5 +984,25 @@ mod tests {
         );
         assert!(SpeechOutputFormat::parse(Some("mp3")).is_err());
         assert!(SpeechOutputFormat::parse(Some("opus")).is_err());
+    }
+
+    #[test]
+    fn streaming_wav_header_encodes_the_generated_audio_format() {
+        let header = streaming_wav_header(32_000, 2);
+
+        assert_eq!(header.len(), 44);
+        assert_eq!(&header[0..4], b"RIFF");
+        assert_eq!(&header[8..12], b"WAVE");
+        assert_eq!(u16::from_le_bytes([header[22], header[23]]), 2);
+        assert_eq!(
+            u32::from_le_bytes([header[24], header[25], header[26], header[27]]),
+            32_000
+        );
+        assert_eq!(
+            u32::from_le_bytes([header[28], header[29], header[30], header[31]]),
+            128_000
+        );
+        assert_eq!(u16::from_le_bytes([header[32], header[33]]), 4);
+        assert_eq!(u16::from_le_bytes([header[34], header[35]]), 16);
     }
 }

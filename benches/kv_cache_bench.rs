@@ -19,6 +19,13 @@ fn main() {
 fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== GPU KV Cache Benchmark ===\n");
 
+    if std::env::var("GPT_SOVITS_EXPERIMENTAL_CUDA_GRAPH").as_deref() != Ok("1") {
+        return Err(
+            "CUDA Graph is experimental; set GPT_SOVITS_EXPERIMENTAL_CUDA_GRAPH=1 to benchmark it"
+                .into(),
+        );
+    }
+
     let cuda_available = candle_core::Device::new_cuda(0).is_ok();
     if !cuda_available {
         return Err("CUDA not available".into());
@@ -114,7 +121,9 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    println!("\ngraph(s) uses the same BERT features as plain and dynamic KV modes.");
+    println!(
+        "\ngraph(s) uses the same BERT features as plain and dynamic KV modes; validate its audio separately."
+    );
     Ok(())
 }
 
