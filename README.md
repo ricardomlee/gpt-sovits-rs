@@ -122,16 +122,21 @@ curl -X POST http://localhost:9880/tts \
 git clone https://github.com/ricardomlee/gpt-sovits-rs.git
 cd gpt-sovits-rs
 
-# CPU 构建
+# x86_64 CPU 构建（推荐，使用 MKL）
+cargo build --release --features mkl
+
+# 通用 CPU 构建（ARM、非 x86 NAS）
 cargo build --release
 
 # CUDA GPU 构建
 cargo build --release --features cuda
 
-# HTTP API（任意组合 cuda）
-cargo build --release --features http-api
+# HTTP API
+cargo build --release --features http-api,mkl
 cargo build --release --features http-api,cuda
 ```
+
+MKL 会静态链接进二进制，运行时不用安装 Intel 工具包。它只适合 x86_64；ARM 设备使用通用 CPU 构建。本项目在 i5-12490F 上的短句测试中，MKL 和转置卷积快路径将纯推理耗时从约 4.73 秒降到 3.24 秒。
 
 ### 准备模型
 

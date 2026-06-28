@@ -13,6 +13,18 @@ pub fn leaky_relu(x: &Tensor, slope: f32) -> Result<Tensor> {
     Ok(positive.add(&negative.broadcast_mul(&slope_t)?)?)
 }
 
+fn conv_transpose1d(x: &Tensor, weight: &Tensor, padding: usize, stride: usize) -> Result<Tensor> {
+    if cfg!(feature = "mkl") && x.device().is_cpu() && padding > 0 {
+        // Candle's CPU GEMM + col2im path only accepts zero padding. A padded
+        // transposed convolution is exactly the zero-padding result cropped at
+        // both ends, so keep the fast path and apply the crop explicitly.
+        let full = x.conv_transpose1d(weight, 0, 0, stride, 1, 1)?;
+        let full_len = full.dim(2)?;
+        return Ok(full.narrow(2, padding, full_len - 2 * padding)?);
+    }
+    Ok(x.conv_transpose1d(weight, padding, 0, stride, 1, 1)?)
+}
+
 /// Residual Block Type 1 (for HiFi-GAN decoder)
 #[derive(Debug, Clone)]
 pub struct ResBlock1 {
@@ -469,7 +481,7 @@ impl Decoder {
         let stride = upsample_factor;
         let padding = (kernel_size - stride) / 2;
 
-        let out = x.conv_transpose1d(&weight, padding, 0, stride, 1, 1)?;
+        let out = conv_transpose1d(x, &weight, padding, stride)?;
 
         // Add bias if present
         if let Some(bias) = &conv.bias {
@@ -479,5 +491,32 @@ impl Decoder {
         }
 
         Ok(out)
+    }
+}
+
+#[cfg(all(test, feature = "mkl"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cpu_transposed_conv_crop_matches_padded_convolution() -> Result<()> {
+        let device = Device::Cpu;
+        let x = Tensor::arange(0f32, 8f32, &device)?.reshape((1, 2, 4))?;
+        let weight = Tensor::arange(0f32, 24f32, &device)?
+            .affine(0.01, -0.1)?
+            .reshape((2, 3, 4))?;
+
+        let expected = x.conv_transpose1d(&weight, 1, 0, 2, 1, 1)?;
+        let actual = conv_transpose1d(&x, &weight, 1, 2)?;
+        assert_eq!(actual.dims(), expected.dims());
+
+        let max_error = actual
+            .sub(&expected)?
+            .abs()?
+            .flatten_all()?
+            .max(0)?
+            .to_scalar::<f32>()?;
+        assert!(max_error < 1e-5, "maximum error was {max_error}");
+        Ok(())
     }
 }

@@ -27,6 +27,8 @@
 pub mod audio_checks;
 pub mod config;
 pub mod inference;
+#[cfg(feature = "mkl")]
+mod mkl_compat;
 pub mod model_paths;
 pub mod models;
 pub mod text_frontend;

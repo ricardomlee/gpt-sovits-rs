@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# CPU-only build (pure Candle — no ONNX Runtime dependency)
+# CPU-only x86_64 build (Candle + statically linked MKL)
 
 # ============================================================
 # Stage 1: Builder
@@ -19,8 +19,8 @@ WORKDIR /app
 # Copy entire project (.dockerignore excludes target/, .git/, models/, etc.)
 COPY . .
 
-# Build binary — no ONNX/ORT dependency; BERT and HuBERT use native Candle
-RUN cargo build --release --locked --features http-api && \
+# MKL accelerates the F32 matrix operations used by BERT, HuBERT and GPT.
+RUN cargo build --release --locked --features http-api,mkl && \
     cp target/release/gpt-sovits /app/gpt-sovits
 
 # ============================================================

@@ -18,6 +18,8 @@ cp .env.example .env
 
 ## CPU
 
+CPU 镜像面向 x86_64，默认启用静态链接的 MKL，宿主机不用安装 Intel 工具包。ARM NAS 目前应从源码执行通用 CPU 构建，不要启用 `mkl` feature。
+
 ```bash
 docker compose -f compose.cpu.yml up -d --build
 curl http://localhost:9880/health
