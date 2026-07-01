@@ -126,3 +126,8 @@ harness = false
 name = "kv_cache_bench"
 harness = false
 required-features = ["cuda"]
+
+[[bench]]
+name = "conv1d_cpu_bench"
+harness = false
+required-features = ["mkl"]

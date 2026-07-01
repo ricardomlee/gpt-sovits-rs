@@ -2,7 +2,9 @@
 //!
 //! Utilities for loading and converting model weights from safetensors format
 
-use candle_core::{DType, Device, Tensor, D};
+use candle_core::backend::BackendStorage;
+use candle_core::{CpuStorage, CustomOp1, DType, Device, Layout, Shape, Tensor, D};
+use rayon::prelude::*;
 use safetensors::{tensor::Dtype, SafeTensors};
 use std::collections::HashMap;
 use std::fs::File;
@@ -10,6 +12,105 @@ use std::io::Read;
 use std::path::Path;
 
 use crate::{Error, Result};
+
+struct ParallelIm2Col1d {
+    kernel: usize,
+    stride: usize,
+    dilation: usize,
+    padding: usize,
+}
+
+impl CustomOp1 for ParallelIm2Col1d {
+    fn name(&self) -> &'static str {
+        "parallel-im2col1d"
+    }
+
+    fn cpu_fwd(
+        &self,
+        storage: &CpuStorage,
+        layout: &Layout,
+    ) -> candle_core::Result<(CpuStorage, Shape)> {
+        let values = match storage {
+            CpuStorage::F32(values) => values,
+            _ => {
+                return Err(candle_core::Error::UnsupportedDTypeForOp(
+                    storage.dtype(),
+                    self.name(),
+                ))
+            }
+        };
+        let (batch, channels, length) = layout.shape().dims3()?;
+        let output_length =
+            (length + 2 * self.padding - self.dilation * (self.kernel - 1) - 1) / self.stride + 1;
+        let row_size = channels * self.kernel;
+        let strides = layout.stride();
+        let (batch_stride, channel_stride, time_stride) = (strides[0], strides[1], strides[2]);
+        let start_offset = layout.start_offset();
+        let mut output = vec![0f32; batch * output_length * row_size];
+
+        output
+            .par_chunks_mut(row_size)
+            .enumerate()
+            .for_each(|(row_index, row)| {
+                let batch_index = row_index / output_length;
+                let output_pos = row_index % output_length;
+                let batch_offset = start_offset + batch_index * batch_stride;
+                for channel in 0..channels {
+                    let input_offset = batch_offset + channel * channel_stride;
+                    let output_offset = channel * self.kernel;
+                    for kernel_pos in 0..self.kernel {
+                        let padded_pos = output_pos * self.stride + kernel_pos * self.dilation;
+                        if padded_pos >= self.padding && padded_pos < length + self.padding {
+                            row[output_offset + kernel_pos] =
+                                values[input_offset + (padded_pos - self.padding) * time_stride];
+                        }
+                    }
+                }
+            });
+
+        Ok((
+            CpuStorage::F32(output),
+            (batch, output_length, row_size).into(),
+        ))
+    }
+}
+
+fn conv1d_forward(
+    input: &Tensor,
+    weight: &Tensor,
+    padding: usize,
+    stride: usize,
+    dilation: usize,
+) -> Result<Tensor> {
+    let (_, input_channels, _) = input.dims3()?;
+    let (output_channels, weight_channels, kernel) = weight.dims3()?;
+    let use_parallel_im2col = cfg!(feature = "mkl")
+        && input.device().is_cpu()
+        && input.dtype() == DType::F32
+        && weight.dtype() == DType::F32
+        && input_channels == weight_channels
+        && kernel > 1
+        && input.elem_count() * kernel >= 100_000;
+
+    if !use_parallel_im2col {
+        return Ok(input.conv1d(weight, padding, stride, dilation, 1)?);
+    }
+
+    let columns = input.apply_op1_no_bwd(&ParallelIm2Col1d {
+        kernel,
+        stride,
+        dilation,
+        padding,
+    })?;
+    let batch = input.dim(0)?;
+    let weight_t = weight
+        .reshape((output_channels, input_channels * kernel))?
+        .t()?
+        .unsqueeze(0)?
+        .broadcast_as((batch, input_channels * kernel, output_channels))?;
+    let output = columns.matmul(&weight_t)?.transpose(1, 2)?.contiguous()?;
+    Ok(output)
+}
 
 /// Load weights from a safetensors file
 pub fn load_safetensors<P: AsRef<Path>>(path: P) -> Result<HashMap<String, Tensor>> {
@@ -416,12 +517,12 @@ impl Conv1d {
     }
 
     pub fn forward(&self, input: &Tensor) -> Result<Tensor> {
-        let output = input.conv1d(
+        let output = conv1d_forward(
+            input,
             &self.weight,
             self.padding,
             self.stride,
             self.dilation,
-            1, // groups
         )?;
 
         match &self.bias {
@@ -530,13 +631,7 @@ impl Conv1dWeightNorm {
 
     pub fn forward(&self, input: &Tensor) -> Result<Tensor> {
         let weight = self.get_weight()?;
-        let output = input.conv1d(
-            &weight,
-            self.padding,
-            self.stride,
-            self.dilation,
-            1, // groups
-        )?;
+        let output = conv1d_forward(input, &weight, self.padding, self.stride, self.dilation)?;
 
         match &self.bias {
             Some(bias) => {
@@ -570,5 +665,33 @@ mod tests {
         assert!(sd.contains("layer.weight"));
         assert!(sd.contains("layer.bias"));
         assert!(!sd.contains("nonexistent"));
+    }
+
+    #[cfg(feature = "mkl")]
+    #[test]
+    fn parallel_im2col_conv_matches_candle() -> Result<()> {
+        let device = Device::Cpu;
+        let channels = 16;
+        let length = 4_096;
+        let input = Tensor::arange(0f32, (channels * length) as f32, &device)?
+            .affine(0.001, -0.5)?
+            .reshape((1, channels, length))?;
+
+        for (kernel, dilation) in [(3, 1), (7, 3)] {
+            let padding = dilation * (kernel - 1) / 2;
+            let weight = Tensor::arange(0f32, (channels * channels * kernel) as f32, &device)?
+                .affine(0.0001, -0.02)?
+                .reshape((channels, channels, kernel))?;
+            let expected = input.conv1d(&weight, padding, 1, dilation, 1)?;
+            let actual = conv1d_forward(&input, &weight, padding, 1, dilation)?;
+            let max_error = actual
+                .sub(&expected)?
+                .abs()?
+                .flatten_all()?
+                .max(0)?
+                .to_scalar::<f32>()?;
+            assert!(max_error < 1e-5, "maximum error was {max_error}");
+        }
+        Ok(())
     }
 }

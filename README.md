@@ -136,7 +136,7 @@ cargo build --release --features http-api,mkl
 cargo build --release --features http-api,cuda
 ```
 
-MKL 会静态链接进二进制，运行时不用安装 Intel 工具包。它只适合 x86_64；ARM 设备使用通用 CPU 构建。本项目在 i5-12490F 上的短句测试中，MKL 和转置卷积快路径将纯推理耗时从约 4.73 秒降到 3.24 秒。
+MKL 会静态链接进二进制，运行时不用安装 Intel 工具包。它只适合 x86_64；ARM 设备使用通用 CPU 构建。本项目在 i5-12490F 上的短句测试中，MKL 和 CPU 卷积快路径将纯推理耗时从约 4.73 秒降到 2.8 秒；6.96 秒长句的 RTF 约为 1.29。
 
 ### 准备模型
 
@@ -429,6 +429,9 @@ cargo run --features cuda --example e2e_quick
 
 # GPU KV Cache 基准对比
 cargo bench --features cuda --bench kv_cache_bench
+
+# CPU Conv1d / im2col 基准对比
+cargo bench --features mkl --bench conv1d_cpu_bench
 
 # 全流程时间分析
 cargo run --features cuda --example profile_kv_cache
