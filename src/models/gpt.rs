@@ -23,6 +23,7 @@ pub struct GPTModel {
     mrte: Option<MRTE>,     // MRTE module for advanced cross-attention fusion
     transformer: TransformerGPTSoVITS,
     ar_predict_layer: Tensor, // output projection [vocab_size, hidden_size]
+    ar_predict_layer_t: Tensor, // cached transpose [hidden_size, vocab_size]
     #[cfg(feature = "cuda")]
     audio_pos_alpha: f32, // Learned alpha for CUDA Graph input updates
     text_positional: Tensor,  // Precomputed scaled sine positions [1, max_seq_len, hidden_size]
@@ -290,6 +291,7 @@ impl GPTModel {
             .get("model.ar_predict_layer.weight")?
             .to_device(device)?
             .to_dtype(dtype)?;
+        let ar_predict_layer_t = ar_predict_layer.t()?;
         let text_positional =
             build_scaled_sine_positions(max_seq_len, hidden_size, text_pos_alpha, device, dtype)?;
         let audio_positional =
@@ -303,6 +305,7 @@ impl GPTModel {
             mrte,
             transformer,
             ar_predict_layer,
+            ar_predict_layer_t,
             #[cfg(feature = "cuda")]
             audio_pos_alpha,
             text_positional,
@@ -676,9 +679,7 @@ impl GPTModel {
 
             // Project to vocab
             let last_hidden = hidden.narrow(1, seq_len - 1, 1)?.squeeze(0)?;
-            let logits = last_hidden
-                .matmul(&self.ar_predict_layer.t()?)?
-                .squeeze(0)?;
+            let logits = last_hidden.matmul(&self.ar_predict_layer_t)?.squeeze(0)?;
 
             // Sample next token (no prompt tokens for generate_with_features path)
             let (next_token, _argmax) = Self::sample_token(
@@ -833,9 +834,7 @@ impl GPTModel {
 
         // Get logits from the last prefill position
         let last_hidden = prefill_out.narrow(1, total_prefill - 1, 1)?.squeeze(0)?;
-        let logits = last_hidden
-            .matmul(&self.ar_predict_layer.t()?)?
-            .squeeze(0)?;
+        let logits = last_hidden.matmul(&self.ar_predict_layer_t)?.squeeze(0)?;
 
         let mut generated_tokens: Vec<usize> = Vec::new();
 
@@ -869,7 +868,7 @@ impl GPTModel {
 
             let logits = hidden
                 .squeeze(0)?
-                .matmul(&self.ar_predict_layer.t()?)?
+                .matmul(&self.ar_predict_layer_t)?
                 .squeeze(0)?;
 
             let is_eos_masked = step < 11;
@@ -972,9 +971,7 @@ impl GPTModel {
 
         // ── First token from prefill logits ─────────────────────────────────────
         let last_hidden = prefill_out.narrow(1, total_prefill - 1, 1)?.squeeze(0)?;
-        let logits = last_hidden
-            .matmul(&self.ar_predict_layer.t()?)?
-            .squeeze(0)?;
+        let logits = last_hidden.matmul(&self.ar_predict_layer_t)?.squeeze(0)?;
         let logits_for_sampling = logits.narrow(0, 0, audio_vocab_size - 1)?;
         let (next_token, _) = Self::sample_token_with_scratch(
             &logits_for_sampling,
@@ -1004,7 +1001,7 @@ impl GPTModel {
 
             let logits = hidden
                 .squeeze(0)?
-                .matmul(&self.ar_predict_layer.t()?)?
+                .matmul(&self.ar_predict_layer_t)?
                 .squeeze(0)?;
 
             let is_eos_masked = step < 11;
@@ -1146,9 +1143,7 @@ impl GPTModel {
 
             // ── First token ───────────────────────────────────────────────────────
             let last_hidden = prefill_out.narrow(1, total_prefill - 1, 1)?.squeeze(0)?;
-            let first_logits = last_hidden
-                .matmul(&self.ar_predict_layer.t()?)?
-                .squeeze(0)?;
+            let first_logits = last_hidden.matmul(&self.ar_predict_layer_t)?.squeeze(0)?;
             let (next_token, _) = Self::sample_token_with_scratch(
                 &first_logits.narrow(0, 0, audio_vocab_size - 1)?,
                 top_k,
@@ -1346,7 +1341,7 @@ impl GPTModel {
                         .forward_from_embedding_static(&pos_emb, static_kv)?;
                     Ok(hidden
                         .squeeze(0)?
-                        .matmul(&self.ar_predict_layer.t()?)?
+                        .matmul(&self.ar_predict_layer_t)?
                         .squeeze(0)?)
                 };
 
@@ -1450,7 +1445,7 @@ impl GPTModel {
                     .transformer
                     .forward_from_embedding_graphable(&input_buf, &static_kv, &attn_mask_buf)?
                     .squeeze(0)?
-                    .matmul(&self.ar_predict_layer.t()?)?
+                    .matmul(&self.ar_predict_layer_t)?
                     .squeeze(0)?;
                 // Scatter all logits into stable pre-allocated buffer — captured in graph
                 logits_out.scatter_set(&full_idx, &logits_tmp, 0)?;
@@ -1694,9 +1689,7 @@ impl GPTModel {
 
             // Project last position to vocab
             let last_hidden = hidden.narrow(1, total_seq - 1, 1)?.squeeze(0)?;
-            let logits = last_hidden
-                .matmul(&self.ar_predict_layer.t()?)?
-                .squeeze(0)?;
+            let logits = last_hidden.matmul(&self.ar_predict_layer_t)?.squeeze(0)?;
 
             // For first 11 steps, mask out EOS logit
             let is_eos_masked = step < 11;
