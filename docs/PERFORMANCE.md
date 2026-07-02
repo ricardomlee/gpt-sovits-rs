@@ -33,6 +33,8 @@ decoder 的 34 ms 中，resblocks 约 24 ms，转置卷积上采样约 8 ms。
 4. 参考音频：保持预加载，优化冷启动和音色切换，不占用热路径预算。
 5. BERT 和文本前端：当前收益空间很小，优先保证文本与韵律质量。
 
+静态 KV 已做过无 CUDA Graph 对照，没有收益：短文本动态/静态为 0.31/0.33 秒，中等文本为 2.05/2.09 秒，长文本为 3.59/3.62 秒。改成只计算有效长度后，中长文本可快约 2-5%，但短文本仍变慢；生成 32 token 后再切换的自适应方案也没有稳定收益。因此默认继续使用动态 KV。
+
 ## 分析命令
 
 普通日志只适合看整段时间。CUDA 异步执行时，使用下面的分析模式才能得到可信的 SoVITS 子阶段时间：
@@ -47,3 +49,15 @@ GPT_SOVITS_SYNC_PROFILE=1 RUST_LOG=gpt_sovits_rs=debug \
 ```
 
 `GPT_SOVITS_SYNC_PROFILE` 会在各阶段插入同步，只用于分析，不用于生产运行。kernel 汇总方法见 [cuda-oxide 实验记录](CUDA_OXIDE_EXPERIMENT.md)。
+
+只采集模型已加载后的 KV 热路径：
+
+```bash
+GPT_SOVITS_CUDA_PROFILE=1 nsys profile \
+  --capture-range=cudaProfilerApi --capture-range-end=stop \
+  --trace=cuda --sample=none --cpuctxsw=none \
+  --output=/tmp/gpt-sovits-hot \
+  target/release/examples/e2e_quick
+```
+
+一次 21 token 的热路径采集包含约 23,500 次 kernel launch、37,000 次异步显存分配和 9,100 次 H2D。H2D 总量不到 1 MB，说明主要瓶颈是大量小操作的调度和临时 Tensor，不是传输带宽。

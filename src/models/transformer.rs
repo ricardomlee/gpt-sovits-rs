@@ -117,7 +117,7 @@ impl MultiHeadAttention {
             let mask_expanded = mask_expanded.to_dtype(attn_weights.dtype())?;
             // Mask with a large negative value for positions we want to ignore
             let neg_inf_val = -1e9f32;
-            let neg_inf = Tensor::full(neg_inf_val, attn_weights.dims(), &attn_weights.device())?;
+            let neg_inf = Tensor::full(neg_inf_val, attn_weights.dims(), attn_weights.device())?;
             let neg_inf = neg_inf.to_dtype(attn_weights.dtype())?;
             let mask_weighted = mask_expanded.broadcast_mul(&neg_inf)?;
             attn_weights.add(&mask_weighted)?
@@ -204,7 +204,7 @@ impl MultiHeadAttention {
             let mask_expanded = mask_for_q.broadcast_left((batch_size, self.n_heads))?;
             let mask_expanded = mask_expanded.to_dtype(attn_weights.dtype())?;
             let neg_inf_val = -1e9f32;
-            let neg_inf = Tensor::full(neg_inf_val, attn_weights.dims(), &attn_weights.device())?;
+            let neg_inf = Tensor::full(neg_inf_val, attn_weights.dims(), attn_weights.device())?;
             let neg_inf = neg_inf.to_dtype(attn_weights.dtype())?;
             let mask_weighted = mask_expanded.broadcast_mul(&neg_inf)?;
             attn_weights.add(&mask_weighted)?
@@ -234,7 +234,8 @@ impl MultiHeadAttention {
     /// Decode one token using a pre-allocated static KV cache (no dynamic tensor::cat).
     /// - `x`: [batch=1, seq=1, hidden]
     /// - `static_cache`: mutable ref to the layer's pre-allocated K/V buffers
-    /// The mask is built AFTER append so the new token can attend to its own K (causal-correct).
+    ///
+    /// The valid cache view is built after append, so the new token can attend to its own K.
     pub fn forward_kv_static(
         &self,
         x: &Tensor,
@@ -247,28 +248,21 @@ impl MultiHeadAttention {
         let k = self.split_heads(&k, batch, seq)?;
         let v = self.split_heads(&v, batch, seq)?;
 
-        // Write K, V into the pre-allocated buffer at position `static_cache.len`
-        // Mask is built AFTER this so the new token's K is included in valid positions.
+        // Write K, V into the pre-allocated buffer at position `static_cache.len`.
         static_cache.append(&k, &v)?;
 
-        let k_full = static_cache.k(); // [1, n_heads, max_len, head_dim]
-        let v_full = static_cache.v();
+        let valid_len = static_cache.len();
+        let k_valid = static_cache.k().narrow(2, 0, valid_len)?;
+        let v_valid = static_cache.v().narrow(2, 0, valid_len)?;
 
-        // Q @ K^T: [1, n_heads, 1, max_len] — shape is FIXED regardless of cache length
-        let k_t = k_full.transpose(D::Minus2, D::Minus1)?.contiguous()?;
+        // Attend only to initialized positions. Storage stays pre-allocated while
+        // compute shapes grow with the actual sequence length.
+        let k_t = k_valid.transpose(D::Minus2, D::Minus1)?.contiguous()?;
         let attn_weights = q.contiguous()?.matmul(&k_t)?;
         let attn_weights = attn_weights.affine(self.scale, 0.0)?;
 
-        // Build mask after append: positions 0..len-1 valid (includes the just-written token).
-        let attn_mask = static_cache.make_mask()?;
-        let max_len = static_cache.max_len();
-        let mask_exp = attn_mask
-            .expand((batch, self.n_heads, 1, max_len))?
-            .to_dtype(attn_weights.dtype())?;
-        let attn_weights = attn_weights.add(&mask_exp)?;
-
         let attn_probs = candle_nn::ops::softmax(&attn_weights, D::Minus1)?;
-        let attn_output = attn_probs.contiguous()?.matmul(&v_full.contiguous()?)?; // [1, n_heads, 1, head_dim]
+        let attn_output = attn_probs.contiguous()?.matmul(&v_valid.contiguous()?)?;
 
         let attn_output = attn_output.transpose(1, 2)?.contiguous()?.reshape((
             batch,
@@ -318,7 +312,7 @@ impl MultiHeadAttention {
 
         let attn_probs = candle_nn::ops::softmax(&attn_weights, D::Minus1)?;
         // v_full is [1, n_heads, max_kv_len, head_dim], pre-allocated contiguous buffer.
-        let attn_output = attn_probs.matmul(&v_full)?;
+        let attn_output = attn_probs.matmul(v_full)?;
 
         // attn_output is [1, n_heads, 1, head_dim], already contiguous — reshape directly
         // without transpose+contiguous (data order is identical: n_heads * head_dim consecutive).
@@ -344,7 +338,7 @@ impl FeedForward {
         // ReLU FFN: linear2(relu(linear1(x))) - matching Python
         let hidden = self.linear1.forward(x)?;
         let activated = hidden.relu()?;
-        Ok(self.linear2.forward(&activated)?)
+        self.linear2.forward(&activated)
     }
 
     pub fn linear1_forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -385,7 +379,7 @@ impl TransformerBlock {
         let attn_output = self.attention.forward(x, mask)?;
         let x = self.attn_norm.forward(&x.add(&attn_output)?)?;
         let ff_output = self.feed_forward.forward(&x)?;
-        Ok(self.ffn_norm.forward(&x.add(&ff_output)?)?)
+        self.ffn_norm.forward(&x.add(&ff_output)?)
     }
 
     /// Forward with KV cache for inference
@@ -400,7 +394,7 @@ impl TransformerBlock {
         let attn_output = self.attention.forward_kv(x, mask, cache, use_cache)?;
         let x = self.attn_norm.forward(&x.add(&attn_output)?)?;
         let ff_output = self.feed_forward.forward(&x)?;
-        Ok(self.ffn_norm.forward(&x.add(&ff_output)?)?)
+        self.ffn_norm.forward(&x.add(&ff_output)?)
     }
 
     /// Forward with a pre-allocated static KV cache (fixed-shape decode).
@@ -685,7 +679,7 @@ impl Transformer {
             // Apply temperature
             let mut logits = last_logits.to_dtype(candle_core::DType::F32)?;
             if temperature != 1.0 && temperature > 0.0 {
-                let t = candle_core::Tensor::full(temperature, logits.dims(), &logits.device())?;
+                let t = candle_core::Tensor::full(temperature, logits.dims(), logits.device())?;
                 logits = logits.broadcast_div(&t)?;
             }
 

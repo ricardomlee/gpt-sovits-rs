@@ -236,10 +236,7 @@ impl GPTModel {
                 device,
             );
             // Check if we can access MRTE weights
-            match MRTE::new(768, 512, 512, 8, mrte_vb.pp("model.mrte")) {
-                Ok(mrte) => Some(mrte),
-                Err(_) => None,
-            }
+            MRTE::new(768, 512, 512, 8, mrte_vb.pp("model.mrte")).ok()
         } else {
             None
         };
@@ -500,6 +497,7 @@ impl GPTModel {
     ///
     /// # Returns
     /// Vector of semantic token IDs
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_with_features(
         &self,
         phoneme_ids: &[usize],
@@ -723,6 +721,7 @@ impl GPTModel {
     ///
     /// # Returns
     /// Vector of generated semantic token IDs
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_with_prompts(
         &self,
         phoneme_ids: &[usize],
@@ -752,6 +751,7 @@ impl GPTModel {
     /// Like `generate_with_prompts` but accepts pre-aligned 512-dim BERT features
     /// [1, all_phones, 512] ready to add directly to text embeddings.
     /// Use this when ref+target BERT features are pre-concatenated externally.
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_with_prompts_aligned_bert(
         &self,
         phoneme_ids: &[usize],
@@ -782,6 +782,7 @@ impl GPTModel {
     /// Prefills the cache with the full text+prompt sequence in one forward pass,
     /// then generates each audio token with a single-token forward pass (O(1) per step
     /// instead of O(n) for the non-cached version).
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_with_prompts_aligned_bert_kv_cache(
         &self,
         phoneme_ids: &[usize],
@@ -837,10 +838,11 @@ impl GPTModel {
         let logits = last_hidden.matmul(&self.ar_predict_layer_t)?.squeeze(0)?;
 
         let mut generated_tokens: Vec<usize> = Vec::new();
+        let mut sampling_scratch = SamplingScratch::new(audio_vocab_size);
 
         // First token sampling from prefill logits (step 0 — always mask EOS)
         let logits_for_sampling = logits.narrow(0, 0, audio_vocab_size - 1)?;
-        let (next_token, _argmax) = Self::sample_token(
+        let (next_token, _argmax) = Self::sample_token_with_scratch(
             &logits_for_sampling,
             top_k,
             top_p,
@@ -848,6 +850,7 @@ impl GPTModel {
             repetition_penalty,
             prompt_tokens,
             &generated_tokens,
+            &mut sampling_scratch,
         )?;
         if next_token >= audio_vocab_size - 1 {
             return Ok(generated_tokens);
@@ -880,7 +883,7 @@ impl GPTModel {
             let logits_for_sampling = logits.narrow(0, 0, effective_vocab)?;
 
             // sample_token returns (sampled, argmax) from a single D2H transfer
-            let (next_token, argmax) = Self::sample_token(
+            let (next_token, argmax) = Self::sample_token_with_scratch(
                 &logits_for_sampling,
                 top_k,
                 top_p,
@@ -888,6 +891,7 @@ impl GPTModel {
                 repetition_penalty,
                 prompt_tokens,
                 &generated_tokens,
+                &mut sampling_scratch,
             )?;
 
             let argmax_eos = !is_eos_masked && argmax == audio_vocab_size - 1;
@@ -910,7 +914,9 @@ impl GPTModel {
     /// This eliminates the O(n) `Tensor::cat` allocations in the dynamic KV approach, replacing
     /// them with an in-place `scatter_set` that writes only the new K/V token at each step.
     ///
-    /// All attention shapes during decode are constant → compatible with CUDA graph capture.
+    /// The storage is fixed, while eager attention only reads the valid prefix. CUDA Graph uses
+    /// the separate fixed-shape graphable path below.
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_with_static_kv(
         &self,
         phoneme_ids: &[usize],
@@ -1054,6 +1060,7 @@ impl GPTModel {
     ///     f. Sample from the (still-live) logits tensor written by the graph.
     ///
     /// Falls back to `generate_with_static_kv` on non-CUDA devices.
+    #[allow(clippy::too_many_arguments)]
     pub fn generate_with_cuda_graph(
         &self,
         phoneme_ids: &[usize],
@@ -1218,19 +1225,19 @@ impl GPTModel {
                         let cstream = cs.device.cuda_stream();
                         let base = match &cs.slice {
                             CudaStorageSlice::F32(s) => {
-                                let (p, _g) = s.device_ptr(&*cstream);
+                                let (p, _g) = s.device_ptr(&cstream);
                                 p
                             }
                             CudaStorageSlice::F16(s) => {
-                                let (p, _g) = s.device_ptr(&*cstream);
+                                let (p, _g) = s.device_ptr(&cstream);
                                 p
                             }
                             CudaStorageSlice::BF16(s) => {
-                                let (p, _g) = s.device_ptr(&*cstream);
+                                let (p, _g) = s.device_ptr(&cstream);
                                 p
                             }
                             CudaStorageSlice::I64(s) => {
-                                let (p, _g) = s.device_ptr(&*cstream);
+                                let (p, _g) = s.device_ptr(&cstream);
                                 p
                             }
                             _ => {
@@ -1605,6 +1612,7 @@ impl GPTModel {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn generate_with_prompts_inner(
         &self,
         phoneme_ids: &[usize],

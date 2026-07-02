@@ -64,7 +64,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let t1 = start.elapsed();
 
     let start2 = std::time::Instant::now();
+    #[cfg(feature = "cuda")]
+    let cuda_profiler = if std::env::var("GPT_SOVITS_CUDA_PROFILE").as_deref() == Ok("1") {
+        Some(candle_core::cuda_backend::cudarc::driver::Profiler::new()?)
+    } else {
+        None
+    };
     let audio_kv = pipeline.inference_kv_cache(input_text, ref_audio, ref_text, &options)?;
+    #[cfg(feature = "cuda")]
+    drop(cuda_profiler);
     let t2 = start2.elapsed();
 
     println!("\n=== Results ===");
