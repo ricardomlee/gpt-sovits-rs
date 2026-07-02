@@ -108,7 +108,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(path) = model_paths.hubert.as_ref() {
         pipeline.load_hubert(path)?;
-        pipeline.load_semantic_tokenizer(&model_paths.sovits)?;
     }
 
     let options = defaults.to_inference_options(language, Default::default());
@@ -125,10 +124,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     pipeline.preload_speaker(&reference_audio, reference_text, language)?;
 
-    let mut thresholds = AudioQualityThresholds::default();
     // Semantic tokens represent roughly 40 ms of audio. Reaching this duration means
     // generation exhausted max_tokens instead of producing EOS, which often leaves a noisy tail.
-    thresholds.max_duration_s = Some(options.max_tokens as f32 / 25.0 - 0.01);
+    let thresholds = AudioQualityThresholds {
+        max_duration_s: Some(options.max_tokens as f32 / 25.0 - 0.01),
+        ..AudioQualityThresholds::default()
+    };
     let mut report = Vec::new();
     for (index, text) in texts.iter().enumerate() {
         let start = Instant::now();

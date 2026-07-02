@@ -12,7 +12,8 @@ use candle_nn::{Conv1d, Conv1dConfig, Module};
 /// Extracts semantic tokens (codebook indices) from Hubert features
 pub struct SemanticTokenizer {
     ssl_conv: Conv1d,
-    codebook: Tensor, // Codebook [1024, 768]
+    codebook_t: Tensor,
+    codebook_norm_t: Tensor,
 }
 
 impl SemanticTokenizer {
@@ -69,7 +70,14 @@ impl SemanticTokenizer {
         };
         let ssl_conv = Conv1d::new(ssl_weight, Some(ssl_bias), config);
 
-        Ok(Self { ssl_conv, codebook })
+        let codebook_t = codebook.t()?;
+        let codebook_norm_t = codebook.sqr()?.sum_keepdim(1)?.t()?;
+
+        Ok(Self {
+            ssl_conv,
+            codebook_t,
+            codebook_norm_t,
+        })
     }
 
     /// Extract semantic tokens from Hubert features
@@ -89,42 +97,33 @@ impl SemanticTokenizer {
         let frames_sq = frames.sqr()?;
         let frames_norm = frames_sq.sum_keepdim(1)?; // [T, 1]
 
-        let codebook_sq = self.codebook.sqr()?;
-        let codebook_norm = codebook_sq.sum_keepdim(1)?; // [1024, 1]
+        let dot = frames.matmul(&self.codebook_t)?; // [T, 1024]
 
-        let dot = frames.matmul(&self.codebook.t()?)?; // [T, 1024]
-
-        let dist = frames_norm.broadcast_add(&codebook_norm.t()?)?; // [T, 1024]
-        let twice_dot =
-            dot.broadcast_mul(&Tensor::full(2.0f32, dot.dims(), &self.codebook.device())?)?;
+        let dist = frames_norm.broadcast_add(&self.codebook_norm_t)?; // [T, 1024]
+        let twice_dot = dot.affine(2.0, 0.0)?;
         let dist = dist.broadcast_sub(&twice_dot)?;
 
-        // Argmin along codebook dimension
-        let codes = Self::argmin_2d(&dist)?;
-        Ok(codes)
+        Self::argmin_2d(&dist)
     }
 
-    /// Argmin along last dimension of [T, N] tensor
-    fn argmin_2d(t: &Tensor) -> Result<Vec<usize>> {
-        let dims = t.dims();
-        let n = dims[1];
-        let t_len = dims[0];
-        let data: Vec<f32> = t.flatten_all()?.to_vec1()?;
+    fn argmin_2d(distances: &Tensor) -> Result<Vec<usize>> {
+        Ok(distances
+            .argmin(1)?
+            .to_vec1::<u32>()?
+            .into_iter()
+            .map(|index| index as usize)
+            .collect())
+    }
+}
 
-        let mut indices = Vec::with_capacity(t_len);
-        for i in 0..t_len {
-            let start = i * n;
-            let mut min_idx = 0;
-            let mut min_val = data[start];
-            for j in 1..n {
-                let val = data[start + j];
-                if val < min_val {
-                    min_val = val;
-                    min_idx = j;
-                }
-            }
-            indices.push(min_idx);
-        }
-        Ok(indices)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn argmin_returns_one_index_per_frame() -> Result<()> {
+        let distances = Tensor::new(&[[3f32, 1., 2.], [-1., 4., 0.]], &Device::Cpu)?;
+        assert_eq!(SemanticTokenizer::argmin_2d(&distances)?, vec![1, 0]);
+        Ok(())
     }
 }

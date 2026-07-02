@@ -345,14 +345,6 @@ fn main() {
         info!("Hubert model not specified, skipping (quality may be reduced)");
     }
 
-    // Load semantic tokenizer (optional, uses SoVITS weights for prompt token extraction)
-    if model_paths.hubert.is_some() {
-        info!("Loading semantic tokenizer from SoVITS weights...");
-        if let Err(e) = pipeline.load_semantic_tokenizer(&sovits_model) {
-            error!("Failed to load semantic tokenizer: {}", e);
-        }
-    }
-
     // Parse language
     let voice_defaults = VoiceDefaults::from_profile(voice_profile.as_ref().map(|v| &v.profile));
     let language_text = args.language.as_deref().unwrap_or(&voice_defaults.language);

@@ -3,6 +3,7 @@
 pub mod audio;
 pub mod audio_features;
 pub mod kv_cache;
+pub mod profiling;
 pub mod weights;
 
 pub use audio::AudioBuffer;

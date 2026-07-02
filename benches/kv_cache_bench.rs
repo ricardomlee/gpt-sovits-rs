@@ -45,7 +45,6 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     }
     if let Some(path) = paths.hubert.as_ref() {
         pipeline.load_hubert(path)?;
-        pipeline.load_semantic_tokenizer(&paths.sovits)?;
     }
     println!("Models loaded.\n");
 

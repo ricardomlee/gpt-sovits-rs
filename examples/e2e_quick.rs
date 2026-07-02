@@ -35,7 +35,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     match paths.hubert.as_ref().map(|path| pipeline.load_hubert(path)) {
         Some(Ok(_)) => {
-            pipeline.load_semantic_tokenizer(&paths.sovits)?;
             println!("  [OK] HuBERT + semantic tokenizer");
         }
         Some(Err(e)) => println!("  [SKIP] HuBERT: {}", e),

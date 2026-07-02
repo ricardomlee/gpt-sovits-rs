@@ -218,7 +218,7 @@ cargo run --release --features cuda --bin gpt-sovits -- \
     --text "人民，只有人民，才是创造世界历史的动力。"
 ```
 
-命令行参数会覆盖 voice profile 中的默认值。长期产品目标见 [docs/PRODUCT_GOAL.md](docs/PRODUCT_GOAL.md)。
+命令行参数会覆盖 voice profile 中的默认值。长期产品目标见 [docs/PRODUCT_GOAL.md](docs/PRODUCT_GOAL.md)，当前性能基线见 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)。
 
 查看已有音色不需要加载模型：
 

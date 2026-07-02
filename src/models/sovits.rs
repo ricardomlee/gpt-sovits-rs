@@ -7,6 +7,7 @@
 //! 1. Text-driven synthesis: semantic tokens + text → enc_p → flow → decoder
 //! 2. Reference-driven synthesis: reference mel → enc_q → flow → decoder
 
+use crate::utils::profiling::{sync_profile_enabled, sync_profile_stage};
 use crate::utils::{load_safetensors, StateDict};
 use crate::{Error, Result};
 use candle_core::{DType, Device, Tensor};
@@ -258,6 +259,7 @@ impl SoVITSModel {
         } else {
             Tensor::zeros((1, 512, 1), self.dtype, &self.device)?
         };
+        sync_profile_stage(&self.device)?;
         let ref_enc_ms = profile_start.elapsed().as_millis();
 
         // Decode semantic codes using quantizer
@@ -274,6 +276,7 @@ impl SoVITSModel {
         // Build y_mask from y_lengths
         let time_len = quantized_up.dims()[2];
         let y_mask = build_sequence_mask_typed(&y_lengths, time_len, 1, &self.device, self.dtype)?;
+        sync_profile_stage(&self.device)?;
         let prepare_ms = stage_start.elapsed().as_millis();
 
         // Pass through enc_p
@@ -281,6 +284,7 @@ impl SoVITSModel {
         let (_y, m_p, logs_p, _y_mask_enc) =
             self.enc_p
                 .forward(&quantized_up, &y_lengths, &text, &text_lengths, &ge, 1.0)?;
+        sync_profile_stage(&self.device)?;
         let enc_p_ms = stage_start.elapsed().as_millis();
 
         // Sample from N(m, exp(logs)) to get latent z_p (matching Python: noise_scale=0.5)
@@ -290,6 +294,7 @@ impl SoVITSModel {
         let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(
             &Tensor::full(noise_scale, m_p.dims(), &self.device)?.to_dtype(m_p.dtype())?,
         )?)?;
+        sync_profile_stage(&self.device)?;
         let sample_ms = stage_start.elapsed().as_millis();
 
         // Invert flow transform: z_p → z (with ge conditioning, matching Python)
@@ -298,14 +303,16 @@ impl SoVITSModel {
 
         // Apply mask
         let z_masked = z.broadcast_mul(&y_mask)?;
+        sync_profile_stage(&self.device)?;
         let flow_ms = stage_start.elapsed().as_millis();
 
         // Pass through decoder with full 512-dim ge (matching Python: o = self.dec((z * y_mask), g=ge))
         let stage_start = Instant::now();
         let output = self.decoder.forward(&z_masked, Some(&ge))?;
+        sync_profile_stage(&self.device)?;
         let decoder_ms = stage_start.elapsed().as_millis();
 
-        if self.device.is_cpu() {
+        if self.device.is_cpu() || sync_profile_enabled() {
             tracing::debug!(
                 "profile sovits ref_enc={}ms prepare={}ms enc_p={}ms sample={}ms flow={}ms decoder={}ms total={}ms",
                 ref_enc_ms,

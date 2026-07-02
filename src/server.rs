@@ -736,13 +736,6 @@ pub fn run(
         if let Err(e) = pipeline.load_hubert(path) {
             error!("Failed to load Hubert model (continuing without it): {}", e);
         }
-        // Semantic tokenizer needed for speaker feature extraction from reference audio
-        if let Some(sovits_path) = sovits_model {
-            info!("Loading semantic tokenizer from SoVITS weights...");
-            if let Err(e) = pipeline.load_semantic_tokenizer(sovits_path) {
-                error!("Failed to load semantic tokenizer: {}", e);
-            }
-        }
     }
 
     let state = AppState {

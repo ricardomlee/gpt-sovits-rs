@@ -1,5 +1,6 @@
 //! SoVITS Decoder Module - HiFi-GAN style vocoder
 
+use crate::utils::profiling::{sync_profile_enabled, sync_profile_stage};
 use crate::utils::{Conv1d, Conv1dWeightNorm, StateDict};
 use crate::Result;
 use candle_core::backend::BackendStorage;
@@ -393,6 +394,7 @@ impl Decoder {
     /// Generate waveform from latent features
     pub fn forward(&self, x: &Tensor, g: Option<&Tensor>) -> Result<Vec<f32>> {
         let profile_start = Instant::now();
+        let device = x.device().clone();
         // x: [batch, channels, time]
         let mut x = self.conv_pre.forward(x)?;
 
@@ -404,6 +406,7 @@ impl Decoder {
                 x = x.broadcast_add(&g_proj)?;
             }
         }
+        sync_profile_stage(&device)?;
         let pre_ms = profile_start.elapsed().as_millis();
         let mut upsample_time = Duration::ZERO;
         let mut resblock_time = Duration::ZERO;
@@ -416,6 +419,7 @@ impl Decoder {
             // Upsample using transposed convolution
             let stage_start = Instant::now();
             x = self.upsample_forward(&x, &up.conv, up.upsample_factor)?;
+            sync_profile_stage(&device)?;
             upsample_time += stage_start.elapsed();
 
             // Apply resblock group (3 resblocks per upsample)
@@ -445,6 +449,7 @@ impl Decoder {
                     x = xs.broadcast_div(&divisor)?;
                 }
             }
+            sync_profile_stage(&device)?;
             resblock_time += stage_start.elapsed();
         }
 
@@ -460,7 +465,7 @@ impl Decoder {
 
         // Convert to Vec<f32> — cast to F32 first since weights may be F16
         let output: Vec<f32> = x.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?;
-        if x.device().is_cpu() {
+        if device.is_cpu() || sync_profile_enabled() {
             tracing::debug!(
                 "profile decoder pre={}ms upsample={}ms resblocks={}ms post={}ms total={}ms",
                 pre_ms,
