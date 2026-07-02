@@ -29,6 +29,25 @@ fn cuda_ptr(tensor: &Tensor) -> Result<u64> {
     Ok(pointer + (layout.start_offset() * size_of::<f32>()) as u64)
 }
 
+fn candle_leaky_relu(input: &Tensor) -> Result<Tensor> {
+    let zeros = Tensor::zeros_like(input)?;
+    let positive = input.maximum(&zeros)?;
+    let negative = input.minimum(&zeros)?;
+    let slope = Tensor::full(SLOPE, input.dims(), input.device())?;
+    Ok(positive.add(&negative.broadcast_mul(&slope)?)?)
+}
+
+fn max_error(input: &[f32], output: &[f32]) -> f32 {
+    input
+        .iter()
+        .zip(output.iter())
+        .map(|(&input, &actual)| {
+            let expected = if input >= 0.0 { input } else { input * SLOPE };
+            (expected - actual).abs()
+        })
+        .fold(0.0f32, f32::max)
+}
+
 fn main() -> Result<()> {
     let ptx_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("experiments/cuda-oxide/gpt_sovits_cuda_oxide.ptx");
@@ -56,13 +75,12 @@ fn main() -> Result<()> {
         .map(|index| index as f32 / ELEMENTS as f32 * 2.0 - 1.0)
         .collect();
     let input = Tensor::from_vec(input_host.clone(), ELEMENTS, &device)?;
-    let output = Tensor::zeros(ELEMENTS, candle_core::DType::F32, &device)?;
     let input_ptr = cuda_ptr(&input)?;
-    let output_ptr = cuda_ptr(&output)?;
     let length = ELEMENTS as u64;
     let config = LaunchConfig::for_num_elems(ELEMENTS as u32);
 
-    let launch = || -> Result<()> {
+    let launch = |output: &Tensor| -> Result<()> {
+        let output_ptr = cuda_ptr(output)?;
         let mut args = stream.launch_builder(&function);
         args.arg(&input_ptr)
             .arg(&length)
@@ -73,34 +91,68 @@ fn main() -> Result<()> {
         Ok(())
     };
 
+    let preallocated_output = Tensor::zeros(ELEMENTS, candle_core::DType::F32, &device)?;
     for _ in 0..WARMUP {
-        launch()?;
+        launch(&preallocated_output)?;
     }
     stream.synchronize()?;
 
     let start = Instant::now();
     for _ in 0..ITERATIONS {
-        launch()?;
+        launch(&preallocated_output)?;
     }
     stream.synchronize()?;
-    let elapsed = start.elapsed();
+    let preallocated_elapsed = start.elapsed();
 
-    let output_host = output.to_vec1::<f32>()?;
-    let max_error = input_host
-        .iter()
-        .zip(output_host.iter())
-        .map(|(&input, &actual)| {
-            let expected = if input >= 0.0 { input } else { input * SLOPE };
-            (expected - actual).abs()
-        })
-        .fold(0.0f32, f32::max);
-    if max_error > f32::EPSILON {
-        bail!("maximum error {max_error} exceeds f32 epsilon");
+    let mut custom_output = Tensor::zeros_like(&input)?;
+    launch(&custom_output)?;
+    for _ in 1..WARMUP {
+        custom_output = Tensor::zeros_like(&input)?;
+        launch(&custom_output)?;
+    }
+    stream.synchronize()?;
+
+    let start = Instant::now();
+    for _ in 0..ITERATIONS {
+        custom_output = Tensor::zeros_like(&input)?;
+        launch(&custom_output)?;
+    }
+    stream.synchronize()?;
+    let allocated_elapsed = start.elapsed();
+
+    let mut candle_output = candle_leaky_relu(&input)?;
+    for _ in 1..WARMUP {
+        candle_output = candle_leaky_relu(&input)?;
+    }
+    stream.synchronize()?;
+
+    let start = Instant::now();
+    for _ in 0..ITERATIONS {
+        candle_output = candle_leaky_relu(&input)?;
+    }
+    stream.synchronize()?;
+    let candle_elapsed = start.elapsed();
+
+    let custom_error = max_error(&input_host, &custom_output.to_vec1::<f32>()?);
+    let candle_error = max_error(&input_host, &candle_output.to_vec1::<f32>()?);
+    if custom_error > f32::EPSILON || candle_error > f32::EPSILON {
+        bail!("maximum errors: cuda-oxide={custom_error}, Candle={candle_error}");
     }
 
-    let average_us = elapsed.as_secs_f64() * 1_000_000.0 / ITERATIONS as f64;
+    let average_us =
+        |elapsed: std::time::Duration| elapsed.as_secs_f64() * 1_000_000.0 / ITERATIONS as f64;
+
     println!(
-        "cuda-oxide through Candle: elements={ELEMENTS} average={average_us:.2}us max_error={max_error:.2e}"
+        "cuda-oxide preallocated: elements={ELEMENTS} average={:.2}us",
+        average_us(preallocated_elapsed)
+    );
+    println!(
+        "cuda-oxide allocated:    elements={ELEMENTS} average={:.2}us max_error={custom_error:.2e}",
+        average_us(allocated_elapsed)
+    );
+    println!(
+        "Candle composed:         elements={ELEMENTS} average={:.2}us max_error={candle_error:.2e}",
+        average_us(candle_elapsed)
     );
     Ok(())
 }

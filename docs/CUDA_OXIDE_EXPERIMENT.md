@@ -21,9 +21,11 @@
 | 路径 | 平均 kernel 时间 | 最大误差 |
 | --- | ---: | ---: |
 | cuda-oxide 自带 host runtime | 7.97 us | 0 |
-| Candle cudarc context | 12.3-15.8 us | 0 |
+| cuda-oxide + Candle，复用输出 | 11.83-16.59 us | 0 |
+| cuda-oxide + Candle，每次分配输出 | 19.36-30.71 us | 0 |
+| Candle 四算子 LeakyReLU | 76.57-91.80 us | 0 |
 
-Candle 路径四次测得 15.79、12.28、12.47 和 14.64 us。表中时间包含逐次 host launch 开销，不是只看 GPU event 的 kernel 时间，因此用于比较本项目实际调用方式更合适。
+输入为 1,048,576 个 F32 元素。表中时间包含 host launch 和 Candle 输出分配开销，不是只看 GPU event 的 kernel 时间。每次分配输出的 cuda-oxide 路径更接近生产用法，相比当前由 `maximum/minimum/multiply/add` 组成的 Candle 实现快 3 倍以上。
 
 已经验证：
 
@@ -69,7 +71,32 @@ cuda-oxide 可以继续实验，但目前不应进入默认推理路径：
 
 - 项目仍处于早期阶段，编译器和 API 变化快。
 - 工具链要求比主项目严格，部署时直接编译不够轻量。
-- 单个逐元素激活只有微秒级耗时，而且 Candle 接入路径在这个小算子上更慢，替换它本身不会改善端到端速度。
+- 单次激活仍只有几十微秒，但 SoVITS 会反复调用。融合 LeakyReLU 有明确的局部收益，是否进入生产路径取决于 E2E 收益和部署成本。
 - 真正有价值的是融合多个操作，减少中间 Tensor 和 kernel launch；需要先用 profiler 找到稳定热点。
 
 下一次实验应选择一个实际占时明显、边界清楚的 SoVITS 操作链，并同时对比 Candle 基线、数值误差和端到端耗时。没有稳定收益时，不引入生产依赖。
+
+## 端到端分析
+
+Nsight Systems 对同一次短文本的 plain 和 KV 推理汇总显示：
+
+- GPT FFN 用 `clamp(0, MAX)` 实现 ReLU，产生了约 1200 对 `maximum/minimum` kernel。
+- 改用 Candle 原生 `relu()` 后，这部分变成单 kernel，约 1200 次合计 3.15 ms。
+- 原实现同等调用量的 `maximum/minimum` 约需 16 ms，GPU 时间预计减少约 13 ms。
+- WaveNet 门控的 `tanh/sigmoid` 各只有约 38 次、总计不足 0.1 ms，不值得优先融合。
+- 剩余约 194 对 `maximum/minimum` 来自 SoVITS LeakyReLU，适合作为下一项 cuda-oxide 融合实验。
+
+这些数字会随 GPT 生成 token 数变化，因此用于判断热点和 kernel 数量，不当作稳定的端到端基准。
+
+采集命令：
+
+```bash
+cargo build --release --features cuda --example e2e_quick
+nsys profile --trace=cuda --sample=none --cpuctxsw=none \
+  --output=/tmp/gpt-sovits-profile \
+  target/release/examples/e2e_quick
+nsys stats --report cuda_gpu_kern_sum,cuda_api_sum \
+  /tmp/gpt-sovits-profile.nsys-rep
+```
+
+下一步应把 cuda-oxide LeakyReLU 作为显式实验开关接入 SoVITS，使用预编译 PTX，并比较相同输入、相同随机种子下的 E2E 延迟和音频逐样本误差。默认路径暂时不依赖 PTX。

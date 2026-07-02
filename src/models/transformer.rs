@@ -343,7 +343,7 @@ impl FeedForward {
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         // ReLU FFN: linear2(relu(linear1(x))) - matching Python
         let hidden = self.linear1.forward(x)?;
-        let activated = hidden.clamp(0.0, f32::MAX)?;
+        let activated = hidden.relu()?;
         Ok(self.linear2.forward(&activated)?)
     }
 
