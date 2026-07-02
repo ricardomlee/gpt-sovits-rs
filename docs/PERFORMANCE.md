@@ -61,3 +61,11 @@ GPT_SOVITS_CUDA_PROFILE=1 nsys profile \
 ```
 
 一次 21 token 的热路径采集包含约 23,500 次 kernel launch、37,000 次异步显存分配和 9,100 次 H2D。H2D 总量不到 1 MB，说明主要瓶颈是大量小操作的调度和临时 Tensor，不是传输带宽。
+
+CUDA Graph 的 300-token 回归显示，capture 外的 graphable 路径与动态 KV 一致，但 stream capture 后第一个 logits 就会明显偏离。初步判断与 Candle 算子在 capture 内的临时显存分配有关。实验模式会用 eager logits 检查第一次 graph launch，发现偏离时从已校验的 KV 状态继续，不再把错误 token 交给 SoVITS，也不用从头重算。
+
+可用真实模型、`mao.wav` 和 300 个 token 的确定性生成检查三条解码路径：
+
+```bash
+cargo run --release --features cuda --example compare_cuda_graph_tokens
+```

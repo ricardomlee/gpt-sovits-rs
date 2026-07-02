@@ -137,6 +137,12 @@ impl KvCache {
     }
 }
 
+impl Default for KvCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// KV Cache manager for all transformer layers
 #[derive(Debug, Clone)]
 pub struct KvCacheManager {
@@ -188,6 +194,11 @@ impl KvCacheManager {
     /// Get the current sequence length (assumes all layers have same length)
     pub fn len(&self) -> usize {
         self.caches.first().map(|c| c.len()).unwrap_or(0)
+    }
+
+    /// Check whether the manager has no cached tokens.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -313,6 +324,12 @@ impl StaticKvLayer {
         self.max_len
     }
 
+    fn fork_valid(&self) -> Result<Self> {
+        let k = self.k_buf.narrow(2, 0, self.len)?;
+        let v = self.v_buf.narrow(2, 0, self.len)?;
+        Self::from_dynamic(k, v, self.max_len)
+    }
+
     /// Build an attention mask: 0.0 for valid positions, -1e9 for padding.
     /// Shape: [1, 1, 1, max_len] — broadcast to [batch, n_heads, 1, max_len] in attention.
     pub fn make_mask(&self) -> Result<Tensor> {
@@ -370,6 +387,18 @@ impl StaticKvManager {
     }
     pub fn num_layers(&self) -> usize {
         self.layers.len()
+    }
+
+    pub fn fork_valid(&self) -> Result<Self> {
+        let layers = self
+            .layers
+            .iter()
+            .map(StaticKvLayer::fork_valid)
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            layers,
+            max_len: self.max_len,
+        })
     }
 
     /// Increment each layer's `len` by 1 (called after a graph-replay decode step).
@@ -451,6 +480,38 @@ mod tests {
         manager.reset();
         assert_eq!(manager.len(), 0);
 
+        Ok(())
+    }
+
+    #[test]
+    fn static_kv_fork_preserves_valid_prefix() -> Result<()> {
+        let device = Device::Cpu;
+        let mut dynamic = KvCacheManager::new(1);
+        let k = Tensor::arange(0f32, 4f32, &device)?.reshape((1, 1, 2, 2))?;
+        let v = (&k + 10.0)?;
+        dynamic.get_or_create(0).update(k, v)?;
+
+        let static_kv = StaticKvManager::from_dynamic(dynamic, 8)?;
+        let fork = static_kv.fork_valid()?;
+
+        assert_eq!(fork.len(), 2);
+        assert_eq!(fork.max_len, 8);
+        assert_eq!(
+            fork.layers[0]
+                .k()
+                .narrow(2, 0, fork.len())?
+                .flatten_all()?
+                .to_vec1::<f32>()?,
+            vec![0.0, 1.0, 2.0, 3.0]
+        );
+        assert_eq!(
+            fork.layers[0]
+                .v()
+                .narrow(2, 0, fork.len())?
+                .flatten_all()?
+                .to_vec1::<f32>()?,
+            vec![10.0, 11.0, 12.0, 13.0]
+        );
         Ok(())
     }
 }

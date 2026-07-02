@@ -30,6 +30,11 @@ name = "cuda_oxide_candle"
 path = "examples/cuda_oxide_candle.rs"
 required-features = ["cuda"]
 
+[[example]]
+name = "compare_cuda_graph_tokens"
+path = "examples/compare_cuda_graph_tokens.rs"
+required-features = ["cuda"]
+
 [dependencies]
 # Deep Learning Inference
 candle-core = "0.10"

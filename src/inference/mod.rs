@@ -383,9 +383,8 @@ impl Pipeline {
                     tracing::info!("Extracted Hubert features: {:?}", features.dims());
                     let tokens = if let Some(tokenizer) = semantic_tokenizer {
                         let hf_t = features.transpose(1, 2)?.to_device(device)?;
-                        tokenizer.extract(&hf_t).ok().map(|t| {
+                        tokenizer.extract(&hf_t).ok().inspect(|t| {
                             tracing::debug!("Prompt tokens: {}", t.len());
-                            t
                         })
                     } else {
                         None
@@ -713,9 +712,9 @@ impl Pipeline {
 
     /// Like `inference_kv_cache` but accelerated with a CUDA graph for the decode loop.
     ///
-    /// On CUDA devices this replaces ~160 kernel launches per decode step with a single
-    /// graph replay, reducing kernel-launch overhead significantly for long sequences.
-    /// Falls back to static-KV (no graph overhead) on non-CUDA devices.
+    /// The experimental CUDA path validates its first graph result before sampling and
+    /// continues from a guarded KV state if capture is not numerically correct. Non-CUDA
+    /// devices use static KV without graph capture.
     pub fn inference_cuda_graph<P: AsRef<Path>>(
         &mut self,
         text: &str,

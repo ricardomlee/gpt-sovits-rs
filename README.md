@@ -189,7 +189,7 @@ cargo run --release --features cuda --bin gpt-sovits -- \
     --output output_long.wav
 ```
 
-`--mode` 可选 `plain`、`kv`、`cuda-graph`，默认用稳定的 `kv`。`cuda-graph` 的长音频仍在验证，目前会自动回退到 `kv`；开发测试时设置 `GPT_SOVITS_EXPERIMENTAL_CUDA_GRAPH=1` 才会实际启用。CLI 日志会输出 `profile mode=... target=... ref=... target_bert=... gpt=... sovits=... total=...`，便于看时间花在哪里。
+`--mode` 可选 `plain`、`kv`、`cuda-graph`，默认用稳定的 `kv`。`cuda-graph` 的长音频仍在验证；开发测试时设置 `GPT_SOVITS_EXPERIMENTAL_CUDA_GRAPH=1` 才会实际启用。实验路径会校验第一次 graph launch，发现结果偏离时从已校验的 KV 状态继续。CLI 日志会输出 `profile mode=... target=... ref=... target_bert=... gpt=... sovits=... total=...`，便于看时间花在哪里。
 
 > BigVGAN 当前仍是实验加载入口，主推理路径使用 SoVITS 权重内置 decoder；普通 mel-to-waveform BigVGAN 不能直接替换 SoVITS latent decoder。
 

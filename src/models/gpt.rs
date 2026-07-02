@@ -24,8 +24,6 @@ pub struct GPTModel {
     transformer: TransformerGPTSoVITS,
     ar_predict_layer: Tensor, // output projection [vocab_size, hidden_size]
     ar_predict_layer_t: Tensor, // cached transpose [hidden_size, vocab_size]
-    #[cfg(feature = "cuda")]
-    audio_pos_alpha: f32, // Learned alpha for CUDA Graph input updates
     text_positional: Tensor,  // Precomputed scaled sine positions [1, max_seq_len, hidden_size]
     audio_positional: Tensor, // Precomputed scaled sine positions [1, max_seq_len, hidden_size]
     device: Device,
@@ -303,8 +301,6 @@ impl GPTModel {
             transformer,
             ar_predict_layer,
             ar_predict_layer_t,
-            #[cfg(feature = "cuda")]
-            audio_pos_alpha,
             text_positional,
             audio_positional,
             device: device.clone(),
@@ -1194,12 +1190,10 @@ impl GPTModel {
                     .to_dtype(self.dtype)?
             };
 
-            // logits_out: [n_vocab] F32 — the graph scatter_sets computed logits into this stable buf.
+            // logits_out: [n_vocab] F32 — graph output is copied into this stable buffer.
             // Allocated PRE-capture so the address doesn't change between graph launches.
             let n_vocab = self.ar_predict_layer.dim(0)?;
             let logits_out = Tensor::zeros((n_vocab,), DType::F32, &self.device)?;
-            // full_idx: [n_vocab] — used for scatter_set to overwrite all logit slots each step
-            let full_idx = Tensor::arange(0i64, n_vocab as i64, &self.device)?;
 
             // ── Raw CUDA update helpers (NO pool allocation between graph launches) ──────
             // scatter_set uses cuMemAllocAsync for index/strides tensors. Any pool allocation
@@ -1263,28 +1257,29 @@ impl GPTModel {
                 .to_dtype(DType::F32)?
                 .flatten_all()?
                 .to_vec1()?;
-            let half_dim = hidden_size / 2;
-            // div_term[i] = (1/10000)^(2i/hidden_size)  — same as add_sine_positional_with_alpha
-            let div_term: Vec<f64> = (0..half_dim)
-                .map(|i| (-(i as f64 * 2.0) * (10000.0f64.ln()) / (hidden_size as f64)).exp())
-                .collect();
-            let audio_alpha = self.audio_pos_alpha;
+            let audio_pos_cpu: Vec<f32> = self
+                .audio_positional
+                .to_dtype(DType::F32)?
+                .flatten_all()?
+                .to_vec1()?;
 
             // Cache the raw pointer for input_buf (stable for entire function lifetime)
             let input_buf_ptr = get_cuda_ptr(&input_buf)?;
             // Cache the raw pointer for attn_mask_buf
             let mask_buf_ptr = get_cuda_ptr(&attn_mask_buf)?;
             let mask_esize = attn_mask_buf.dtype().size_in_bytes() as u64;
+            let logits_out_ptr = get_cuda_ptr(&logits_out)?;
 
-            // Update input_buf: compute emb + alpha*PE on CPU, H2D copy — zero pool allocations.
+            // Update input_buf from the exact precomputed embedding and positional values.
             let update_input_raw = |token: usize, pe_pos: usize| -> candle_core::Result<()> {
                 let off = token * hidden_size;
                 let mut combined = audio_emb_cpu[off..off + hidden_size].to_vec();
-                let pos = pe_pos as f64;
-                for i in 0..half_dim {
-                    let v = pos * div_term[i];
-                    combined[2 * i] += audio_alpha * v.sin() as f32;
-                    combined[2 * i + 1] += audio_alpha * v.cos() as f32;
+                let pos_off = pe_pos * hidden_size;
+                for (value, position) in combined
+                    .iter_mut()
+                    .zip(&audio_pos_cpu[pos_off..pos_off + hidden_size])
+                {
+                    *value += *position;
                 }
                 if input_buf.dtype() != DType::F32 {
                     return Err(candle_core::Error::Msg(
@@ -1392,6 +1387,11 @@ impl GPTModel {
             }
 
             self.device.synchronize()?;
+            let mut guard_kv = static_kv.fork_valid()?;
+            let expected_capture_logits = eager_step(&generated, &mut guard_kv)?;
+            let expected_capture_values = expected_capture_logits
+                .to_dtype(DType::F32)?
+                .to_vec1::<f32>()?;
 
             // ── Prepare pre-allocated buffers for the capture step ────────────────
             {
@@ -1442,8 +1442,8 @@ impl GPTModel {
                 .begin_capture(CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_RELAXED)
                 .map_err(|e| candle_core::Error::Msg(format!("begin_capture: {e:?}")))?;
 
-            // The graph captures: scatter-based decode + logits projection +
-            // scatter_set into logits_out (stable pre-allocated buffer).
+            // The graph captures: scatter-based decode + logits projection + a raw D2D
+            // copy into logits_out (stable pre-allocated buffer).
             // cuMemAllocAsync allocations inside capture hold placeholder pointers that only
             // become valid after graph.launch(). logits_tmp MUST be dropped before end_capture
             // so its free_async is also captured (graph owns the full alloc/free lifecycle).
@@ -1454,8 +1454,18 @@ impl GPTModel {
                     .squeeze(0)?
                     .matmul(&self.ar_predict_layer_t)?
                     .squeeze(0)?;
-                // Scatter all logits into stable pre-allocated buffer — captured in graph
-                logits_out.scatter_set(&full_idx, &logits_tmp, 0)?;
+                let logits_tmp_ptr = get_cuda_ptr(&logits_tmp)?;
+                unsafe {
+                    cudarc_result::memcpy_dtod_async(
+                        logits_out_ptr,
+                        logits_tmp_ptr,
+                        n_vocab * DType::F32.size_in_bytes(),
+                        raw_stream,
+                    )
+                    .map_err(|e| {
+                        candle_core::Error::Msg(format!("capture logits D2D copy: {e:?}"))
+                    })?;
+                }
                 // logits_tmp drops here (still inside capture) → free_async captured ✓
             }
 
@@ -1464,32 +1474,17 @@ impl GPTModel {
                 .map_err(|e| candle_core::Error::Msg(format!("end_capture: {e:?}")))?;
 
             let Some(graph) = graph_opt else {
-                tracing::warn!("[GPT cuda-graph] empty graph; falling back to static-kv");
-                static_kv.step(); // account for the decode_step we ran above
-                for step in generated.len()..max_new_tokens {
-                    let logits = eager_step(&generated, &mut static_kv)?;
-                    let is_eos = step < 11;
-                    let ev = if is_eos {
-                        audio_vocab_size - 1
-                    } else {
-                        audio_vocab_size
-                    };
-                    let (tok, ag) = Self::sample_token_with_scratch(
-                        &logits.narrow(0, 0, ev)?,
-                        top_k,
-                        top_p,
-                        temperature,
-                        repetition_penalty,
-                        prompt_tokens,
-                        &generated,
-                        &mut sampling_scratch,
-                    )?;
-                    if tok >= audio_vocab_size - 1 || (!is_eos && ag == audio_vocab_size - 1) {
-                        break;
-                    }
-                    generated.push(tok);
-                }
-                return Ok(generated);
+                tracing::warn!("[GPT cuda-graph] empty graph; falling back to dynamic KV");
+                return self.generate_with_prompts_aligned_bert_kv_cache(
+                    phoneme_ids,
+                    prompt_tokens,
+                    pre_aligned_bert,
+                    top_k,
+                    top_p,
+                    temperature,
+                    repetition_penalty,
+                    max_new_tokens,
+                );
             };
 
             // Graph capture only RECORDS operations — they were NOT executed.
@@ -1501,6 +1496,73 @@ impl GPTModel {
                 .synchronize()
                 .map_err(|e| candle_core::Error::Msg(format!("stream sync (first): {e:?}")))?;
             static_kv.step();
+            let actual_capture_values = logits_out.to_vec1::<f32>()?;
+            let max_error = expected_capture_values
+                .iter()
+                .zip(actual_capture_values.iter())
+                .map(|(&left, &right)| (left - right).abs())
+                .fold(0.0f32, f32::max);
+            if !max_error.is_finite() || max_error > 1e-3 {
+                tracing::warn!(
+                    "[GPT cuda-graph] first graph logits diverged (max_error={max_error:.6e}); continuing with guarded KV"
+                );
+                let step = generated.len();
+                let is_eos_masked = step < 11;
+                let effective_vocab = if is_eos_masked {
+                    audio_vocab_size - 1
+                } else {
+                    audio_vocab_size
+                };
+                let (token, argmax) = Self::sample_token_with_scratch(
+                    &expected_capture_logits.narrow(0, 0, effective_vocab)?,
+                    top_k,
+                    top_p,
+                    temperature,
+                    repetition_penalty,
+                    prompt_tokens,
+                    &generated,
+                    &mut sampling_scratch,
+                )?;
+                if token >= audio_vocab_size - 1
+                    || (!is_eos_masked && argmax == audio_vocab_size - 1)
+                {
+                    return Ok(generated);
+                }
+                generated.push(token);
+
+                for step in generated.len()..max_new_tokens {
+                    let logits = eager_step(&generated, &mut guard_kv)?;
+                    let is_eos_masked = step < 11;
+                    let effective_vocab = if is_eos_masked {
+                        audio_vocab_size - 1
+                    } else {
+                        audio_vocab_size
+                    };
+                    let (token, argmax) = Self::sample_token_with_scratch(
+                        &logits.narrow(0, 0, effective_vocab)?,
+                        top_k,
+                        top_p,
+                        temperature,
+                        repetition_penalty,
+                        prompt_tokens,
+                        &generated,
+                        &mut sampling_scratch,
+                    )?;
+                    if token >= audio_vocab_size - 1
+                        || (!is_eos_masked && argmax == audio_vocab_size - 1)
+                    {
+                        break;
+                    }
+                    generated.push(token);
+                }
+                tracing::info!(
+                    "[GPT cuda-graph] guarded KV generated {} tokens total",
+                    generated.len()
+                );
+                return Ok(generated);
+            }
+            drop(expected_capture_logits);
+            drop(guard_kv);
             {
                 let step = generated.len();
                 let is_eos = step < 11;
