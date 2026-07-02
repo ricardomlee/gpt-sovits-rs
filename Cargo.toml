@@ -25,6 +25,11 @@ path = "examples/cli_inference.rs"
 name = "profile_kv_cache"
 path = "examples/profile_kv_cache.rs"
 
+[[example]]
+name = "cuda_oxide_candle"
+path = "examples/cuda_oxide_candle.rs"
+required-features = ["cuda"]
+
 [dependencies]
 # Deep Learning Inference
 candle-core = "0.10"

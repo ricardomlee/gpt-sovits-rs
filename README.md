@@ -54,6 +54,7 @@ SoVITS 使用语义 token 和参考音频的 mel 频谱，通过 Flow 模型和 
 - 支持 `ref_text`：参考文本音素拼接、BERT 对齐拼接都在推理路径里。
 - KV cache：prefill 阶段处理 text+prompt token，自回归阶段按单 token 解码。RTX 4060 Ti 上，长文本基准约 3.2x。
 - CUDA Graph：`inference_cuda_graph()` 可以捕获 GPT 解码步骤，减少 CPU kernel launch 开销。
+- 自定义 CUDA kernel：[cuda-oxide 实验记录](docs/CUDA_OXIDE_EXPERIMENT.md)；目前只做隔离验证，不进入默认推理路径。
 - GPU 路径：embedding 查表在 GPU 上做；每步采样只保留必要的 D2H transfer。
 - 中文文本前端：三声连读、"不/一"变调、轻声规则。
 - 部署：编译后可用单一二进制运行，不需要 Python/PyTorch 推理环境。

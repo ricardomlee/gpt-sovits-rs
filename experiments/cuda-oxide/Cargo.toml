@@ -1,0 +1,12 @@
+[package]
+name = "gpt_sovits_cuda_oxide"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+cuda-core = { git = "https://github.com/NVlabs/cuda-oxide.git", rev = "ae41d1edce943d2f8c8f720e7024a9ef5e98ade9" }
+cuda-device = { git = "https://github.com/NVlabs/cuda-oxide.git", rev = "ae41d1edce943d2f8c8f720e7024a9ef5e98ade9" }
+cuda-host = { git = "https://github.com/NVlabs/cuda-oxide.git", rev = "ae41d1edce943d2f8c8f720e7024a9ef5e98ade9" }
