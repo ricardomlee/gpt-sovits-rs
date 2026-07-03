@@ -32,6 +32,32 @@ impl TextNormalizer {
         Ok(result)
     }
 
+    /// Normalize Chinese punctuation to the phone symbols used by GPT-SoVITS.
+    ///
+    /// This mirrors the upstream Chinese frontend's `rep_map`, so the normalized
+    /// text passed to BERT matches the punctuation tokens emitted by G2P.
+    pub fn normalize_chinese_model_text(&self, text: &str) -> String {
+        let text = text
+            .replace("嗯", "恩")
+            .replace("呣", "母")
+            .replace("...", "…");
+        let mut result = String::with_capacity(text.len());
+
+        for c in text.chars() {
+            match c {
+                '：' | '；' | '，' | '·' | '、' | '/' => result.push(','),
+                '。' | '$' | '\n' => result.push('.'),
+                '！' => result.push('!'),
+                '？' => result.push('?'),
+                '—' => result.push('-'),
+                '~' | '～' => result.push('…'),
+                _ => result.push(c),
+            }
+        }
+
+        result
+    }
+
     /// Normalize whitespace
     fn normalize_whitespace(&self, text: &str) -> String {
         text.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -212,6 +238,16 @@ mod tests {
         let normalizer = TextNormalizer::new();
         let result = normalizer.normalize("hello (world)").unwrap();
         assert!(result.contains("（"));
+    }
+
+    #[test]
+    fn test_normalize_chinese_model_punctuation() {
+        let normalizer = TextNormalizer::new();
+        let normalized = normalizer.normalize("中道崩殂，今天下三分。").unwrap();
+        assert_eq!(
+            normalizer.normalize_chinese_model_text(&normalized),
+            "中道崩殂,今天下三分."
+        );
     }
 
     #[test]

@@ -566,8 +566,8 @@ impl G2PConverter {
     /// matching the Python GPT-SoVITS text frontend.
     ///
     /// Returns (phoneme_string, word2ph) where word2ph[i] = number of phonemes for BERT
-    /// content token i (after CLS/SEP removal). Includes ALL characters (Chinese and
-    /// punctuation/spaces), with 0 for characters that produce no phonemes.
+    /// content token i (after CLS/SEP removal). Includes ALL characters; supported
+    /// punctuation produces one phone, while spaces and unsupported characters produce zero.
     pub fn convert_chinese_with_word2ph(&self, text: &str) -> Result<(String, Vec<usize>)> {
         // Step 1: jieba POS tagging
         let tags = self.jieba.tag(text, true);
@@ -653,9 +653,17 @@ impl G2PConverter {
                 .modified_tone(word, pos, &mut tones, &self.jieba);
 
             // Convert each char to phonemes and record word2ph
+            let word_chars: Vec<char> = word.chars().collect();
             for (i, opt) in char_data.iter().enumerate() {
                 match opt {
-                    None => word2ph.push(0),
+                    None => {
+                        if let Some(phone) = punctuation_phone(word_chars[i]) {
+                            phonemes.push(phone.to_string());
+                            word2ph.push(1);
+                        } else {
+                            word2ph.push(0);
+                        }
+                    }
                     Some((base, _)) => {
                         let tone = tones[i];
                         let before = phonemes.len();
@@ -803,6 +811,18 @@ impl G2PConverter {
     }
 }
 
+fn punctuation_phone(c: char) -> Option<&'static str> {
+    match c {
+        '!' => Some("!"),
+        ',' => Some(","),
+        '-' => Some("-"),
+        '.' => Some("."),
+        '?' => Some("?"),
+        '…' => Some("…"),
+        _ => None,
+    }
+}
+
 impl Default for G2PConverter {
     fn default() -> Self {
         Self::new().unwrap()
@@ -829,6 +849,21 @@ mod tests {
         let converter = G2PConverter::new().unwrap();
         let result = converter.convert("Hello", Language::English);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_chinese_punctuation_produces_phones() {
+        let converter = G2PConverter::new().unwrap();
+        let text = "中道崩殂,今天下三分.";
+        let (phones, word2ph) = converter.convert_chinese_with_word2ph(text).unwrap();
+        let phone_count = phones.split_whitespace().count();
+
+        assert_eq!(word2ph.len(), text.chars().count());
+        assert_eq!(word2ph[4], 1, "comma should produce one phone");
+        assert_eq!(word2ph.last(), Some(&1), "period should produce one phone");
+        assert_eq!(word2ph.iter().sum::<usize>(), phone_count);
+        assert!(phones.split_whitespace().any(|phone| phone == ","));
+        assert!(phones.split_whitespace().any(|phone| phone == "."));
     }
 
     #[test]

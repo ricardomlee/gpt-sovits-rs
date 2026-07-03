@@ -549,10 +549,10 @@ impl Pipeline {
         sovits_n_mels: usize,
     ) -> Result<CachedSpeaker> {
         // Ref text → phoneme IDs + word2ph
-        let (ref_phoneme_ids, ref_word2ph) = if !ref_text.is_empty() {
-            text_frontend.process_with_word2ph(ref_text, language)?
+        let (ref_phoneme_ids, ref_word2ph, normalized_ref_text) = if !ref_text.is_empty() {
+            text_frontend.process_with_word2ph_and_text(ref_text, language)?
         } else {
-            (vec![], vec![])
+            (vec![], vec![], String::new())
         };
 
         // HuBERT features → prompt tokens
@@ -585,7 +585,7 @@ impl Pipeline {
         let ref_bert_aligned = if let (Some(bert), Some(gpt), false) =
             (bert_model.as_mut(), gpt_model, ref_phoneme_ids.is_empty())
         {
-            bert.extract(ref_text)
+            bert.extract(&normalized_ref_text)
                 .ok()
                 .and_then(|f| f.to_device(device).ok().or(Some(f)))
                 .and_then(|rb| {
@@ -663,9 +663,9 @@ impl Pipeline {
 
         // Target text features (not cached — depend on synthesis text)
         let target_start = Instant::now();
-        let (target_phoneme_ids, target_word2ph) = self
+        let (target_phoneme_ids, target_word2ph, normalized_text) = self
             .text_frontend
-            .process_with_word2ph(text, options.language)?;
+            .process_with_word2ph_and_text(text, options.language)?;
         let target_ms = target_start.elapsed().as_millis();
 
         // Reference features (cached after first call)
@@ -680,7 +680,7 @@ impl Pipeline {
         // Target BERT aligned
         let bert_start = Instant::now();
         let target_bert_aligned = if let Some(bert) = self.bert_model.as_mut() {
-            bert.extract(text)
+            bert.extract(&normalized_text)
                 .ok()
                 .and_then(|f| f.to_device(&self.device).ok().or(Some(f)))
                 .and_then(|tb| {
@@ -778,9 +778,9 @@ impl Pipeline {
         let total_start = Instant::now();
         // Target text features
         let target_start = Instant::now();
-        let (target_phoneme_ids, target_word2ph) = self
+        let (target_phoneme_ids, target_word2ph, normalized_text) = self
             .text_frontend
-            .process_with_word2ph(text, options.language)?;
+            .process_with_word2ph_and_text(text, options.language)?;
         let target_ms = target_start.elapsed().as_millis();
 
         // Reference features (cached after first call)
@@ -800,7 +800,7 @@ impl Pipeline {
         // Target BERT aligned
         let bert_start = Instant::now();
         let target_bert_aligned = if let Some(bert) = self.bert_model.as_mut() {
-            bert.extract(text)
+            bert.extract(&normalized_text)
                 .ok()
                 .and_then(|f| f.to_device(&self.device).ok().or(Some(f)))
                 .and_then(|tb| {
@@ -906,9 +906,9 @@ impl Pipeline {
     ) -> Result<AudioBuffer> {
         let total_start = Instant::now();
         let target_start = Instant::now();
-        let (target_phoneme_ids, target_word2ph) = self
+        let (target_phoneme_ids, target_word2ph, normalized_text) = self
             .text_frontend
-            .process_with_word2ph(text, options.language)?;
+            .process_with_word2ph_and_text(text, options.language)?;
         let target_ms = target_start.elapsed().as_millis();
 
         let ref_start = Instant::now();
@@ -926,7 +926,7 @@ impl Pipeline {
 
         let bert_start = Instant::now();
         let target_bert_aligned = if let Some(bert) = self.bert_model.as_mut() {
-            bert.extract(text)
+            bert.extract(&normalized_text)
                 .ok()
                 .and_then(|f| f.to_device(&self.device).ok().or(Some(f)))
                 .and_then(|tb| {

@@ -1847,7 +1847,7 @@ impl GPTModel {
     /// Python's pipeline:
     ///   1. Extract BERT hidden states (char-level, includes CLS/SEP tokens)
     ///   2. Remove CLS (first) and SEP (last) tokens → bert_content[i] per char
-    ///   3. Expand: repeat bert_content[i] word2ph[i] times (skip if 0 for punctuation)
+    ///   3. Expand: repeat bert_content[i] word2ph[i] times
     ///
     /// When word2ph is provided: uses exact word2ph expansion (matches Python exactly).
     /// When word2ph is empty: falls back to nearest-neighbor interpolation.
