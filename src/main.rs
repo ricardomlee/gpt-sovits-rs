@@ -7,7 +7,8 @@ use gpt_sovits_rs::voice::{
     VoiceDefaults,
 };
 use gpt_sovits_rs::{
-    split_sentences_for_language, AudioBuffer, Config, InferenceOptions, Language, Pipeline,
+    split_cut5_for_language, split_sentences_for_language, AudioBuffer, Config, InferenceOptions,
+    Language, Pipeline, SplitMethod,
 };
 use std::path::PathBuf;
 use tracing::{error, info};
@@ -116,6 +117,10 @@ struct Args {
     /// Disable the default Python-compatible punctuation splitting.
     #[arg(long)]
     no_split_sentences: bool,
+
+    /// Text splitting policy: sentence is smoother; cut5 matches Python punctuation splitting.
+    #[arg(long, value_parser = ["sentence", "cut5"])]
+    split_method: Option<String>,
 
     /// Minimum characters per sentence chunk when --split-sentences is enabled.
     #[arg(long)]
@@ -382,6 +387,11 @@ fn main() {
     let sentence_fade_ms = args
         .sentence_fade_ms
         .unwrap_or(voice_defaults.sentence_fade_ms);
+    let split_method = args
+        .split_method
+        .as_deref()
+        .and_then(SplitMethod::parse)
+        .unwrap_or(voice_defaults.split_method);
 
     // Create inference options
     let options = voice_defaults.to_inference_options(
@@ -413,6 +423,7 @@ fn main() {
             min_sentence_chars,
             sentence_gap_ms,
             sentence_fade_ms,
+            split_method,
         )
     } else {
         run_inference(
@@ -463,16 +474,23 @@ fn run_split_inference(
     min_sentence_chars: usize,
     gap_ms: u32,
     fade_ms: u32,
+    split_method: SplitMethod,
 ) -> gpt_sovits_rs::Result<AudioBuffer> {
-    let chunks = split_sentences_for_language(text, min_sentence_chars, options.language);
+    let chunks = match split_method {
+        SplitMethod::Sentence => {
+            split_sentences_for_language(text, min_sentence_chars, options.language)
+        }
+        SplitMethod::Cut5 => split_cut5_for_language(text, min_sentence_chars, options.language),
+    };
     info!(
-        "Split text into {} sentence chunk(s), mode={}, gap={}ms, fade={}ms",
+        "Split text into {} chunk(s), method={:?}, mode={}, gap={}ms, fade={}ms",
         chunks.len(),
+        split_method,
         mode,
         gap_ms,
         fade_ms
     );
-    pipeline.inference_split(
+    pipeline.inference_split_with_method(
         text,
         reference_audio,
         reference_text,
@@ -481,6 +499,7 @@ fn run_split_inference(
         min_sentence_chars,
         gap_ms,
         fade_ms,
+        split_method,
     )
 }
 

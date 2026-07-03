@@ -12,7 +12,7 @@ use base64::Engine as _;
 use gpt_sovits_rs::voice::{
     list_voice_profiles, InferenceOptionOverrides, LoadedVoiceProfile, VoiceDefaults,
 };
-use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
+use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline, SplitMethod};
 use serde::Deserialize;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -91,6 +91,7 @@ struct ResolvedSynthesis {
     language: Language,
     options: InferenceOptions,
     split_sentences: bool,
+    split_method: SplitMethod,
     min_sentence_chars: usize,
     sentence_gap_ms: u32,
     sentence_fade_ms: u32,
@@ -306,6 +307,7 @@ fn resolve_synthesis(
         language,
         options,
         split_sentences: defaults.split_sentences,
+        split_method: defaults.split_method,
         min_sentence_chars: defaults.min_sentence_chars,
         sentence_gap_ms: defaults.sentence_gap_ms,
         sentence_fade_ms: defaults.sentence_fade_ms,
@@ -346,6 +348,7 @@ async fn openai_speech_handler(
     let prompt_text = resolved.prompt_text;
     let options = resolved.options;
     let split_sentences = resolved.split_sentences;
+    let split_method = resolved.split_method;
     let min_sentence_chars = resolved.min_sentence_chars;
     let sentence_gap_ms = resolved.sentence_gap_ms;
     let sentence_fade_ms = resolved.sentence_fade_ms;
@@ -355,7 +358,7 @@ async fn openai_speech_handler(
         let rt = tokio::runtime::Handle::current();
         let mut pipeline = rt.block_on(pipeline.lock());
         let result = if split_sentences {
-            pipeline.inference_split(
+            pipeline.inference_split_with_method(
                 &text,
                 &refer_path,
                 &prompt_text,
@@ -364,6 +367,7 @@ async fn openai_speech_handler(
                 min_sentence_chars,
                 sentence_gap_ms,
                 sentence_fade_ms,
+                split_method,
             )
         } else {
             pipeline.inference_with_mode(&mode, &text, &refer_path, &prompt_text, &options)
@@ -441,6 +445,7 @@ async fn tts_stream_handler(
     let refer_path = resolved.refer_path;
     let prompt_text = resolved.prompt_text;
     let options = resolved.options;
+    let split_method = resolved.split_method;
     let min_sentence_chars = resolved.min_sentence_chars;
     let sentence_gap_ms = resolved.sentence_gap_ms;
     let sentence_fade_ms = resolved.sentence_fade_ms;
@@ -461,13 +466,14 @@ async fn tts_stream_handler(
 
         // Stream each sentence
         let mut header_sent = false;
-        for result in pipeline.inference_sentences(
+        for result in pipeline.inference_sentences_with_method(
             &text,
             &refer_path,
             &prompt_text,
             &options,
             &mode,
             min_sentence_chars,
+            split_method,
         ) {
             match result {
                 Ok(mut audio) => {
@@ -542,6 +548,7 @@ async fn tts_handler(
     let prompt_text = resolved.prompt_text;
     let options = resolved.options;
     let split_sentences = resolved.split_sentences;
+    let split_method = resolved.split_method;
     let min_sentence_chars = resolved.min_sentence_chars;
     let sentence_gap_ms = resolved.sentence_gap_ms;
     let sentence_fade_ms = resolved.sentence_fade_ms;
@@ -551,7 +558,7 @@ async fn tts_handler(
         let rt = tokio::runtime::Handle::current();
         let mut pipeline = rt.block_on(pipeline.lock());
         let result = if split_sentences {
-            pipeline.inference_split(
+            pipeline.inference_split_with_method(
                 &text,
                 &refer_path,
                 &prompt_text,
@@ -560,6 +567,7 @@ async fn tts_handler(
                 min_sentence_chars,
                 sentence_gap_ms,
                 sentence_fade_ms,
+                split_method,
             )
         } else {
             pipeline.inference_with_mode(&mode, &text, &refer_path, &prompt_text, &options)
@@ -646,6 +654,7 @@ async fn tts_batch_handler(
     let mode = resolved.mode;
     let options = resolved.options;
     let split_sentences = resolved.split_sentences;
+    let split_method = resolved.split_method;
     let min_sentence_chars = resolved.min_sentence_chars;
     let sentence_gap_ms = resolved.sentence_gap_ms;
     let sentence_fade_ms = resolved.sentence_fade_ms;
@@ -670,7 +679,7 @@ async fn tts_batch_handler(
         for (idx, text) in texts.iter().enumerate() {
             let t = std::time::Instant::now();
             let inference_result = if split_sentences {
-                pipeline.inference_split(
+                pipeline.inference_split_with_method(
                     text,
                     &refer_path,
                     &prompt_text,
@@ -679,6 +688,7 @@ async fn tts_batch_handler(
                     min_sentence_chars,
                     sentence_gap_ms,
                     sentence_fade_ms,
+                    split_method,
                 )
             } else {
                 pipeline.inference_with_mode(&mode, text, &refer_path, &prompt_text, &options)

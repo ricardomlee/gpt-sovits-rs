@@ -12,8 +12,24 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
-/// Split text using the punctuation policy from Python GPT-SoVITS `cut5`.
-/// Delimiters stay attached to the preceding chunk and short chunks are merged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SplitMethod {
+    #[default]
+    Sentence,
+    Cut5,
+}
+
+impl SplitMethod {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "sentence" => Some(Self::Sentence),
+            "cut5" => Some(Self::Cut5),
+            _ => None,
+        }
+    }
+}
+
+/// Split only at sentence-ending punctuation for stable production inference.
 pub fn split_sentences(text: &str, min_chars: usize) -> Vec<String> {
     split_sentences_for_language(text, min_chars, Language::Chinese)
 }
@@ -23,11 +39,33 @@ pub fn split_sentences_for_language(
     min_chars: usize,
     language: Language,
 ) -> Vec<String> {
-    const DELIMITERS: &[char] = &[
+    split_text(text, min_chars, language, SplitMethod::Sentence)
+}
+
+/// Split using Python GPT-SoVITS `cut5`, including commas and semicolons.
+pub fn split_cut5_for_language(text: &str, min_chars: usize, language: Language) -> Vec<String> {
+    split_text(text, min_chars, language, SplitMethod::Cut5)
+}
+
+fn split_text(
+    text: &str,
+    min_chars: usize,
+    language: Language,
+    method: SplitMethod,
+) -> Vec<String> {
+    const SENTENCE_DELIMITERS: &[char] = &['.', '?', '!', '。', '？', '！', '…', '\n'];
+    const CUT5_DELIMITERS: &[char] = &[
         ',', '.', ';', '?', '!', '、', '，', '。', '？', '！', '；', '：', ':', '…', '\n',
     ];
+    let delimiters = match method {
+        SplitMethod::Sentence => SENTENCE_DELIMITERS,
+        SplitMethod::Cut5 => CUT5_DELIMITERS,
+    };
 
-    let normalized = text.replace("……", "。").replace("——", "，");
+    let normalized = match method {
+        SplitMethod::Sentence => text.to_string(),
+        SplitMethod::Cut5 => text.replace("……", "。").replace("——", "，"),
+    };
     let chars: Vec<char> = normalized.chars().collect();
     let mut sentences: Vec<String> = Vec::new();
     let mut current = String::new();
@@ -39,7 +77,7 @@ pub fn split_sentences_for_language(
             && index + 1 < chars.len()
             && chars[index - 1].is_ascii_digit()
             && chars[index + 1].is_ascii_digit();
-        if DELIMITERS.contains(&ch) && !decimal_point && !current.trim().is_empty() {
+        if delimiters.contains(&ch) && !decimal_point && !current.trim().is_empty() {
             let trimmed = current.trim().to_string();
             if trimmed.chars().any(char::is_alphanumeric) {
                 sentences.push(trimmed);
@@ -53,7 +91,7 @@ pub fn split_sentences_for_language(
         if !tail
             .chars()
             .last()
-            .is_some_and(|ch| DELIMITERS.contains(&ch))
+            .is_some_and(|ch| delimiters.contains(&ch))
         {
             tail.push(if language == Language::English {
                 '.'
@@ -101,8 +139,8 @@ impl Default for InferenceOptions {
     fn default() -> Self {
         Self {
             top_k: 15,
-            top_p: 1.0,
-            temperature: 1.0,
+            top_p: 0.95,
+            temperature: 0.8,
             speed: 1.0,
             language: Language::Chinese,
             max_tokens: 500,
@@ -161,8 +199,8 @@ impl InferenceOptionsBuilder {
     pub fn build(self) -> InferenceOptions {
         InferenceOptions {
             top_k: self.top_k.unwrap_or(15),
-            top_p: self.top_p.unwrap_or(1.0),
-            temperature: self.temperature.unwrap_or(1.0),
+            top_p: self.top_p.unwrap_or(0.95),
+            temperature: self.temperature.unwrap_or(0.8),
             speed: self.speed.unwrap_or(1.0),
             language: self.language.unwrap_or(Language::Chinese),
             max_tokens: self.max_tokens.unwrap_or(500),
@@ -302,7 +340,29 @@ impl Pipeline {
         mode: &str,
         min_sentence_chars: usize,
     ) -> impl Iterator<Item = Result<AudioBuffer>> + 'a {
-        let sentences = split_sentences_for_language(text, min_sentence_chars, options.language);
+        self.inference_sentences_with_method(
+            text,
+            reference_audio,
+            reference_text,
+            options,
+            mode,
+            min_sentence_chars,
+            SplitMethod::Sentence,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn inference_sentences_with_method<'a, P: AsRef<Path> + 'a>(
+        &'a mut self,
+        text: &'a str,
+        reference_audio: P,
+        reference_text: &'a str,
+        options: &'a InferenceOptions,
+        mode: &str,
+        min_sentence_chars: usize,
+        split_method: SplitMethod,
+    ) -> impl Iterator<Item = Result<AudioBuffer>> + 'a {
+        let sentences = split_text(text, min_sentence_chars, options.language, split_method);
         SentenceIterator {
             pipeline: self,
             sentences,
@@ -352,7 +412,33 @@ impl Pipeline {
         gap_ms: u32,
         fade_ms: u32,
     ) -> Result<AudioBuffer> {
-        let chunks = split_sentences_for_language(text, min_chars, options.language);
+        self.inference_split_with_method(
+            text,
+            reference_audio,
+            reference_text,
+            options,
+            mode,
+            min_chars,
+            gap_ms,
+            fade_ms,
+            SplitMethod::Sentence,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn inference_split_with_method<P: AsRef<Path>>(
+        &mut self,
+        text: &str,
+        reference_audio: P,
+        reference_text: &str,
+        options: &InferenceOptions,
+        mode: &str,
+        min_chars: usize,
+        gap_ms: u32,
+        fade_ms: u32,
+        split_method: SplitMethod,
+    ) -> Result<AudioBuffer> {
+        let chunks = split_text(text, min_chars, options.language, split_method);
         let reference_audio = reference_audio.as_ref().to_path_buf();
         self.preload_speaker(&reference_audio, reference_text, options.language)?;
 

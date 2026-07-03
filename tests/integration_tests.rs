@@ -115,14 +115,21 @@ mod tests {
 
     #[test]
     fn test_split_sentences_matches_python_cut5_punctuation() {
-        let chunks = split_sentences("你好，世界！今天3.14很好", 5);
-        assert_eq!(chunks, vec!["你好，世界！", "今天3.14很好。"]);
+        let chunks =
+            split_cut5_for_language("第一部分，第二部分，今天3.14很好", 5, Language::Chinese);
+        assert_eq!(chunks, vec!["第一部分，", "第二部分，", "今天3.14很好。"]);
     }
 
     #[test]
     fn test_split_sentences_normalizes_repeated_marks() {
-        let chunks = split_sentences("等等……然后——继续。", 5);
+        let chunks = split_cut5_for_language("等等……然后——继续。", 5, Language::Chinese);
         assert_eq!(chunks, vec!["等等。然后，继续。"]);
+    }
+
+    #[test]
+    fn test_sentence_split_does_not_break_at_commas() {
+        let chunks = split_sentences("第一部分，第二部分，最后结束。", 5);
+        assert_eq!(chunks, vec!["第一部分，第二部分，最后结束。"]);
     }
 
     #[test]

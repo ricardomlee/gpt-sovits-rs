@@ -37,7 +37,10 @@ pub mod voice;
 
 // Re-export main types
 pub use config::Config;
-pub use inference::{split_sentences, split_sentences_for_language, InferenceOptions, Pipeline};
+pub use inference::{
+    split_cut5_for_language, split_sentences, split_sentences_for_language, InferenceOptions,
+    Pipeline, SplitMethod,
+};
 pub use utils::AudioBuffer;
 
 /// Library version

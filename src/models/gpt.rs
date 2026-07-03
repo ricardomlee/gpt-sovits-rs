@@ -1475,7 +1475,9 @@ impl GPTModel {
             }
 
             let graph_opt = stream
-                .end_capture(unsafe { std::mem::transmute::<u32, CUgraphInstantiate_flags>(0u32) })
+                .end_capture(
+                    CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH,
+                )
                 .map_err(|e| candle_core::Error::Msg(format!("end_capture: {e:?}")))?;
 
             let Some(graph) = graph_opt else {

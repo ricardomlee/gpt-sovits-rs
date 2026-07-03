@@ -1,6 +1,6 @@
 //! Voice profile loading and defaults.
 
-use crate::{InferenceOptions, Language};
+use crate::{InferenceOptions, Language, SplitMethod};
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
@@ -11,6 +11,7 @@ pub struct VoiceProfile {
     pub language: Option<String>,
     pub mode: Option<String>,
     pub split_sentences: Option<bool>,
+    pub split_method: Option<String>,
     pub min_sentence_chars: Option<usize>,
     pub sentence_gap_ms: Option<u32>,
     pub sentence_fade_ms: Option<u32>,
@@ -45,6 +46,14 @@ impl LoadedVoiceProfile {
                 return Err(format!(
                     "Invalid language '{}' in voice profile {:?}; expected zh, en, ja, ko, yue, or auto",
                     language, path
+                ));
+            }
+        }
+        if let Some(method) = profile.split_method.as_deref() {
+            if SplitMethod::parse(method).is_none() {
+                return Err(format!(
+                    "Invalid split_method '{}' in voice profile {:?}; expected sentence or cut5",
+                    method, path
                 ));
             }
         }
@@ -121,6 +130,7 @@ pub struct VoiceDefaults {
     pub language: String,
     pub mode: String,
     pub split_sentences: bool,
+    pub split_method: SplitMethod,
     pub min_sentence_chars: usize,
     pub sentence_gap_ms: u32,
     pub sentence_fade_ms: u32,
@@ -152,12 +162,16 @@ impl VoiceDefaults {
                 .and_then(|p| p.mode.clone())
                 .unwrap_or_else(|| "auto".to_string()),
             split_sentences: profile.and_then(|p| p.split_sentences).unwrap_or(true),
-            min_sentence_chars: profile.and_then(|p| p.min_sentence_chars).unwrap_or(5),
-            sentence_gap_ms: profile.and_then(|p| p.sentence_gap_ms).unwrap_or(300),
-            sentence_fade_ms: profile.and_then(|p| p.sentence_fade_ms).unwrap_or(0),
+            split_method: profile
+                .and_then(|p| p.split_method.as_deref())
+                .and_then(SplitMethod::parse)
+                .unwrap_or_default(),
+            min_sentence_chars: profile.and_then(|p| p.min_sentence_chars).unwrap_or(12),
+            sentence_gap_ms: profile.and_then(|p| p.sentence_gap_ms).unwrap_or(120),
+            sentence_fade_ms: profile.and_then(|p| p.sentence_fade_ms).unwrap_or(8),
             top_k: profile.and_then(|p| p.top_k).unwrap_or(15),
-            top_p: profile.and_then(|p| p.top_p).unwrap_or(1.0),
-            temperature: profile.and_then(|p| p.temperature).unwrap_or(1.0),
+            top_p: profile.and_then(|p| p.top_p).unwrap_or(0.95),
+            temperature: profile.and_then(|p| p.temperature).unwrap_or(0.8),
             speed: profile.and_then(|p| p.speed).unwrap_or(1.0),
             max_tokens: profile.and_then(|p| p.max_tokens).unwrap_or(500),
             repetition_penalty: profile.and_then(|p| p.repetition_penalty).unwrap_or(1.35),
@@ -195,12 +209,13 @@ mod tests {
         assert_eq!(defaults.language, "zh");
         assert_eq!(defaults.mode, "auto");
         assert!(defaults.split_sentences);
-        assert_eq!(defaults.min_sentence_chars, 5);
-        assert_eq!(defaults.sentence_gap_ms, 300);
-        assert_eq!(defaults.sentence_fade_ms, 0);
+        assert_eq!(defaults.split_method, SplitMethod::Sentence);
+        assert_eq!(defaults.min_sentence_chars, 12);
+        assert_eq!(defaults.sentence_gap_ms, 120);
+        assert_eq!(defaults.sentence_fade_ms, 8);
         assert_eq!(defaults.top_k, 15);
-        assert_eq!(defaults.top_p, 1.0);
-        assert_eq!(defaults.temperature, 1.0);
+        assert_eq!(defaults.top_p, 0.95);
+        assert_eq!(defaults.temperature, 0.8);
         assert_eq!(defaults.max_tokens, 500);
     }
 
@@ -266,6 +281,21 @@ mod tests {
 
         let error = LoadedVoiceProfile::load("test", temp.path()).unwrap_err();
         assert!(error.contains("Invalid language 'xx'"));
+    }
+
+    #[test]
+    fn rejects_invalid_split_method() {
+        let temp = tempfile::tempdir().unwrap();
+        let voice_dir = temp.path().join("test");
+        std::fs::create_dir(&voice_dir).unwrap();
+        std::fs::write(
+            voice_dir.join("voice.json"),
+            r#"{"split_method":"comma"}"#,
+        )
+        .unwrap();
+
+        let error = LoadedVoiceProfile::load("test", temp.path()).unwrap_err();
+        assert!(error.contains("expected sentence or cut5"));
     }
 
     #[test]

@@ -134,7 +134,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     for (index, text) in texts.iter().enumerate() {
         let start = Instant::now();
         let audio = if defaults.split_sentences {
-            pipeline.inference_split(
+            pipeline.inference_split_with_method(
                 text,
                 &reference_audio,
                 reference_text,
@@ -143,6 +143,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 defaults.min_sentence_chars,
                 defaults.sentence_gap_ms,
                 defaults.sentence_fade_ms,
+                defaults.split_method,
             )?
         } else {
             pipeline.inference_with_mode(
