@@ -8,7 +8,7 @@ FROM nvidia/cuda:13.2.0-devel-ubuntu24.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# GPU compute capability — override with: docker build --build-arg CUDA_COMPUTE_CAP=86
+# GPU compute capability must match the target GPU architecture.
 # Common: 75=RTX20xx, 80=A100, 86=RTX30xx, 89=RTX40xx, 90=H100
 ARG CUDA_COMPUTE_CAP=89
 ENV CUDA_COMPUTE_CAP=${CUDA_COMPUTE_CAP}
@@ -16,7 +16,7 @@ ENV CUDA_COMPUTE_CAP=${CUDA_COMPUTE_CAP}
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl build-essential g++ pkg-config libssl-dev ca-certificates libsoxr-dev \
+    curl build-essential clang g++ pkg-config libssl-dev ca-certificates libsoxr-dev \
     && rm -rf /var/lib/apt/lists/* \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
     && ln -s /root/.cargo/bin/cargo /usr/local/bin/cargo \

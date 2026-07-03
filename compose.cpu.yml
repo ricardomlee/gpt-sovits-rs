@@ -1,9 +1,7 @@
 services:
   gpt-sovits:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: gpt-sovits-rs:cpu
+    image: "ghcr.io/ricardomlee/gpt-sovits-rs:${GPT_SOVITS_IMAGE_TAG:-latest}"
+    pull_policy: always
     container_name: gpt-sovits-rs
     restart: unless-stopped
     ports:

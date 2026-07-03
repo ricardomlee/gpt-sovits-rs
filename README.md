@@ -63,12 +63,23 @@ SoVITS 使用语义 token 和参考音频的 mel 频谱，通过 Flow 模型和 
 
 ## 快速开始
 
-### 方式一：Docker
+### 方式一：Docker（推荐）
 
-模型、voice profile 和输出目录都通过 volume 挂载，升级镜像不会覆盖用户数据。先复制环境模板：
+Docker Compose 默认直接拉取 GHCR 上的预构建镜像，不会在用户机器上编译 Rust。
+模型、voice profile 和输出目录通过 volume 挂载，升级镜像不会覆盖用户数据。
 
 ```bash
+git clone https://github.com/ricardomlee/gpt-sovits-rs.git
+cd gpt-sovits-rs
+
+# 下载官方 GPT-SoVITS v2 模型并转换
+python3 -m venv .venv-models
+. .venv-models/bin/activate
+pip install -r requirements-models.txt
+python prepare_models.py
+
 cp .env.example .env
+mkdir -p voices outputs
 ```
 
 目录约定：
@@ -82,15 +93,24 @@ outputs/  # 可选输出目录
 **CPU / NAS 版本**
 
 ```bash
-docker compose -f compose.cpu.yml up -d --build
+docker compose -f compose.cpu.yml up -d
 ```
 
 **CUDA GPU 版本**
 
 > GPT 自回归生成 + SoVITS 解码 + BERT/HuBERT 特征提取全程使用 Candle CUDA，无 ONNX Runtime 依赖。
 
+先在 `.env` 中选择与显卡匹配的镜像：
+
+| 显卡 | `CUDA_IMAGE_TAG` |
+|---|---|
+| RTX 20 系列 | `latest-cuda-sm75` |
+| RTX 30 系列 | `latest-cuda-sm86` |
+| RTX 40 系列 | `latest-cuda-sm89` |
+| H100 | `latest-cuda-sm90` |
+
 ```bash
-docker compose -f compose.cuda.yml up -d --build
+docker compose -f compose.cuda.yml up -d
 ```
 
 启动后检查服务和可用角色：
@@ -111,13 +131,30 @@ curl -X POST http://localhost:9880/tts \
 
 更多部署说明见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
-### 方式二：从源码构建
+### 方式二：Release Binary
+
+GitHub Release 提供以下预构建包：
+
+- Linux x86_64 CPU，包含 HTTP API、MKL 和随包加载的 `libsoxr`。
+- macOS x86_64 CPU。
+- macOS Apple Silicon CPU。
+
+解压后先检查版本：
+
+```bash
+./gpt-sovits --version
+```
+
+模型目录仍按下方“准备模型”章节创建。Linux CUDA 用户使用 Docker 镜像，或从源码按本机
+compute capability 构建。
+
+### 方式三：从源码构建
 
 **前置要求**
 
-- Rust 1.75+（从 [rustup.rs](https://rustup.rs) 安装）
+- 最新稳定版 Rust（从 [rustup.rs](https://rustup.rs) 安装）
 - libsoxr：`sudo apt install libsoxr-dev`
-- CUDA Toolkit 12.x（可选，GPU 加速）
+- CUDA Toolkit 13.x（可选，GPU 加速）
 
 ```bash
 git clone https://github.com/ricardomlee/gpt-sovits-rs.git
@@ -141,7 +178,17 @@ MKL 会静态链接进二进制，运行时不用安装 Intel 工具包。它只
 
 ### 准备模型
 
-从 [HuggingFace](https://huggingface.co/lj1995/GPT-SoVITS) 下载预训练模型，使用 `convert_sovits_weights.py` 转换为 safetensors 格式后放入 `models/` 目录：
+推荐使用自动工具。它会从 GPT-SoVITS 官方 Hugging Face 模型仓库下载 v2 的
+GPT、SoVITS、Chinese RoBERTa 和 Chinese HuBERT，并转换成 Rust 所需格式：
+
+```bash
+python3 -m venv .venv-models
+. .venv-models/bin/activate
+pip install -r requirements-models.txt
+python prepare_models.py
+```
+
+生成目录：
 
 ```
 models/
@@ -154,14 +201,22 @@ models/
     └── hubert.safetensors     # HuBERT/Wav2Vec2 特征提取
 ```
 
-GPT 和 SoVITS 需要分别转换：
+已有一份原版 `GPT_SoVITS/pretrained_models` 时，可以避免重复下载：
+
+```bash
+python prepare_models.py \
+  --source-dir /path/to/GPT_SoVITS/pretrained_models
+```
+
+转换自己训练的 GPT 和 SoVITS 权重：
 
 ```bash
 python3 convert_gpt_weights.py /path/to/s1bert25hz-*.ckpt models/gpt-model.safetensors
 python3 convert_sovits_weights.py /path/to/s2G*.pth models/sovits-model.safetensors
 ```
 
-BERT 权重需使用 Hugging Face safetensors 格式，并把对应的 `tokenizer.json` 放在同一目录；若同目录缺失，程序会回退查找 `models/bert/tokenizer.json`。HuBERT 也使用 safetensors，不再加载 `models/onnx/*.onnx`。
+完整下载来源、参数、磁盘要求和手工转换说明见 [docs/MODELS.md](docs/MODELS.md)。
+模型权重不包含在 binary 或 Docker 镜像中，其许可证和使用限制由对应模型发布者决定。
 
 ### 运行推理
 

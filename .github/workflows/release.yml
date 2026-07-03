@@ -1,0 +1,216 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write
+  packages: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  linux-binary:
+    name: Linux x86_64 binary
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsoxr-dev patchelf
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-linux
+
+      - name: Build
+        run: cargo build --release --locked --features http-api,mkl
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          package="gpt-sovits-${version}-linux-x86_64"
+          mkdir -p "dist/${package}/lib"
+          cp target/release/gpt-sovits "dist/${package}/"
+          soxr="$(ldconfig -p | awk '$1 == "libsoxr.so.0" { print $NF; exit }')"
+          cp -L "${soxr}" "dist/${package}/lib/libsoxr.so.0"
+          patchelf --set-rpath '$ORIGIN/lib' "dist/${package}/gpt-sovits"
+          strip "dist/${package}/gpt-sovits"
+          "dist/${package}/gpt-sovits" --version
+          tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux-binary
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  macos-binary:
+    name: macOS ${{ matrix.arch }} binary
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x86_64
+          - runner: macos-15
+            arch: aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install libsoxr
+        run: brew install libsoxr
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-macos-${{ matrix.arch }}
+
+      - name: Build
+        run: cargo build --release --locked --features http-api
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          package="gpt-sovits-${version}-macos-${{ matrix.arch }}"
+          mkdir -p "dist/${package}"
+          cp target/release/gpt-sovits "dist/${package}/"
+          soxr="$(brew --prefix libsoxr)/lib/libsoxr.0.dylib"
+          cp -L "${soxr}" "dist/${package}/libsoxr.0.dylib"
+          old_soxr="$(otool -L "dist/${package}/gpt-sovits" | awk '/libsoxr/ { print $1; exit }')"
+          install_name_tool -change "${old_soxr}" \
+            '@loader_path/libsoxr.0.dylib' "dist/${package}/gpt-sovits"
+          strip -x "dist/${package}/gpt-sovits"
+          "dist/${package}/gpt-sovits" --version
+          tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos-${{ matrix.arch }}-binary
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  cpu-image:
+    name: CPU container
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v4
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  cuda-image:
+    name: CUDA sm${{ matrix.compute_cap }} container
+    strategy:
+      fail-fast: false
+      matrix:
+        compute_cap: [75, 86, 89, 90]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}},suffix=-cuda-sm${{ matrix.compute_cap }}
+            type=semver,pattern={{major}}.{{minor}},suffix=-cuda-sm${{ matrix.compute_cap }}
+            type=raw,value=latest-cuda-sm${{ matrix.compute_cap }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.cuda
+          platforms: linux/amd64
+          build-args: CUDA_COMPUTE_CAP=${{ matrix.compute_cap }}
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  github-release:
+    name: Publish GitHub Release
+    needs: [linux-binary, macos-binary, cpu-image, cuda-image]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: "*-binary"
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksums
+        working-directory: dist
+        run: sha256sum *.tar.gz > SHA256SUMS
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          body_path: docs/releases/v1.0.0.md
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
+          generate_release_notes: false

@@ -1,5 +1,9 @@
 .git
 target/
+doc/
+experiments/
+docker-ort-libs/
+.venv*/
 __pycache__/
 *.pyc
 *.pyo
@@ -24,10 +28,16 @@ scripts/
 
 # Models (mount at runtime)
 models/
+voices/
+outputs/
+quality_outputs/
+test_outputs/
 *.ckpt
 *.pth
 *.pt
 *.safetensors
+*.npy
+*.npz
 
 # Generated audio
 *.wav

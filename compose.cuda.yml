@@ -1,11 +1,7 @@
 services:
   gpt-sovits:
-    build:
-      context: .
-      dockerfile: Dockerfile.cuda
-      args:
-        CUDA_COMPUTE_CAP: "${CUDA_COMPUTE_CAP:-89}"
-    image: gpt-sovits-rs:cuda
+    image: "ghcr.io/ricardomlee/gpt-sovits-rs:${CUDA_IMAGE_TAG:-latest-cuda-sm89}"
+    pull_policy: always
     container_name: gpt-sovits-rs
     restart: unless-stopped
     gpus: all
@@ -24,7 +20,6 @@ services:
       - "9880"
       - "--device"
       - "cuda"
-      - "--half"
       - "--models-dir"
       - "/app/models"
       - "--voices-dir"

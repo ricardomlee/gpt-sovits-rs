@@ -88,5 +88,4 @@ debug_rs/
 # Python cache (for scripts)
 __pycache__/
 *.py[cod]
-.github/
 docker-ort-libs/

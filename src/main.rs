@@ -19,7 +19,7 @@ mod server;
 #[derive(Parser, Debug)]
 #[command(name = "gpt-sovits")]
 #[command(author = "GPT-SoVITS Rust Contributors")]
-#[command(version = "0.1.0")]
+#[command(version)]
 #[command(about = "GPT-SoVITS TTS Inference Engine", long_about = None)]
 struct Args {
     /// Input text for synthesis

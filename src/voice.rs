@@ -288,11 +288,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let voice_dir = temp.path().join("test");
         std::fs::create_dir(&voice_dir).unwrap();
-        std::fs::write(
-            voice_dir.join("voice.json"),
-            r#"{"split_method":"comma"}"#,
-        )
-        .unwrap();
+        std::fs::write(voice_dir.join("voice.json"), r#"{"split_method":"comma"}"#).unwrap();
 
         let error = LoadedVoiceProfile::load("test", temp.path()).unwrap_err();
         assert!(error.contains("expected sentence or cut5"));
