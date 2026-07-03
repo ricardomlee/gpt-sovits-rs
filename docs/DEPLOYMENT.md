@@ -27,8 +27,8 @@ python prepare_models.py
 
 ## CPU
 
-CPU 镜像同时发布 `linux/amd64` 和 `linux/arm64`。x86_64 版本启用静态链接的 MKL，
-ARM64 版本使用通用 Candle CPU 后端。
+CPU 镜像发布 `linux/amd64` 版本并启用静态链接的 MKL，适合没有 NVIDIA GPU 的
+服务器或本机部署。
 
 ```bash
 docker compose -f compose.cpu.yml pull

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# CPU image. amd64 uses MKL; arm64 uses the portable Candle backend.
+# CPU image for linux/amd64 with MKL acceleration.
 
 ARG RUST_IMAGE=rust:1.96-slim
 ARG RUNTIME_IMAGE=debian:trixie-slim
