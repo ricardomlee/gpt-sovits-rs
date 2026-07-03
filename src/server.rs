@@ -850,7 +850,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolved.voice.as_deref(), Some("mao"));
-        assert_eq!(resolved.mode, "kv");
+        assert_eq!(resolved.mode, "auto");
         assert_eq!(
             resolved.refer_path,
             voice_dir.join("ref.wav").to_string_lossy()

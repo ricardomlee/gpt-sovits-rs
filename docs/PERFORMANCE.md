@@ -62,7 +62,7 @@ GPT_SOVITS_CUDA_PROFILE=1 nsys profile \
 
 一次 21 token 的热路径采集包含约 23,500 次 kernel launch、37,000 次异步显存分配和 9,100 次 H2D。H2D 总量不到 1 MB，说明主要瓶颈是大量小操作的调度和临时 Tensor，不是传输带宽。
 
-CUDA Graph 曾在第一次 replay 后产生错误 logits。Compute Sanitizer 定位到普通 softmax 和自定义 LayerNorm 的广播减法：kernel 参数引用了 capture 期间创建、随后失效的 stride 元数据。改用 Candle 的融合 softmax 和 LayerNorm 后，34-token memcheck 为 0 error，300-token 回归与动态 KV 完全一致。首步 eager 校验仍保留，遇到未覆盖的设备或模型时会从已校验的 KV 状态继续。
+CUDA Graph 曾在第一次 replay 后产生错误 logits。Compute Sanitizer 定位到普通 softmax 和自定义 LayerNorm 的广播减法：kernel 参数引用了 capture 期间创建、随后失效的 stride 元数据。改用 Candle 的融合 softmax 和 LayerNorm 后，34-token memcheck 为 0 error；短、中、长文本以及重复调用的 token 都与动态 KV 一致。首步 eager 校验仍保留，遇到未覆盖的设备或模型时会从已校验的 KV 状态继续。
 
 RTX 4060 Ti、F32、贪心采样、同一段 300-token 长文本的端到端结果：
 
@@ -89,7 +89,7 @@ RTX 4060 Ti 上使用动态 KV、300 token 和贪心采样测试。矩阵与 KV 
 cargo bench --features cuda --bench gpt_dtype_bench
 ```
 
-可用真实模型、`mao.wav` 和 300 个 token 的确定性生成检查三条解码路径：
+可用真实模型和 `mao.wav` 检查短、中、长文本以及重复 Graph 调用：
 
 ```bash
 cargo run --release --features cuda --example compare_cuda_graph_tokens

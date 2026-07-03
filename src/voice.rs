@@ -108,9 +108,9 @@ pub fn list_voice_profiles(voices_dir: &Path) -> Result<Vec<String>, String> {
 
 pub fn validate_mode(mode: &str) -> Result<(), String> {
     match mode {
-        "plain" | "kv" | "cuda-graph" => Ok(()),
+        "auto" | "plain" | "kv" | "cuda-graph" => Ok(()),
         _ => Err(format!(
-            "Invalid voice profile mode '{}'; expected plain, kv, or cuda-graph",
+            "Invalid voice profile mode '{}'; expected auto, plain, kv, or cuda-graph",
             mode
         )),
     }
@@ -150,7 +150,7 @@ impl VoiceDefaults {
                 .unwrap_or_else(|| "zh".to_string()),
             mode: profile
                 .and_then(|p| p.mode.clone())
-                .unwrap_or_else(|| "kv".to_string()),
+                .unwrap_or_else(|| "auto".to_string()),
             split_sentences: profile.and_then(|p| p.split_sentences).unwrap_or(false),
             min_sentence_chars: profile.and_then(|p| p.min_sentence_chars).unwrap_or(12),
             sentence_gap_ms: profile.and_then(|p| p.sentence_gap_ms).unwrap_or(120),
@@ -193,7 +193,7 @@ mod tests {
     fn defaults_fill_missing_values() {
         let defaults = VoiceDefaults::from_profile(None);
         assert_eq!(defaults.language, "zh");
-        assert_eq!(defaults.mode, "kv");
+        assert_eq!(defaults.mode, "auto");
         assert_eq!(defaults.top_k, 15);
         assert_eq!(defaults.max_tokens, 500);
     }

@@ -101,6 +101,13 @@ mod tests {
     }
 
     #[test]
+    fn test_auto_mode_uses_kv_on_cpu() {
+        let config = Config::builder().with_device("cpu").build();
+        let pipeline = Pipeline::new(config).unwrap();
+        assert_eq!(pipeline.automatic_inference_mode(), "kv");
+    }
+
+    #[test]
     fn test_split_sentences_merges_short_chunks() {
         let chunks = split_sentences("你好。世界。今天测试长文本。", 5);
         assert_eq!(chunks, vec!["你好。世界。", "今天测试长文本。"]);
@@ -309,7 +316,7 @@ mod e2e_tests {
         let phonemes = frontend.get_phonemes("你好世界", Language::Chinese);
         assert!(phonemes.is_ok());
         let result = phonemes.unwrap();
-        assert!(result.contains("ni") || result.len() > 0);
+        assert!(result.contains("ni") || !result.is_empty());
 
         // Test English text
         let phonemes = frontend.get_phonemes("Hello World", Language::English);

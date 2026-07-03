@@ -7,8 +7,19 @@ use std::path::Path;
 
 const REF_AUDIO: &str = "mao.wav";
 const REF_TEXT: &str = "会战兵力是八十万对六十万，优势在我。";
-const TARGET_TEXT: &str = "先帝创业未半而中道崩殂，今天下三分，益州疲弊，此诚危急存亡之秋也。然侍卫之臣不懈于内，忠志之士忘身于外者，盖追先帝之殊遇，欲报之于陛下也。";
-const MAX_TOKENS: usize = 300;
+const CASES: &[(&str, &str, usize)] = &[
+    ("short", "你好世界。", 80),
+    (
+        "medium",
+        "先帝创业未半而中道崩殂，今天下三分，益州疲弊，此诚危急存亡之秋也。",
+        200,
+    ),
+    (
+        "long",
+        "先帝创业未半而中道崩殂，今天下三分，益州疲弊，此诚危急存亡之秋也。然侍卫之臣不懈于内，忠志之士忘身于外者，盖追先帝之殊遇，欲报之于陛下也。",
+        300,
+    ),
+];
 
 fn first_difference(left: &[usize], right: &[usize]) -> Option<usize> {
     let common = left.len().min(right.len());
@@ -59,70 +70,83 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut hubert = HubertModel::load_with_device(hubert_path.to_str().unwrap(), &device)?;
     let mut bert = BertModel::load_with_device(bert_path.to_str().unwrap(), &device)?;
     let tokenizer = SemanticTokenizer::load_with_device(paths.sovits.to_str().unwrap(), &device)?;
-    let max_tokens = std::env::var("GPT_SOVITS_TEST_MAX_TOKENS")
+    let max_tokens_override = std::env::var("GPT_SOVITS_TEST_MAX_TOKENS")
         .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(MAX_TOKENS);
+        .and_then(|value| value.parse().ok());
 
     let features = hubert.extract(REF_AUDIO)?;
     let prompt_tokens = tokenizer.extract(&features.transpose(1, 2)?)?;
     let frontend = TextFrontend::new()?;
     let (ref_ids, ref_word2ph) = frontend.process_with_word2ph(REF_TEXT, Language::Chinese)?;
-    let (target_ids, target_word2ph) =
-        frontend.process_with_word2ph(TARGET_TEXT, Language::Chinese)?;
     let ref_bert = bert.extract(REF_TEXT)?;
     let ref_bert = gpt.project_and_align_bert(&ref_bert, &ref_word2ph, ref_ids.len())?;
-    let target_bert = bert.extract(TARGET_TEXT)?;
-    let target_bert =
-        gpt.project_and_align_bert(&target_bert, &target_word2ph, target_ids.len())?;
-    let combined_bert = Tensor::cat(&[&ref_bert, &target_bert], 1)?;
-    let mut phoneme_ids = ref_ids;
-    phoneme_ids.extend(target_ids);
-    let max_kv_len = phoneme_ids.len() + prompt_tokens.len() + max_tokens + 32;
+    let mut all_match = true;
 
-    println!(
-        "phones={} prompt={} max_kv_len={max_kv_len}",
-        phoneme_ids.len(),
-        prompt_tokens.len()
-    );
+    for &(label, target_text, default_max_tokens) in CASES {
+        let max_tokens = max_tokens_override.unwrap_or(default_max_tokens);
+        let (target_ids, target_word2ph) =
+            frontend.process_with_word2ph(target_text, Language::Chinese)?;
+        let target_bert = bert.extract(target_text)?;
+        let target_bert =
+            gpt.project_and_align_bert(&target_bert, &target_word2ph, target_ids.len())?;
+        let combined_bert = Tensor::cat(&[&ref_bert, &target_bert], 1)?;
+        let mut phoneme_ids = ref_ids.clone();
+        phoneme_ids.extend(target_ids);
+        let max_kv_len = phoneme_ids.len() + prompt_tokens.len() + max_tokens + 32;
 
-    let dynamic = gpt.generate_with_prompts_aligned_bert_kv_cache(
-        &phoneme_ids,
-        &prompt_tokens,
-        Some(&combined_bert),
-        1,
-        1.0,
-        1.0,
-        1.35,
-        max_tokens,
-    )?;
-    let bounded = gpt.generate_with_static_kv(
-        &phoneme_ids,
-        &prompt_tokens,
-        Some(&combined_bert),
-        1,
-        1.0,
-        1.0,
-        1.35,
-        max_tokens,
-        max_kv_len,
-    )?;
-    let graph = gpt.generate_with_cuda_graph(
-        &phoneme_ids,
-        &prompt_tokens,
-        Some(&combined_bert),
-        1,
-        1.0,
-        1.0,
-        1.35,
-        max_tokens,
-        max_kv_len,
-    )?;
+        println!(
+            "\n[{label}] phones={} prompt={} max_tokens={max_tokens}",
+            phoneme_ids.len(),
+            prompt_tokens.len()
+        );
+        let generate_dynamic = || {
+            gpt.generate_with_prompts_aligned_bert_kv_cache(
+                &phoneme_ids,
+                &prompt_tokens,
+                Some(&combined_bert),
+                1,
+                1.0,
+                1.0,
+                1.35,
+                max_tokens,
+            )
+        };
+        let generate_graph = || {
+            gpt.generate_with_cuda_graph(
+                &phoneme_ids,
+                &prompt_tokens,
+                Some(&combined_bert),
+                1,
+                1.0,
+                1.0,
+                1.35,
+                max_tokens,
+                max_kv_len,
+            )
+        };
 
-    let bounded_matches = print_comparison("bounded KV", &dynamic, &bounded);
-    let graph_matches = print_comparison("CUDA Graph", &dynamic, &graph);
-    if !bounded_matches || !graph_matches {
-        std::process::exit(1);
+        let dynamic = generate_dynamic()?;
+        let bounded = gpt.generate_with_static_kv(
+            &phoneme_ids,
+            &prompt_tokens,
+            Some(&combined_bert),
+            1,
+            1.0,
+            1.0,
+            1.35,
+            max_tokens,
+            max_kv_len,
+        )?;
+        let graph = generate_graph()?;
+        let graph_repeat = generate_graph()?;
+
+        all_match &= print_comparison("bounded KV", &dynamic, &bounded);
+        all_match &= print_comparison("CUDA Graph", &dynamic, &graph);
+        all_match &= print_comparison("CUDA Graph repeat", &dynamic, &graph_repeat);
+    }
+
+    if !all_match {
+        return Err("decode paths produced different tokens".into());
     }
     Ok(())
 }

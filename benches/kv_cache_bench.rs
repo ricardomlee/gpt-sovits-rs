@@ -19,13 +19,6 @@ fn main() {
 fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     println!("=== GPU KV Cache Benchmark ===\n");
 
-    if std::env::var("GPT_SOVITS_EXPERIMENTAL_CUDA_GRAPH").as_deref() != Ok("1") {
-        return Err(
-            "CUDA Graph is experimental; set GPT_SOVITS_EXPERIMENTAL_CUDA_GRAPH=1 to benchmark it"
-                .into(),
-        );
-    }
-
     let cuda_available = candle_core::Device::new_cuda(0).is_ok();
     if !cuda_available {
         return Err("CUDA not available".into());
@@ -68,10 +61,10 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
         .build();
 
     println!(
-        "{:<8} {:<9} {:<10} {:<10} {:<10} {:<9} {:<9}",
-        "length", "audio(s)", "plain(s)", "kv(s)", "graph(s)", "kv/plain", "graph/kv"
+        "{:<8} {:<9} {:<10} {:<10} {:<10} {:<9} {:<9} {:<6}",
+        "length", "audio(s)", "plain(s)", "kv(s)", "graph(s)", "kv/plain", "graph/kv", "audio"
     );
-    println!("{}", "-".repeat(82));
+    println!("{}", "-".repeat(90));
 
     for (label, input_text) in test_cases {
         pipeline.preload_speaker(&ref_audio, &ref_text, options.language)?;
@@ -86,6 +79,8 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
         let mut t_kv = 0.0f64;
         let mut t_static = 0.0f64;
         let mut audio_duration = 0.0f32;
+        let mut kv_audio = None;
+        let mut graph_audio = None;
 
         for _ in 0..2 {
             let t = Instant::now();
@@ -94,22 +89,35 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
             audio_duration = audio.duration();
         }
         for _ in 0..2 {
+            pipeline.set_seed(42)?;
             let t = Instant::now();
-            let _ = pipeline.inference_kv_cache(input_text, &ref_audio, &ref_text, &options)?;
+            let audio = pipeline.inference_kv_cache(input_text, &ref_audio, &ref_text, &options)?;
             t_kv += t.elapsed().as_secs_f64();
+            kv_audio = Some(audio);
         }
         for _ in 0..2 {
+            pipeline.set_seed(42)?;
             let t = Instant::now();
-            let _ = pipeline.inference_cuda_graph(input_text, &ref_audio, &ref_text, &options)?;
+            let audio =
+                pipeline.inference_cuda_graph(input_text, &ref_audio, &ref_text, &options)?;
             t_static += t.elapsed().as_secs_f64();
+            graph_audio = Some(audio);
         }
 
         let avg_plain = t_plain / 2.0;
         let avg_kv = t_kv / 2.0;
         let avg_static = t_static / 2.0;
+        let kv_audio = kv_audio.as_ref().unwrap();
+        let graph_audio = graph_audio.as_ref().unwrap();
+        if kv_audio.sample_rate != graph_audio.sample_rate
+            || kv_audio.channels != graph_audio.channels
+            || kv_audio.samples != graph_audio.samples
+        {
+            return Err(format!("{label}: KV and CUDA Graph audio differ").into());
+        }
 
         println!(
-            "{:<8} {:<9.2} {:<10.2} {:<10.2} {:<10.2} {:>8.2}x {:>8.2}x",
+            "{:<8} {:<9.2} {:<10.2} {:<10.2} {:<10.2} {:>8.2}x {:>8.2}x {:<6}",
             label,
             audio_duration,
             avg_plain,
@@ -117,12 +125,9 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
             avg_static,
             avg_plain / avg_kv,
             avg_kv / avg_static,
+            "exact",
         );
     }
-
-    println!(
-        "\ngraph(s) uses the same BERT features as plain and dynamic KV modes; validate its audio separately."
-    );
     Ok(())
 }
 

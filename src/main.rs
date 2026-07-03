@@ -103,8 +103,8 @@ struct Args {
     #[arg(long)]
     repetition_penalty: Option<f32>,
 
-    /// Inference mode
-    #[arg(long, value_parser = ["plain", "kv", "cuda-graph"])]
+    /// Inference mode (auto uses CUDA Graph on supported CUDA F32 models, otherwise KV)
+    #[arg(long, value_parser = ["auto", "plain", "kv", "cuda-graph"])]
     mode: Option<String>,
 
     /// Split long text by sentence and concatenate audio chunks.

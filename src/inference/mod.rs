@@ -10,7 +10,6 @@ use crate::{Error, Language, Result};
 use candle_core::{Device, Tensor};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Once;
 use std::time::Instant;
 
 /// Split text into sentence-level chunks for streaming inference.
@@ -299,6 +298,10 @@ impl Pipeline {
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
         match mode {
+            "auto" if self.automatic_inference_mode() == "cuda-graph" => {
+                self.inference_cuda_graph(text, reference_audio, reference_text, options)
+            }
+            "auto" => self.inference_kv_cache(text, reference_audio, reference_text, options),
             "plain" => self.inference(text, reference_audio, reference_text, options),
             "kv" => self.inference_kv_cache(text, reference_audio, reference_text, options),
             "cuda-graph" => {
@@ -308,6 +311,27 @@ impl Pipeline {
                 "Unsupported inference mode: {mode}"
             ))),
         }
+    }
+
+    /// Select the production decode path for the active device and model dtype.
+    pub fn automatic_inference_mode(&self) -> &'static str {
+        let graph_disabled = std::env::var("GPT_SOVITS_DISABLE_CUDA_GRAPH").as_deref() == Ok("1");
+        let graph_supported = matches!(self.device, Device::Cuda(_))
+            && self
+                .gpt_model
+                .as_ref()
+                .is_none_or(|model| model.dtype() == candle_core::DType::F32);
+        if graph_supported && !graph_disabled {
+            "cuda-graph"
+        } else {
+            "kv"
+        }
+    }
+
+    /// Reset the backend RNG for reproducible synthesis and quality comparisons.
+    pub fn set_seed(&self, seed: u64) -> Result<()> {
+        self.device.set_seed(seed)?;
+        Ok(())
     }
 
     /// Pre-compute and cache reference speaker features.
@@ -712,9 +736,9 @@ impl Pipeline {
 
     /// Like `inference_kv_cache` but accelerated with a CUDA graph for the decode loop.
     ///
-    /// The experimental CUDA path validates its first graph result before sampling and
-    /// continues from a guarded KV state if capture is not numerically correct. Non-CUDA
-    /// devices use static KV without graph capture.
+    /// The CUDA path validates its first graph result before sampling and continues from
+    /// a guarded KV state if capture is not numerically correct. Non-CUDA devices use
+    /// static KV without graph capture when this method is called explicitly.
     pub fn inference_cuda_graph<P: AsRef<Path>>(
         &mut self,
         text: &str,
@@ -722,16 +746,6 @@ impl Pipeline {
         reference_text: &str,
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
-        if std::env::var("GPT_SOVITS_EXPERIMENTAL_CUDA_GRAPH").as_deref() != Ok("1") {
-            static WARNED: Once = Once::new();
-            WARNED.call_once(|| {
-                tracing::warn!(
-                    "CUDA Graph is disabled because its long-generation output is not yet stable; using KV cache"
-                );
-            });
-            return self.inference_kv_cache(text, reference_audio, reference_text, options);
-        }
-
         let total_start = Instant::now();
         let target_start = Instant::now();
         let (target_phoneme_ids, target_word2ph) = self
