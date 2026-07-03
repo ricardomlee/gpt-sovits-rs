@@ -27,7 +27,7 @@ decoder 的 34 ms 中，resblocks 约 24 ms，转置卷积上采样约 8 ms。
 
 ## 优化顺序
 
-1. GPT decode：继续减少每 token 的 kernel launch、临时 Tensor 和同步。CUDA Graph 需要先解决长输出稳定性。
+1. GPT decode：继续减少每 token 的同步和 Graph 外开销，并扩大 CUDA Graph 在不同显卡、精度和模型上的回归覆盖。
 2. SoVITS decoder：验证融合 LeakyReLU；继续分析 resblock Conv1d 和转置卷积。cuDNN 可作为可选后端，但不能成为轻量部署的硬依赖。
 3. EncP 和 flow：当前合计约 12 ms，只有 profiler 证明可融合时再改。
 4. 参考音频：保持预加载，优化冷启动和音色切换，不占用热路径预算。
@@ -62,10 +62,26 @@ GPT_SOVITS_CUDA_PROFILE=1 nsys profile \
 
 一次 21 token 的热路径采集包含约 23,500 次 kernel launch、37,000 次异步显存分配和 9,100 次 H2D。H2D 总量不到 1 MB，说明主要瓶颈是大量小操作的调度和临时 Tensor，不是传输带宽。
 
-CUDA Graph 的 300-token 回归显示，capture 外的 graphable 路径与动态 KV 一致，但 stream capture 后第一个 logits 就会明显偏离。初步判断与 Candle 算子在 capture 内的临时显存分配有关。实验模式会用 eager logits 检查第一次 graph launch，发现偏离时从已校验的 KV 状态继续，不再把错误 token 交给 SoVITS，也不用从头重算。
+CUDA Graph 曾在第一次 replay 后产生错误 logits。Compute Sanitizer 定位到普通 softmax 和自定义 LayerNorm 的广播减法：kernel 参数引用了 capture 期间创建、随后失效的 stride 元数据。改用 Candle 的融合 softmax 和 LayerNorm 后，34-token memcheck 为 0 error，300-token 回归与动态 KV 完全一致。首步 eager 校验仍保留，遇到未覆盖的设备或模型时会从已校验的 KV 状态继续。
+
+RTX 4060 Ti、F32、贪心采样、同一段 300-token 长文本的端到端结果：
+
+| 模式 | GPT | 全链路 | 输出音频 |
+| --- | ---: | ---: | --- |
+| KV cache | 1.71 s | 2.25 s | 12.0 s |
+| CUDA Graph | 0.87 s | 1.42 s | 12.0 s |
+
+两条路径生成的 WAV 逐字节一致。CUDA Graph 将 GPT 阶段缩短约 49%，全链路缩短约 37%。
 
 可用真实模型、`mao.wav` 和 300 个 token 的确定性生成检查三条解码路径：
 
 ```bash
 cargo run --release --features cuda --example compare_cuda_graph_tokens
+```
+
+只覆盖第一次 Graph replay，可缩短 sanitizer 调试时间：
+
+```bash
+GPT_SOVITS_TEST_MAX_TOKENS=34 compute-sanitizer --tool memcheck \
+  --error-exitcode 99 target/release/examples/compare_cuda_graph_tokens
 ```

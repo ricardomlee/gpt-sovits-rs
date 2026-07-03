@@ -271,9 +271,7 @@ impl StateDict {
         // Calculate padding to maintain sequence length: padding = (kernel_size - 1) / 2
         let padding = (kernel_size - 1) / 2;
 
-        Ok(Conv1dWeightNorm::new_with_cached(
-            weight_g, weight_v, bias, 1, padding, 1,
-        )?)
+        Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)
     }
 
     /// Get internal HashMap for VarBuilder
@@ -444,6 +442,14 @@ impl LayerNorm {
         let is_last_dim = rank >= 2 && input_dims[rank - 1] == norm_dim;
         let is_middle_dim = rank >= 3 && input_dims[1] == norm_dim;
 
+        // Transformer tensors are contiguous and normalize the last dimension. Use
+        // Candle's fused kernel here: besides reducing temporary tensors, it avoids
+        // broadcast stride metadata that cannot safely outlive CUDA graph capture.
+        if is_last_dim && input.is_contiguous() {
+            return candle_nn::ops::layer_norm(input, &self.weight, &self.bias, self.eps as f32)
+                .map_err(Into::into);
+        }
+
         let dim = if is_last_dim {
             candle_core::D::Minus1 // Transformer format
         } else if is_middle_dim {
@@ -460,7 +466,7 @@ impl LayerNorm {
 
         // Convert eps to match input dtype
         let eps_val = self.eps as f32;
-        let eps = Tensor::full(eps_val, var.dims(), &var.device())?;
+        let eps = Tensor::full(eps_val, var.dims(), var.device())?;
         let eps = eps.to_dtype(var.dtype())?;
         let std = var.add(&eps)?.sqrt()?;
         let normalized = centered.broadcast_div(&std)?;
@@ -475,11 +481,11 @@ impl LayerNorm {
 
         let weight = self
             .weight
-            .to_device(&input.device())?
+            .to_device(input.device())?
             .to_dtype(normalized.dtype())?;
         let bias = self
             .bias
-            .to_device(&input.device())?
+            .to_device(input.device())?
             .to_dtype(normalized.dtype())?;
         let weight_reshaped = weight.reshape(&*shape)?;
         let bias_reshaped = bias.reshape(&*shape)?;

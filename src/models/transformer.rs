@@ -126,7 +126,7 @@ impl MultiHeadAttention {
         };
 
         // Softmax over last dimension
-        let attn_probs = candle_nn::ops::softmax(&attn_weights, D::Minus1)?;
+        let attn_probs = candle_nn::ops::softmax_last_dim(&attn_weights)?;
 
         // Apply attention to values: [batch, n_heads, seq_len, head_dim]
         let attn_probs = attn_probs.contiguous()?;
@@ -213,7 +213,7 @@ impl MultiHeadAttention {
         };
 
         // Softmax
-        let attn_probs = candle_nn::ops::softmax(&attn_weights, D::Minus1)?;
+        let attn_probs = candle_nn::ops::softmax_last_dim(&attn_weights)?;
 
         // Apply attention to values
         let attn_probs = attn_probs.contiguous()?;
@@ -261,7 +261,7 @@ impl MultiHeadAttention {
         let attn_weights = q.contiguous()?.matmul(&k_t)?;
         let attn_weights = attn_weights.affine(self.scale, 0.0)?;
 
-        let attn_probs = candle_nn::ops::softmax(&attn_weights, D::Minus1)?;
+        let attn_probs = candle_nn::ops::softmax_last_dim(&attn_weights)?;
         let attn_output = attn_probs.contiguous()?.matmul(&v_valid.contiguous()?)?;
 
         let attn_output = attn_output.transpose(1, 2)?.contiguous()?.reshape((
@@ -310,7 +310,7 @@ impl MultiHeadAttention {
         // Both tensors contiguous → SlicePtrOrNull::Null → no strides-buffer pool alloc.
         let attn_weights = attn_weights.add(attn_mask)?;
 
-        let attn_probs = candle_nn::ops::softmax(&attn_weights, D::Minus1)?;
+        let attn_probs = candle_nn::ops::softmax_last_dim(&attn_weights)?;
         // v_full is [1, n_heads, max_kv_len, head_dim], pre-allocated contiguous buffer.
         let attn_output = attn_probs.matmul(v_full)?;
 

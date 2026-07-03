@@ -1269,13 +1269,20 @@ impl GPTModel {
             let mask_buf_ptr = get_cuda_ptr(&attn_mask_buf)?;
             let mask_esize = attn_mask_buf.dtype().size_in_bytes() as u64;
             let logits_out_ptr = get_cuda_ptr(&logits_out)?;
+            let mut input_staging = vec![0.0f32; hidden_size];
+            let mut pos_staging: Vec<Vec<i64>> = static_kv
+                .layers
+                .iter()
+                .map(|layer| vec![0; layer.pos_idx.elem_count()])
+                .collect();
+            let zero_staging = [0u8; 4];
 
             // Update input_buf from the exact precomputed embedding and positional values.
-            let update_input_raw = |token: usize, pe_pos: usize| -> candle_core::Result<()> {
+            let mut update_input_raw = |token: usize, pe_pos: usize| -> candle_core::Result<()> {
                 let off = token * hidden_size;
-                let mut combined = audio_emb_cpu[off..off + hidden_size].to_vec();
+                input_staging.copy_from_slice(&audio_emb_cpu[off..off + hidden_size]);
                 let pos_off = pe_pos * hidden_size;
-                for (value, position) in combined
+                for (value, position) in input_staging
                     .iter_mut()
                     .zip(&audio_pos_cpu[pos_off..pos_off + hidden_size])
                 {
@@ -1289,7 +1296,7 @@ impl GPTModel {
                 unsafe {
                     cudarc_result::memcpy_htod_async(
                         input_buf_ptr,
-                        combined.as_slice(),
+                        input_staging.as_slice(),
                         raw_stream,
                     )
                     .map_err(|e| candle_core::Error::Msg(format!("htod input_buf: {e:?}")))?;
@@ -1298,13 +1305,13 @@ impl GPTModel {
             };
 
             // Update pos_idx: H2D copy of [new_pos; n_elements] — zero pool allocations.
-            let update_pos_idx_raw =
-                |pos_idx: &Tensor, new_pos: usize| -> candle_core::Result<()> {
-                    let n = pos_idx.elem_count();
-                    let vals: Vec<i64> = vec![new_pos as i64; n];
+            let mut update_pos_idx_raw =
+                |layer_idx: usize, pos_idx: &Tensor, new_pos: usize| -> candle_core::Result<()> {
+                    let values = &mut pos_staging[layer_idx];
+                    values.fill(new_pos as i64);
                     let ptr = get_cuda_ptr(pos_idx)?;
                     unsafe {
-                        cudarc_result::memcpy_htod_async(ptr, vals.as_slice(), raw_stream)
+                        cudarc_result::memcpy_htod_async(ptr, values.as_slice(), raw_stream)
                             .map_err(|e| candle_core::Error::Msg(format!("htod pos_idx: {e:?}")))?;
                     }
                     Ok(())
@@ -1314,15 +1321,13 @@ impl GPTModel {
             // mask_buf is [1, n_heads, 1, max_kv_len] C-contiguous.
             // Element [0, h, 0, p] is at flat index h*max_kv_len + p.
             let update_mask_raw = |cache_len: usize| -> candle_core::Result<()> {
-                // Zeroing a float (F32/F16/BF16) is always [0u8; esize]
-                let zero = [0u8; 4];
                 let nbytes = mask_esize as usize;
                 for h in 0..n_heads {
                     let byte_off = (h * max_kv_len + cache_len) as u64 * mask_esize;
                     unsafe {
                         cudarc_result::memcpy_htod_async(
                             mask_buf_ptr + byte_off,
-                            &zero[..nbytes],
+                            &zero_staging[..nbytes],
                             raw_stream,
                         )
                         .map_err(|e| candle_core::Error::Msg(format!("htod mask h={h}: {e:?}")))?;
@@ -1400,8 +1405,8 @@ impl GPTModel {
                 update_input_raw(prev, pe_pos)?;
             }
             let cache_len_before_capture = static_kv.len();
-            for layer in &static_kv.layers {
-                update_pos_idx_raw(&layer.pos_idx, cache_len_before_capture)?;
+            for (layer_idx, layer) in static_kv.layers.iter().enumerate() {
+                update_pos_idx_raw(layer_idx, &layer.pos_idx, cache_len_before_capture)?;
             }
             update_mask_raw(cache_len_before_capture)?;
             // Flush all H2D copies before capture begins
@@ -1609,8 +1614,8 @@ impl GPTModel {
                     tracing::warn!("[GPT cuda-graph] KV cache overflow: cur_len={cur_len} >= max_kv_len={max_kv_len}, stopping");
                     break;
                 }
-                for layer in &static_kv.layers {
-                    update_pos_idx_raw(&layer.pos_idx, cur_len)?;
+                for (layer_idx, layer) in static_kv.layers.iter().enumerate() {
+                    update_pos_idx_raw(layer_idx, &layer.pos_idx, cur_len)?;
                 }
 
                 // 3. Update mask: unmask the new position (H2D copy, zero pool allocations)

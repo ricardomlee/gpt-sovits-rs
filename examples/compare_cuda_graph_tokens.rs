@@ -59,6 +59,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut hubert = HubertModel::load_with_device(hubert_path.to_str().unwrap(), &device)?;
     let mut bert = BertModel::load_with_device(bert_path.to_str().unwrap(), &device)?;
     let tokenizer = SemanticTokenizer::load_with_device(paths.sovits.to_str().unwrap(), &device)?;
+    let max_tokens = std::env::var("GPT_SOVITS_TEST_MAX_TOKENS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(MAX_TOKENS);
 
     let features = hubert.extract(REF_AUDIO)?;
     let prompt_tokens = tokenizer.extract(&features.transpose(1, 2)?)?;
@@ -74,7 +78,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let combined_bert = Tensor::cat(&[&ref_bert, &target_bert], 1)?;
     let mut phoneme_ids = ref_ids;
     phoneme_ids.extend(target_ids);
-    let max_kv_len = phoneme_ids.len() + prompt_tokens.len() + MAX_TOKENS + 32;
+    let max_kv_len = phoneme_ids.len() + prompt_tokens.len() + max_tokens + 32;
 
     println!(
         "phones={} prompt={} max_kv_len={max_kv_len}",
@@ -90,7 +94,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         1.0,
         1.0,
         1.35,
-        MAX_TOKENS,
+        max_tokens,
     )?;
     let bounded = gpt.generate_with_static_kv(
         &phoneme_ids,
@@ -100,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         1.0,
         1.0,
         1.35,
-        MAX_TOKENS,
+        max_tokens,
         max_kv_len,
     )?;
     let graph = gpt.generate_with_cuda_graph(
@@ -111,7 +115,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         1.0,
         1.0,
         1.35,
-        MAX_TOKENS,
+        max_tokens,
         max_kv_len,
     )?;
 
