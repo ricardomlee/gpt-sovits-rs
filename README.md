@@ -215,6 +215,10 @@ python3 convert_gpt_weights.py /path/to/s1bert25hz-*.ckpt models/gpt-model.safet
 python3 convert_sovits_weights.py /path/to/s2G*.pth models/sovits-model.safetensors
 ```
 
+旧版第三方 checkpoint 如果包含 `utils.HParams` 等 Python 对象，只在确认文件可信时加
+`--allow-unsafe-pickle`。建议把不同音色放到独立目录，例如 `models/diana/`，运行时再用
+`--models-dir models/diana` 或显式 `--gpt-model` / `--sovits-model` 选择。
+
 完整下载来源、参数、磁盘要求和手工转换说明见 [docs/MODELS.md](docs/MODELS.md)。
 模型权重不包含在 binary 或 Docker 镜像中，其许可证和使用限制由对应模型发布者决定。
 

@@ -85,6 +85,27 @@ python convert_sovits_weights.py \
 GPT 与 SoVITS 必须来自兼容的 GPT-SoVITS v2 架构。v3、v4、v2Pro 和改过网络结构的
 checkpoint 不能仅靠改扩展名使用。
 
+部分旧版或第三方 checkpoint 会在 `.ckpt`/`.pth` 里保存 `utils.HParams` 等 Python
+对象，PyTorch 的安全 `weights_only=True` 路径会拒绝读取。只在确认文件来源可信时使用
+legacy pickle 开关：
+
+```bash
+mkdir -p models/diana
+
+python convert_gpt_weights.py \
+  models/Diana-GPT.ckpt \
+  models/diana/gpt-model.safetensors \
+  --allow-unsafe-pickle
+
+python convert_sovits_weights.py \
+  models/Diana-SoVITS.pth \
+  models/diana/sovits-model.safetensors \
+  --allow-unsafe-pickle
+```
+
+这类音色模型仍然需要一段与文本严格对应的参考音频。可以用 ASR 先转写，再人工修正成
+3 到 10 秒的短参考文本。
+
 ## 验证
 
 转换后检查文件：

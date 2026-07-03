@@ -3,9 +3,8 @@
 //! This module implements the complete SoVITS model for audio synthesis:
 //! semantic tokens → quantizer → enc_p → flow → decoder → waveform
 //!
-//! Two inference paths are supported:
-//! 1. Text-driven synthesis: semantic tokens + text → enc_p → flow → decoder
-//! 2. Reference-driven synthesis: reference mel → enc_q → flow → decoder
+//! Inference path: semantic tokens + text + reference mel speaker embedding
+//! → enc_p → flow → decoder
 
 use crate::utils::profiling::{sync_profile_enabled, sync_profile_stage};
 use crate::utils::{load_safetensors, StateDict};
@@ -30,8 +29,8 @@ pub struct SoVITSModel {
     // Encoder P for processing semantic and text features (training teacher)
     enc_p: EncP,
 
-    // Encoder Q for processing reference audio mel spectrograms (inference)
-    enc_q: EncQ,
+    // Optional training-time posterior encoder. Some inference checkpoints omit it.
+    enc_q: Option<EncQ>,
 
     // Flow model for latent variable transformation
     flow: ResidualCouplingBlock,
@@ -174,14 +173,19 @@ impl SoVITSModel {
             dtype,
         )?;
 
-        // Load EncQ (reference audio mel encoder)
-        let enc_q = EncQ::load(
-            &state_dict,
-            device,
-            hidden_channels,
-            enc_out_channels,
-            dtype,
-        )?;
+        // Load EncQ when present. It is not used by the normal TTS inference
+        // path, and some exported inference checkpoints omit all enc_q weights.
+        let enc_q = if state_dict.contains("enc_q.pre.weight") {
+            Some(EncQ::load(
+                &state_dict,
+                device,
+                hidden_channels,
+                enc_out_channels,
+                dtype,
+            )?)
+        } else {
+            None
+        };
 
         // Load Flow (ResidualCouplingBlock)
         let flow = ResidualCouplingBlock::load(&state_dict, "flow.flows", device, 4, dtype)?;
@@ -452,9 +456,9 @@ impl SoVITSModel {
         &self.decoder
     }
 
-    /// Get enc_q
-    pub fn enc_q(&self) -> &EncQ {
-        &self.enc_q
+    /// Get enc_q when the checkpoint includes the training-time posterior encoder.
+    pub fn enc_q(&self) -> Option<&EncQ> {
+        self.enc_q.as_ref()
     }
 
     /// Run pipeline and save all intermediates for debugging

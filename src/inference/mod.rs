@@ -215,7 +215,7 @@ impl InferenceOptionsBuilder {
 struct CachedSpeaker {
     /// VQ semantic tokens from HuBERT — used as GPT prefix
     prompt_tokens: Vec<usize>,
-    /// STFT magnitude of reference audio — used for SoVITS enc_q conditioning
+    /// STFT magnitude of reference audio — used for SoVITS ref_enc speaker conditioning
     ref_mel: Option<Tensor>,
     /// Phone IDs for reference text
     ref_phoneme_ids: Vec<usize>,
@@ -596,7 +596,7 @@ impl Pipeline {
             None
         };
 
-        // Reference mel spectrogram for SoVITS enc_q conditioning
+        // Reference mel spectrogram for SoVITS ref_enc speaker conditioning
         let ref_mel = Self::extract_ref_mel_static(ref_audio, device, sovits_sr, sovits_n_mels)?;
 
         Ok(CachedSpeaker {

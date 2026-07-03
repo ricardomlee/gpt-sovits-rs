@@ -16,8 +16,20 @@ def main() -> None:
         type=Path,
         default=Path("models/gpt-model.safetensors"),
     )
+    parser.add_argument(
+        "--allow-unsafe-pickle",
+        action="store_true",
+        help=(
+            "Allow torch pickle loading for trusted legacy GPT-SoVITS "
+            "checkpoints that cannot be read with weights_only=True."
+        ),
+    )
     args = parser.parse_args()
-    convert_gpt(args.checkpoint, args.output)
+    convert_gpt(
+        args.checkpoint,
+        args.output,
+        allow_unsafe_pickle=args.allow_unsafe_pickle,
+    )
 
 
 if __name__ == "__main__":

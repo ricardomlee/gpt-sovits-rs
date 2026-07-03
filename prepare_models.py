@@ -6,6 +6,8 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import sys
+import types
 from pathlib import Path
 from typing import Callable
 
@@ -22,8 +24,32 @@ DEFAULT_FILES = {
 }
 
 
-def load_state_dict(path: Path) -> dict[str, torch.Tensor]:
-    checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+def install_legacy_hparams_stub() -> None:
+    """Provide utils.HParams for trusted legacy GPT-SoVITS pickle checkpoints."""
+    module = sys.modules.get("utils")
+    if module is None:
+        module = types.ModuleType("utils")
+        sys.modules["utils"] = module
+    if hasattr(module, "HParams"):
+        return
+
+    class HParams(dict):
+        pass
+
+    HParams.__module__ = "utils"
+    module.HParams = HParams
+
+
+def load_state_dict(
+    path: Path,
+    *,
+    allow_unsafe_pickle: bool = False,
+) -> dict[str, torch.Tensor]:
+    if allow_unsafe_pickle:
+        install_legacy_hparams_stub()
+        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    else:
+        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     if not isinstance(checkpoint, dict):
         raise TypeError(f"{path} did not contain a state dictionary")
 
@@ -53,18 +79,28 @@ def save_state_dict(weights: dict[str, torch.Tensor], output: Path) -> None:
     print(f"Saved {len(converted)} tensors to {output} ({size_mb:.1f} MiB)")
 
 
-def convert_gpt(source: Path, output: Path) -> None:
+def convert_gpt(
+    source: Path,
+    output: Path,
+    *,
+    allow_unsafe_pickle: bool = False,
+) -> None:
     print(f"Converting GPT checkpoint: {source}")
-    weights = load_state_dict(source)
+    weights = load_state_dict(source, allow_unsafe_pickle=allow_unsafe_pickle)
     required = "model.ar_text_embedding.word_embeddings.weight"
     if required not in weights:
         raise KeyError(f"GPT checkpoint is missing {required}")
     save_state_dict(weights, output)
 
 
-def convert_sovits(source: Path, output: Path) -> None:
+def convert_sovits(
+    source: Path,
+    output: Path,
+    *,
+    allow_unsafe_pickle: bool = False,
+) -> None:
     print(f"Converting SoVITS checkpoint: {source}")
-    weights = load_state_dict(source)
+    weights = load_state_dict(source, allow_unsafe_pickle=allow_unsafe_pickle)
     required = "enc_p.text_embedding.weight"
     if required not in weights:
         raise KeyError(f"SoVITS checkpoint is missing {required}")
@@ -167,6 +203,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bert-tokenizer", type=Path)
     parser.add_argument("--hubert-checkpoint", type=Path)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--allow-unsafe-pickle",
+        action="store_true",
+        help=(
+            "Allow torch pickle loading for trusted legacy GPT-SoVITS "
+            "checkpoints that cannot be read with weights_only=True."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -210,13 +254,21 @@ def main() -> None:
         sources["gpt"],
         output_dir / "gpt-model.safetensors",
         args.force,
-        convert_gpt,
+        lambda source, output: convert_gpt(
+            source,
+            output,
+            allow_unsafe_pickle=args.allow_unsafe_pickle,
+        ),
     )
     convert_unless_present(
         sources["sovits"],
         output_dir / "sovits-model.safetensors",
         args.force,
-        convert_sovits,
+        lambda source, output: convert_sovits(
+            source,
+            output,
+            allow_unsafe_pickle=args.allow_unsafe_pickle,
+        ),
     )
     convert_unless_present(
         sources["bert"],
