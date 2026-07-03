@@ -602,7 +602,7 @@ impl G2PConverter {
 
                 if n_ph == 0 {
                     // No phonemes produced (e.g. single punctuation): all chars contribute 0
-                    word2ph.extend(std::iter::repeat(0).take(n_chars));
+                    word2ph.extend(std::iter::repeat_n(0, n_chars));
                 } else {
                     for ph in eng_phonemes {
                         phonemes.push(ph);
@@ -632,7 +632,7 @@ impl G2PConverter {
                         if let Some(last) = s.chars().last() {
                             if last.is_ascii_digit() {
                                 let base = s[..s.len() - 1].to_string();
-                                let tone = last.to_digit(10).unwrap_or(5) as u32;
+                                let tone = last.to_digit(10).unwrap_or(5);
                                 Some((base, tone))
                             } else {
                                 Some((s, 5u32))

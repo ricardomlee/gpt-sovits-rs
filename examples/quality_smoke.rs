@@ -88,7 +88,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let voice = LoadedVoiceProfile::load(&args.voice, &args.voices_dir)?;
     let defaults = VoiceDefaults::from_profile(Some(&voice.profile));
-    let language = Language::from_str(&defaults.language).unwrap_or(Language::Chinese);
+    let language = Language::parse(&defaults.language).unwrap_or(Language::Chinese);
     let reference_audio = voice
         .reference_audio_path()
         .ok_or("voice profile missing reference_audio")?;
@@ -133,15 +133,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut report = Vec::new();
     for (index, text) in texts.iter().enumerate() {
         let start = Instant::now();
-        let audio = match defaults.mode.as_str() {
-            "plain" => pipeline.inference(text, &reference_audio, reference_text, &options)?,
-            "kv" => {
-                pipeline.inference_kv_cache(text, &reference_audio, reference_text, &options)?
-            }
-            "cuda-graph" => {
-                pipeline.inference_cuda_graph(text, &reference_audio, reference_text, &options)?
-            }
-            _ => unreachable!("voice profile mode is validated on load"),
+        let audio = if defaults.split_sentences {
+            pipeline.inference_split(
+                text,
+                &reference_audio,
+                reference_text,
+                &options,
+                &defaults.mode,
+                defaults.min_sentence_chars,
+                defaults.sentence_gap_ms,
+                defaults.sentence_fade_ms,
+            )?
+        } else {
+            pipeline.inference_with_mode(
+                &defaults.mode,
+                text,
+                &reference_audio,
+                reference_text,
+                &options,
+            )?
         };
         let inference_ms = start.elapsed().as_millis();
         let output_path = args.output_dir.join(format!("{:02}.wav", index));

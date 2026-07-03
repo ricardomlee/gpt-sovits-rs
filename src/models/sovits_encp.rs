@@ -7,6 +7,40 @@ use crate::utils::{LayerNorm, StateDict};
 use crate::Result;
 use candle_core::{DType, Device, Module, Tensor};
 
+fn linear_interpolate_last_dim(input: &Tensor, target_len: usize) -> Result<Tensor> {
+    let (_, _, source_len) = input.dims3()?;
+    if target_len == 0 || source_len == 0 {
+        return Err(candle_core::Error::Msg("interpolation length must be positive".into()).into());
+    }
+    if target_len == source_len {
+        return Ok(input.clone());
+    }
+
+    let scale = source_len as f32 / target_len as f32;
+    let mut lower = Vec::with_capacity(target_len);
+    let mut upper = Vec::with_capacity(target_len);
+    let mut upper_weight = Vec::with_capacity(target_len);
+    for index in 0..target_len {
+        let source = (((index as f32 + 0.5) * scale) - 0.5).max(0.0);
+        let low = (source.floor() as usize).min(source_len - 1);
+        lower.push(low as i64);
+        upper.push((low + 1).min(source_len - 1) as i64);
+        upper_weight.push(source - low as f32);
+    }
+
+    let lower = Tensor::from_vec(lower, target_len, input.device())?;
+    let upper = Tensor::from_vec(upper, target_len, input.device())?;
+    let upper_weight = Tensor::from_vec(upper_weight, (1, 1, target_len), input.device())?
+        .to_dtype(input.dtype())?;
+    let lower_weight = upper_weight.affine(-1.0, 1.0)?;
+    let lower_values = input.index_select(&lower, 2)?;
+    let upper_values = input.index_select(&upper, 2)?;
+    lower_values
+        .broadcast_mul(&lower_weight)?
+        .add(&upper_values.broadcast_mul(&upper_weight)?)
+        .map_err(Into::into)
+}
+
 /// Text Encoder layer with self-attention
 #[derive(Debug, Clone)]
 pub struct EncoderLayer {
@@ -261,11 +295,7 @@ impl SelfAttention {
         } else {
             0
         };
-        let slice_start = if window_size + 1 > length {
-            window_size + 1 - length
-        } else {
-            0
-        };
+        let slice_start = (window_size + 1).saturating_sub(length);
         let slice_end = slice_start + 2 * length - 1;
 
         // Pad emb on dim 1 with zeros on both sides
@@ -760,7 +790,7 @@ impl EncP {
         text: &Tensor,
         text_lengths: &[i64],
         ge: &Tensor,
-        _speed: f32,
+        speed: f32,
     ) -> Result<(Tensor, Tensor, Tensor, Tensor)> {
         let device = quantized.device();
 
@@ -825,6 +855,20 @@ impl EncP {
             y = layer.forward(&y, &y_mask_expanded)?;
         }
 
+        let y_mask_expanded = if (speed - 1.0).abs() > f32::EPSILON {
+            if !speed.is_finite() || speed <= 0.0 {
+                return Err(candle_core::Error::Msg(format!(
+                    "speed must be finite and positive, got {speed}"
+                ))
+                .into());
+            }
+            let target_len = ((y.dims()[2] as f32 / speed) as usize + 1).max(1);
+            y = linear_interpolate_last_dim(&y, target_len)?;
+            Tensor::ones((y.dims()[0], 1, target_len), y.dtype(), y.device())?
+        } else {
+            y_mask_expanded
+        };
+
         // Output projection: split into m and logs
         let stats = self.proj.forward(&y)?;
         let stats = stats.broadcast_mul(&y_mask_expanded)?;
@@ -834,14 +878,14 @@ impl EncP {
         // Don't clamp - model was trained without clamping
         let logs = logs.clamp(-5.0, 2.0)?;
 
-        Ok((y, m, logs, y_mask))
+        Ok((y, m, logs, y_mask_expanded))
     }
 
     fn sequence_mask(&self, lengths: &[i64], max_len: i64, device: &Device) -> Result<Tensor> {
         let batch_size = lengths.len();
         let mut mask = Vec::with_capacity(batch_size * max_len as usize);
 
-        for (_i, &len) in lengths.iter().enumerate() {
+        for &len in lengths {
             for j in 0..max_len {
                 if j < len {
                     mask.push(1.0f32);
@@ -873,5 +917,22 @@ impl EncP {
 
         let stacked = Tensor::stack(&embeddings, 0)?;
         Ok(stacked.reshape((batch, seq_len, self.text_embedding.dims()[1]))?)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn linear_interpolation_matches_pytorch_half_pixel_positions() -> Result<()> {
+        let input = Tensor::new(&[[[0f32, 10.0]]], &Device::Cpu)?;
+        let output = linear_interpolate_last_dim(&input, 4)?;
+        assert_eq!(output.dims(), &[1, 1, 4]);
+        assert_eq!(
+            output.flatten_all()?.to_vec1::<f32>()?,
+            [0.0, 2.5, 7.5, 10.0]
+        );
+        Ok(())
     }
 }

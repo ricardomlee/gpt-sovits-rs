@@ -190,14 +190,7 @@ impl ResBlock1 {
             (dilation * (ks - 1) / 2, dilation)
         };
 
-        Ok(Conv1dWeightNorm::new_with_cached(
-            weight_g,
-            weight_v,
-            bias,
-            1,
-            padding,
-            actual_dilation,
-        )?)
+        Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, actual_dilation)
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -357,9 +350,7 @@ impl Decoder {
         };
 
         let padding = (kernel_size - 1) / 2;
-        Ok(Conv1dWeightNorm::new_with_cached(
-            weight_g, weight_v, bias, 1, padding, 1,
-        )?)
+        Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)
     }
 
     fn load_conv_plain_weight(

@@ -109,9 +109,7 @@ impl WN {
         };
         let padding = (kernel_size - 1) / 2;
 
-        Ok(Conv1dWeightNorm::new_with_cached(
-            weight_g, weight_v, bias, 1, padding, 1,
-        )?)
+        Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)
     }
 
     /// Forward pass through WaveNet

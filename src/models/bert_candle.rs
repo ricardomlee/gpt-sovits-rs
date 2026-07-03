@@ -95,7 +95,7 @@ impl BertCandleModel {
             .map_err(|e| crate::Error::InferenceError(format!("tokenize: {e}")))?;
 
         let ids: Vec<u32> = enc.get_ids().to_vec();
-        let mask: Vec<u32> = enc.get_attention_mask().iter().map(|&m| m as u32).collect();
+        let mask: Vec<u32> = enc.get_attention_mask().to_vec();
         let seq = ids.len();
 
         let input_ids = Tensor::from_vec(ids, (1, seq), &self.device)?;

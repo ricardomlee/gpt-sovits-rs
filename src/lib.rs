@@ -37,15 +37,16 @@ pub mod voice;
 
 // Re-export main types
 pub use config::Config;
-pub use inference::{split_sentences, InferenceOptions, Pipeline};
+pub use inference::{split_sentences, split_sentences_for_language, InferenceOptions, Pipeline};
 pub use utils::AudioBuffer;
 
 /// Library version
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Supported languages
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Language {
+    #[default]
     Chinese,
     English,
     Japanese,
@@ -55,7 +56,7 @@ pub enum Language {
 }
 
 impl Language {
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "zh" | "zh-cn" | "chinese" | "中文" => Some(Language::Chinese),
             "en" | "english" | "英文" => Some(Language::English),
@@ -65,12 +66,6 @@ impl Language {
             "auto" | "多语种混合" => Some(Language::Auto),
             _ => None,
         }
-    }
-}
-
-impl Default for Language {
-    fn default() -> Self {
-        Language::Chinese
     }
 }
 

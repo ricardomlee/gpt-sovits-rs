@@ -225,6 +225,24 @@ impl SoVITSModel {
         ref_audio_mel: Option<&Tensor>,
         noise_scale: f32,
     ) -> Result<Vec<f32>> {
+        self.synthesize_with_speed(
+            semantic_tokens,
+            text_tokens,
+            ref_audio_mel,
+            noise_scale,
+            1.0,
+        )
+    }
+
+    /// Synthesize audio while controlling duration in EncP, matching Python's `speed_factor`.
+    pub fn synthesize_with_speed(
+        &self,
+        semantic_tokens: &[usize],
+        text_tokens: &[usize],
+        ref_audio_mel: Option<&Tensor>,
+        noise_scale: f32,
+        speed: f32,
+    ) -> Result<Vec<f32>> {
         let profile_start = Instant::now();
         if semantic_tokens.is_empty() {
             return Err(Error::InferenceError("Empty semantic tokens".to_string()));
@@ -254,8 +272,7 @@ impl SoVITSModel {
 
             // Apply mask and compute ge
             let mel_masked = mel_in.broadcast_mul(&refer_mask)?;
-            let ge = self.ref_enc.forward(&mel_masked, &refer_mask)?;
-            ge
+            self.ref_enc.forward(&mel_masked, &refer_mask)?
         } else {
             Tensor::zeros((1, 512, 1), self.dtype, &self.device)?
         };
@@ -273,17 +290,14 @@ impl SoVITSModel {
         let y_lengths = vec![quantized_up.dims()[2] as i64];
         let text_lengths = vec![text.dims()[1] as i64];
 
-        // Build y_mask from y_lengths
-        let time_len = quantized_up.dims()[2];
-        let y_mask = build_sequence_mask_typed(&y_lengths, time_len, 1, &self.device, self.dtype)?;
         sync_profile_stage(&self.device)?;
         let prepare_ms = stage_start.elapsed().as_millis();
 
         // Pass through enc_p
         let stage_start = Instant::now();
-        let (_y, m_p, logs_p, _y_mask_enc) =
+        let (_y, m_p, logs_p, y_mask) =
             self.enc_p
-                .forward(&quantized_up, &y_lengths, &text, &text_lengths, &ge, 1.0)?;
+                .forward(&quantized_up, &y_lengths, &text, &text_lengths, &ge, speed)?;
         sync_profile_stage(&self.device)?;
         let enc_p_ms = stage_start.elapsed().as_millis();
 
@@ -359,8 +373,7 @@ impl SoVITSModel {
             let refer_mask =
                 Tensor::full(1.0f32, &[1, 1, time], &self.device)?.to_dtype(mel_in.dtype())?;
             let mel_masked = mel_in.broadcast_mul(&refer_mask)?;
-            let ge = self.ref_enc.forward(&mel_masked, &refer_mask)?;
-            ge
+            self.ref_enc.forward(&mel_masked, &refer_mask)?
         } else {
             Tensor::zeros((1, 512, 1), self.dtype, &self.device)?
         };

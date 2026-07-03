@@ -41,7 +41,7 @@ impl LoadedVoiceProfile {
             validate_mode(mode)?;
         }
         if let Some(language) = profile.language.as_deref() {
-            if Language::from_str(language).is_none() {
+            if Language::parse(language).is_none() {
                 return Err(format!(
                     "Invalid language '{}' in voice profile {:?}; expected zh, en, ja, ko, yue, or auto",
                     language, path
@@ -151,13 +151,13 @@ impl VoiceDefaults {
             mode: profile
                 .and_then(|p| p.mode.clone())
                 .unwrap_or_else(|| "auto".to_string()),
-            split_sentences: profile.and_then(|p| p.split_sentences).unwrap_or(false),
-            min_sentence_chars: profile.and_then(|p| p.min_sentence_chars).unwrap_or(12),
-            sentence_gap_ms: profile.and_then(|p| p.sentence_gap_ms).unwrap_or(120),
-            sentence_fade_ms: profile.and_then(|p| p.sentence_fade_ms).unwrap_or(8),
+            split_sentences: profile.and_then(|p| p.split_sentences).unwrap_or(true),
+            min_sentence_chars: profile.and_then(|p| p.min_sentence_chars).unwrap_or(5),
+            sentence_gap_ms: profile.and_then(|p| p.sentence_gap_ms).unwrap_or(300),
+            sentence_fade_ms: profile.and_then(|p| p.sentence_fade_ms).unwrap_or(0),
             top_k: profile.and_then(|p| p.top_k).unwrap_or(15),
-            top_p: profile.and_then(|p| p.top_p).unwrap_or(0.95),
-            temperature: profile.and_then(|p| p.temperature).unwrap_or(0.8),
+            top_p: profile.and_then(|p| p.top_p).unwrap_or(1.0),
+            temperature: profile.and_then(|p| p.temperature).unwrap_or(1.0),
             speed: profile.and_then(|p| p.speed).unwrap_or(1.0),
             max_tokens: profile.and_then(|p| p.max_tokens).unwrap_or(500),
             repetition_penalty: profile.and_then(|p| p.repetition_penalty).unwrap_or(1.35),
@@ -194,7 +194,13 @@ mod tests {
         let defaults = VoiceDefaults::from_profile(None);
         assert_eq!(defaults.language, "zh");
         assert_eq!(defaults.mode, "auto");
+        assert!(defaults.split_sentences);
+        assert_eq!(defaults.min_sentence_chars, 5);
+        assert_eq!(defaults.sentence_gap_ms, 300);
+        assert_eq!(defaults.sentence_fade_ms, 0);
         assert_eq!(defaults.top_k, 15);
+        assert_eq!(defaults.top_p, 1.0);
+        assert_eq!(defaults.temperature, 1.0);
         assert_eq!(defaults.max_tokens, 500);
     }
 

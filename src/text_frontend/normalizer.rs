@@ -39,18 +39,12 @@ impl TextNormalizer {
 
     /// Normalize punctuation (convert to Chinese equivalents where appropriate)
     fn normalize_punctuation(&self, text: &str) -> String {
-        text.replace('"', "\"")
-            .replace('"', "\"")
+        text.replace(['“', '”'], "\"")
             .replace('(', "（")
             .replace(')', "）")
             .replace('[', "【")
             .replace(']', "】")
             .replace(',', "，")
-            .replace('.', ".")
-            .replace('!', "!")
-            .replace('?', "?")
-            .replace(':', ":")
-            .replace(';', ";")
     }
 
     /// Expand numbers to spoken form

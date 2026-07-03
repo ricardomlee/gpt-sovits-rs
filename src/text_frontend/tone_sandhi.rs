@@ -103,7 +103,7 @@ impl ToneSandhi {
                 None => 0,
                 Some(py) => {
                     let s = py.with_tone_num_end();
-                    s.chars().last().and_then(|c| c.to_digit(10)).unwrap_or(5) as u32
+                    s.chars().last().and_then(|c| c.to_digit(10)).unwrap_or(5)
                 }
             })
             .collect()
@@ -168,7 +168,7 @@ impl ToneSandhi {
     }
 
     /// "不" sandhi rules.
-    fn bu_sandhi(word: &str, tones: &mut Vec<u32>) {
+    fn bu_sandhi(word: &str, tones: &mut [u32]) {
         let chars: Vec<char> = word.chars().collect();
         // V不V pattern: middle "不" → neutral tone 5
         if chars.len() == 3 && chars.get(1) == Some(&'不') && tones.len() > 1 {
@@ -184,7 +184,7 @@ impl ToneSandhi {
     }
 
     /// "一" sandhi rules.
-    fn yi_sandhi(word: &str, tones: &mut Vec<u32>) {
+    fn yi_sandhi(word: &str, tones: &mut [u32]) {
         let chars: Vec<char> = word.chars().collect();
         if !chars.contains(&'一') {
             return;
@@ -225,7 +225,7 @@ impl ToneSandhi {
     }
 
     /// Neutral tone (轻声) sandhi rules.
-    fn neural_sandhi(&self, word: &str, pos: &str, tones: &mut Vec<u32>, jieba: &Jieba) {
+    fn neural_sandhi(&self, word: &str, pos: &str, tones: &mut [u32], jieba: &Jieba) {
         let chars: Vec<char> = word.chars().collect();
         let n = tones.len();
         if n == 0 {
@@ -255,11 +255,9 @@ impl ToneSandhi {
         let ge_char_idx: Option<usize> = chars.iter().position(|&c| c == '个');
 
         if last_char
-            .map(|c| modal_particles.contains(c))
+            .map(|c| modal_particles.contains(c) || "的地得".contains(c))
             .unwrap_or(false)
         {
-            tones[n - 1] = 5;
-        } else if last_char.map(|c| "的地得".contains(c)).unwrap_or(false) {
             tones[n - 1] = 5;
         } else if chars.len() == 1
             && "了着过".contains(chars[0])
@@ -267,21 +265,15 @@ impl ToneSandhi {
         {
             tones[0] = 5;
         } else if chars.len() > 1
-            && last_char.map(|c| "们子".contains(c)).unwrap_or(false)
-            && matches!(pos, "r" | "n")
-            && !self.must_not_neural.contains(word)
-        {
-            tones[n - 1] = 5;
-        } else if chars.len() > 1
-            && last_char.map(|c| "上下里".contains(c)).unwrap_or(false)
-            && "slf".contains(pos0)
-        {
-            tones[n - 1] = 5;
-        } else if chars.len() > 1
-            && last_char.map(|c| "来去".contains(c)).unwrap_or(false)
-            && second_to_last
-                .map(|c| "上下进出回过起开".contains(c))
-                .unwrap_or(false)
+            && ((last_char.map(|c| "们子".contains(c)).unwrap_or(false)
+                && matches!(pos, "r" | "n")
+                && !self.must_not_neural.contains(word))
+                || (last_char.map(|c| "上下里".contains(c)).unwrap_or(false)
+                    && "slf".contains(pos0))
+                || (last_char.map(|c| "来去".contains(c)).unwrap_or(false)
+                    && second_to_last
+                        .map(|c| "上下进出回过起开".contains(c))
+                        .unwrap_or(false)))
         {
             tones[n - 1] = 5;
         } else if let Some(gi) = ge_char_idx {
@@ -324,7 +316,7 @@ impl ToneSandhi {
     }
 
     /// Third-tone (三声) sandhi rules.
-    fn three_sandhi(word: &str, tones: &mut Vec<u32>, jieba: &Jieba) {
+    fn three_sandhi(word: &str, tones: &mut [u32], jieba: &Jieba) {
         let word_len = word.chars().count();
         let n = tones.len();
         if n == 0 {
@@ -376,7 +368,7 @@ impl ToneSandhi {
     }
 
     /// Apply all sandhi rules to a word's tones in-place.
-    pub fn modified_tone(&self, word: &str, pos: &str, tones: &mut Vec<u32>, jieba: &Jieba) {
+    pub fn modified_tone(&self, word: &str, pos: &str, tones: &mut [u32], jieba: &Jieba) {
         Self::bu_sandhi(word, tones);
         Self::yi_sandhi(word, tones);
         self.neural_sandhi(word, pos, tones, jieba);
@@ -508,8 +500,7 @@ impl ToneSandhi {
             let prev_last_tone = if i >= 1 {
                 tones_list[i - 1]
                     .iter()
-                    .filter(|&&t| t > 0)
-                    .last()
+                    .rfind(|&&t| t > 0)
                     .copied()
                     .unwrap_or(0)
             } else {

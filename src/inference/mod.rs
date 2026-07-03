@@ -12,29 +12,55 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
-/// Split text into sentence-level chunks for streaming inference.
-/// Splits on Chinese/Japanese/English sentence-ending punctuation.
-/// Chunks shorter than `min_chars` are merged with the next chunk.
+/// Split text using the punctuation policy from Python GPT-SoVITS `cut5`.
+/// Delimiters stay attached to the preceding chunk and short chunks are merged.
 pub fn split_sentences(text: &str, min_chars: usize) -> Vec<String> {
-    // Sentence-ending punctuation (keep the delimiter attached to preceding text)
-    const DELIMITERS: &[char] = &['。', '！', '？', '…', '!', '?', '.', '\n'];
+    split_sentences_for_language(text, min_chars, Language::Chinese)
+}
 
+pub fn split_sentences_for_language(
+    text: &str,
+    min_chars: usize,
+    language: Language,
+) -> Vec<String> {
+    const DELIMITERS: &[char] = &[
+        ',', '.', ';', '?', '!', '、', '，', '。', '？', '！', '；', '：', ':', '…', '\n',
+    ];
+
+    let normalized = text.replace("……", "。").replace("——", "，");
+    let chars: Vec<char> = normalized.chars().collect();
     let mut sentences: Vec<String> = Vec::new();
     let mut current = String::new();
 
-    for ch in text.chars() {
+    for (index, &ch) in chars.iter().enumerate() {
         current.push(ch);
-        if DELIMITERS.contains(&ch) && !current.trim().is_empty() {
+        let decimal_point = ch == '.'
+            && index > 0
+            && index + 1 < chars.len()
+            && chars[index - 1].is_ascii_digit()
+            && chars[index + 1].is_ascii_digit();
+        if DELIMITERS.contains(&ch) && !decimal_point && !current.trim().is_empty() {
             let trimmed = current.trim().to_string();
-            if !trimmed.is_empty() {
+            if trimmed.chars().any(char::is_alphanumeric) {
                 sentences.push(trimmed);
             }
             current.clear();
         }
     }
     // Remaining text without terminator
-    let tail = current.trim().to_string();
-    if !tail.is_empty() {
+    let mut tail = current.trim().to_string();
+    if tail.chars().any(char::is_alphanumeric) {
+        if !tail
+            .chars()
+            .last()
+            .is_some_and(|ch| DELIMITERS.contains(&ch))
+        {
+            tail.push(if language == Language::English {
+                '.'
+            } else {
+                '。'
+            });
+        }
         sentences.push(tail);
     }
 
@@ -75,8 +101,8 @@ impl Default for InferenceOptions {
     fn default() -> Self {
         Self {
             top_k: 15,
-            top_p: 0.95,
-            temperature: 0.8,
+            top_p: 1.0,
+            temperature: 1.0,
             speed: 1.0,
             language: Language::Chinese,
             max_tokens: 500,
@@ -135,8 +161,8 @@ impl InferenceOptionsBuilder {
     pub fn build(self) -> InferenceOptions {
         InferenceOptions {
             top_k: self.top_k.unwrap_or(15),
-            top_p: self.top_p.unwrap_or(0.95),
-            temperature: self.temperature.unwrap_or(0.8),
+            top_p: self.top_p.unwrap_or(1.0),
+            temperature: self.temperature.unwrap_or(1.0),
             speed: self.speed.unwrap_or(1.0),
             language: self.language.unwrap_or(Language::Chinese),
             max_tokens: self.max_tokens.unwrap_or(500),
@@ -276,7 +302,7 @@ impl Pipeline {
         mode: &str,
         min_sentence_chars: usize,
     ) -> impl Iterator<Item = Result<AudioBuffer>> + 'a {
-        let sentences = split_sentences(text, min_sentence_chars);
+        let sentences = split_sentences_for_language(text, min_sentence_chars, options.language);
         SentenceIterator {
             pipeline: self,
             sentences,
@@ -311,6 +337,50 @@ impl Pipeline {
                 "Unsupported inference mode: {mode}"
             ))),
         }
+    }
+
+    /// Split text with the Python-compatible policy and concatenate synthesized chunks.
+    #[allow(clippy::too_many_arguments)]
+    pub fn inference_split<P: AsRef<Path>>(
+        &mut self,
+        text: &str,
+        reference_audio: P,
+        reference_text: &str,
+        options: &InferenceOptions,
+        mode: &str,
+        min_chars: usize,
+        gap_ms: u32,
+        fade_ms: u32,
+    ) -> Result<AudioBuffer> {
+        let chunks = split_sentences_for_language(text, min_chars, options.language);
+        let reference_audio = reference_audio.as_ref().to_path_buf();
+        self.preload_speaker(&reference_audio, reference_text, options.language)?;
+
+        let mut output: Option<AudioBuffer> = None;
+        for chunk in chunks {
+            let mut audio =
+                self.inference_with_mode(mode, &chunk, &reference_audio, reference_text, options)?;
+            if fade_ms > 0 {
+                audio.fade_in(fade_ms);
+                audio.fade_out(fade_ms);
+            }
+            if let Some(current) = output.as_mut() {
+                if gap_ms > 0 {
+                    let gap_samples = (gap_ms as f32 * current.sample_rate as f32 / 1000.0)
+                        as usize
+                        * current.channels as usize;
+                    current.concat(&AudioBuffer::new(
+                        vec![0.0; gap_samples],
+                        current.sample_rate,
+                        current.channels,
+                    ))?;
+                }
+                current.concat(&audio)?;
+            } else {
+                output = Some(audio);
+            }
+        }
+        output.ok_or_else(|| Error::InferenceError("No sentence chunks generated".to_string()))
     }
 
     /// Select the production decode path for the active device and model dtype.
@@ -589,11 +659,12 @@ impl Pipeline {
         }
 
         let sovits_start = Instant::now();
-        let audio_samples = sovits.synthesize(
+        let audio_samples = sovits.synthesize_with_speed(
             &semantic_tokens,
             &target_phoneme_ids,
             ref_feats.ref_mel.as_ref(),
             0.5,
+            options.speed,
         )?;
         let sovits_ms = sovits_start.elapsed().as_millis();
         tracing::info!(
@@ -712,11 +783,12 @@ impl Pipeline {
         }
 
         let sovits_start = Instant::now();
-        let audio_samples = sovits.synthesize(
+        let audio_samples = sovits.synthesize_with_speed(
             &semantic_tokens,
             &target_phoneme_ids,
             ref_feats.ref_mel.as_ref(),
             0.5,
+            options.speed,
         )?;
         let sovits_ms = sovits_start.elapsed().as_millis();
         tracing::info!(
@@ -851,11 +923,12 @@ impl Pipeline {
         }
 
         let sovits_start = Instant::now();
-        let audio_samples = sovits.synthesize(
+        let audio_samples = sovits.synthesize_with_speed(
             &semantic_tokens,
             &target_phoneme_ids,
             ref_feats.ref_mel.as_ref(),
             0.5,
+            options.speed,
         )?;
         let sovits_ms = sovits_start.elapsed().as_millis();
         tracing::info!(

@@ -108,9 +108,7 @@ impl WN {
         };
         let padding = (kernel_size - 1) / 2;
 
-        Ok(Conv1dWeightNorm::new_with_cached(
-            weight_g, weight_v, bias, 1, padding, 1,
-        )?)
+        Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)
     }
 
     pub fn forward(&self, x: &Tensor, x_mask: &Tensor, g: Option<&Tensor>) -> Result<Tensor> {
@@ -335,9 +333,7 @@ impl Conv1dWeightNorm {
         };
         let padding = (kernel_size - 1) / 2;
 
-        let weight_g = Tensor::full(1.0f32, weight.dims(), &weight.device())?.to_dtype(dtype)?;
-        Ok(Conv1dWeightNorm::new_with_cached(
-            weight_g, weight, bias, 1, padding, 1,
-        )?)
+        let weight_g = Tensor::full(1.0f32, weight.dims(), weight.device())?.to_dtype(dtype)?;
+        Conv1dWeightNorm::new_with_cached(weight_g, weight, bias, 1, padding, 1)
     }
 }

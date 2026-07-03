@@ -6,7 +6,9 @@ use gpt_sovits_rs::voice::{
     list_voice_profiles, load_optional_voice_profile, InferenceOptionOverrides, LoadedVoiceProfile,
     VoiceDefaults,
 };
-use gpt_sovits_rs::{split_sentences, AudioBuffer, Config, InferenceOptions, Language, Pipeline};
+use gpt_sovits_rs::{
+    split_sentences_for_language, AudioBuffer, Config, InferenceOptions, Language, Pipeline,
+};
 use std::path::PathBuf;
 use tracing::{error, info};
 
@@ -108,8 +110,12 @@ struct Args {
     mode: Option<String>,
 
     /// Split long text by sentence and concatenate audio chunks.
-    #[arg(long)]
+    #[arg(long, conflicts_with = "no_split_sentences")]
     split_sentences: bool,
+
+    /// Disable the default Python-compatible punctuation splitting.
+    #[arg(long)]
+    no_split_sentences: bool,
 
     /// Minimum characters per sentence chunk when --split-sentences is enabled.
     #[arg(long)]
@@ -200,7 +206,7 @@ fn main() {
         std::process::exit(1);
     }
     if let Some(language) = args.language.as_deref() {
-        if Language::from_str(language).is_none() {
+        if Language::parse(language).is_none() {
             error!(
                 "Unsupported language '{}'; expected zh, en, ja, ko, yue, or auto",
                 language
@@ -348,7 +354,7 @@ fn main() {
     // Parse language
     let voice_defaults = VoiceDefaults::from_profile(voice_profile.as_ref().map(|v| &v.profile));
     let language_text = args.language.as_deref().unwrap_or(&voice_defaults.language);
-    let language = match Language::from_str(language_text) {
+    let language = match Language::parse(language_text) {
         Some(language) => language,
         None => {
             error!(
@@ -362,7 +368,11 @@ fn main() {
         .mode
         .clone()
         .unwrap_or_else(|| voice_defaults.mode.clone());
-    let split_sentences = args.split_sentences || voice_defaults.split_sentences;
+    let split_sentences = if args.no_split_sentences {
+        false
+    } else {
+        args.split_sentences || voice_defaults.split_sentences
+    };
     let min_sentence_chars = args
         .min_sentence_chars
         .unwrap_or(voice_defaults.min_sentence_chars);
@@ -454,7 +464,7 @@ fn run_split_inference(
     gap_ms: u32,
     fade_ms: u32,
 ) -> gpt_sovits_rs::Result<AudioBuffer> {
-    let chunks = split_sentences(text, min_sentence_chars);
+    let chunks = split_sentences_for_language(text, min_sentence_chars, options.language);
     info!(
         "Split text into {} sentence chunk(s), mode={}, gap={}ms, fade={}ms",
         chunks.len(),
@@ -462,43 +472,16 @@ fn run_split_inference(
         gap_ms,
         fade_ms
     );
-    pipeline.preload_speaker(reference_audio, reference_text, options.language)?;
-
-    let mut output: Option<AudioBuffer> = None;
-    for (idx, chunk) in chunks.iter().enumerate() {
-        info!("Synthesizing chunk {}/{}: {}", idx + 1, chunks.len(), chunk);
-        let mut audio = run_inference(
-            pipeline,
-            chunk,
-            reference_audio,
-            reference_text,
-            options,
-            mode,
-        )?;
-        if fade_ms > 0 {
-            audio.fade_in(fade_ms);
-            audio.fade_out(fade_ms);
-        }
-
-        if let Some(out) = output.as_mut() {
-            if gap_ms > 0 {
-                let gap_samples = (gap_ms as f32 * out.sample_rate as f32 / 1000.0) as usize
-                    * out.channels as usize;
-                out.concat(&AudioBuffer::new(
-                    vec![0.0; gap_samples],
-                    out.sample_rate,
-                    out.channels,
-                ))?;
-            }
-            out.concat(&audio)?;
-        } else {
-            output = Some(audio);
-        }
-    }
-
-    output.ok_or_else(|| {
-        gpt_sovits_rs::Error::InferenceError("No sentence chunks generated".to_string())
-    })
+    pipeline.inference_split(
+        text,
+        reference_audio,
+        reference_text,
+        options,
+        mode,
+        min_sentence_chars,
+        gap_ms,
+        fade_ms,
+    )
 }
 
 fn resolve_reference_audio(args: &Args, voice: Option<&LoadedVoiceProfile>) -> Option<PathBuf> {

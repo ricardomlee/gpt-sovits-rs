@@ -90,6 +90,10 @@ struct ResolvedSynthesis {
     mode: String,
     language: Language,
     options: InferenceOptions,
+    split_sentences: bool,
+    min_sentence_chars: usize,
+    sentence_gap_ms: u32,
+    sentence_fade_ms: u32,
     refer_path: String,
     prompt_text: String,
 }
@@ -242,6 +246,7 @@ impl SpeechOutputFormat {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn resolve_synthesis(
     voice_name: Option<&str>,
     text_language: Option<&str>,
@@ -259,7 +264,7 @@ fn resolve_synthesis(
     let defaults = VoiceDefaults::from_profile(voice.as_ref().map(|v| &v.profile));
 
     let language_text = text_language.unwrap_or(&defaults.language);
-    let language = Language::from_str(language_text)
+    let language = Language::parse(language_text)
         .ok_or_else(|| format!("unsupported text_language: {language_text}"))?;
 
     let refer_path = refer_wav_path
@@ -300,6 +305,10 @@ fn resolve_synthesis(
         mode: defaults.mode,
         language,
         options,
+        split_sentences: defaults.split_sentences,
+        min_sentence_chars: defaults.min_sentence_chars,
+        sentence_gap_ms: defaults.sentence_gap_ms,
+        sentence_fade_ms: defaults.sentence_fade_ms,
         refer_path,
         prompt_text,
     })
@@ -336,14 +345,30 @@ async fn openai_speech_handler(
     let refer_path = resolved.refer_path;
     let prompt_text = resolved.prompt_text;
     let options = resolved.options;
+    let split_sentences = resolved.split_sentences;
+    let min_sentence_chars = resolved.min_sentence_chars;
+    let sentence_gap_ms = resolved.sentence_gap_ms;
+    let sentence_fade_ms = resolved.sentence_fade_ms;
     let pipeline = Arc::clone(&state.pipeline);
 
     let result = tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Handle::current();
         let mut pipeline = rt.block_on(pipeline.lock());
-        pipeline
-            .inference_with_mode(&mode, &text, &refer_path, &prompt_text, &options)
-            .map_err(|e| format!("Inference failed: {}", e))
+        let result = if split_sentences {
+            pipeline.inference_split(
+                &text,
+                &refer_path,
+                &prompt_text,
+                &options,
+                &mode,
+                min_sentence_chars,
+                sentence_gap_ms,
+                sentence_fade_ms,
+            )
+        } else {
+            pipeline.inference_with_mode(&mode, &text, &refer_path, &prompt_text, &options)
+        };
+        result.map_err(|e| format!("Inference failed: {}", e))
     })
     .await
     .map_err(|e| {
@@ -416,6 +441,9 @@ async fn tts_stream_handler(
     let refer_path = resolved.refer_path;
     let prompt_text = resolved.prompt_text;
     let options = resolved.options;
+    let min_sentence_chars = resolved.min_sentence_chars;
+    let sentence_gap_ms = resolved.sentence_gap_ms;
+    let sentence_fade_ms = resolved.sentence_fade_ms;
     let pipeline = Arc::clone(&state.pipeline);
 
     // Channel: inference thread sends PCM chunks; HTTP task streams them out
@@ -433,11 +461,20 @@ async fn tts_stream_handler(
 
         // Stream each sentence
         let mut header_sent = false;
-        for result in
-            pipeline.inference_sentences(&text, &refer_path, &prompt_text, &options, &mode, 5)
-        {
+        for result in pipeline.inference_sentences(
+            &text,
+            &refer_path,
+            &prompt_text,
+            &options,
+            &mode,
+            min_sentence_chars,
+        ) {
             match result {
-                Ok(audio) => {
+                Ok(mut audio) => {
+                    if sentence_fade_ms > 0 {
+                        audio.fade_in(sentence_fade_ms);
+                        audio.fade_out(sentence_fade_ms);
+                    }
                     if !header_sent {
                         let header = streaming_wav_header(audio.sample_rate, audio.channels);
                         if tx.blocking_send(Ok(header)).is_err() {
@@ -445,7 +482,12 @@ async fn tts_stream_handler(
                         }
                         header_sent = true;
                     }
-                    let pcm = samples_to_pcm(&audio.samples);
+                    let mut samples = audio.samples;
+                    let gap_samples = (sentence_gap_ms as f32 * audio.sample_rate as f32 / 1000.0)
+                        as usize
+                        * audio.channels as usize;
+                    samples.resize(samples.len() + gap_samples, 0.0);
+                    let pcm = samples_to_pcm(&samples);
                     if tx.blocking_send(Ok(pcm)).is_err() {
                         break; // client disconnected
                     }
@@ -459,7 +501,7 @@ async fn tts_stream_handler(
         }
     });
 
-    let stream = ReceiverStream::new(rx).map(|item| item.map_err(|e| std::io::Error::other(e)));
+    let stream = ReceiverStream::new(rx).map(|item| item.map_err(std::io::Error::other));
 
     let builder =
         add_synthesis_headers(Response::builder(), voice.as_deref(), language, text_chars);
@@ -499,14 +541,30 @@ async fn tts_handler(
     let refer_path = resolved.refer_path;
     let prompt_text = resolved.prompt_text;
     let options = resolved.options;
+    let split_sentences = resolved.split_sentences;
+    let min_sentence_chars = resolved.min_sentence_chars;
+    let sentence_gap_ms = resolved.sentence_gap_ms;
+    let sentence_fade_ms = resolved.sentence_fade_ms;
     let pipeline = Arc::clone(&state.pipeline);
 
     let result = tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Handle::current();
         let mut pipeline = rt.block_on(pipeline.lock());
-        pipeline
-            .inference_with_mode(&mode, &text, &refer_path, &prompt_text, &options)
-            .map_err(|e| format!("Inference failed: {}", e))
+        let result = if split_sentences {
+            pipeline.inference_split(
+                &text,
+                &refer_path,
+                &prompt_text,
+                &options,
+                &mode,
+                min_sentence_chars,
+                sentence_gap_ms,
+                sentence_fade_ms,
+            )
+        } else {
+            pipeline.inference_with_mode(&mode, &text, &refer_path, &prompt_text, &options)
+        };
+        result.map_err(|e| format!("Inference failed: {}", e))
     })
     .await
     .map_err(|e| {
@@ -587,6 +645,10 @@ async fn tts_batch_handler(
     let voice = resolved.voice;
     let mode = resolved.mode;
     let options = resolved.options;
+    let split_sentences = resolved.split_sentences;
+    let min_sentence_chars = resolved.min_sentence_chars;
+    let sentence_gap_ms = resolved.sentence_gap_ms;
+    let sentence_fade_ms = resolved.sentence_fade_ms;
     let texts = req.texts;
     let pipeline = Arc::clone(&state.pipeline);
 
@@ -607,8 +669,20 @@ async fn tts_batch_handler(
 
         for (idx, text) in texts.iter().enumerate() {
             let t = std::time::Instant::now();
-            let inference_result =
-                pipeline.inference_with_mode(&mode, text, &refer_path, &prompt_text, &options);
+            let inference_result = if split_sentences {
+                pipeline.inference_split(
+                    text,
+                    &refer_path,
+                    &prompt_text,
+                    &options,
+                    &mode,
+                    min_sentence_chars,
+                    sentence_gap_ms,
+                    sentence_fade_ms,
+                )
+            } else {
+                pipeline.inference_with_mode(&mode, text, &refer_path, &prompt_text, &options)
+            };
             let inference_ms = t.elapsed().as_millis() as u64;
 
             let item = match inference_result {
@@ -689,6 +763,7 @@ async fn tts_batch_handler(
         .unwrap())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     port: u16,
     device: &str,

@@ -80,7 +80,7 @@ impl Snake {
         let sin_squared = sin_x_alpha.broadcast_mul(&sin_x_alpha)?;
 
         // 1 / (alpha + eps)
-        let eps_tensor = Tensor::full(eps, alpha_reshaped.dims(), &alpha_reshaped.device())?;
+        let eps_tensor = Tensor::full(eps, alpha_reshaped.dims(), alpha_reshaped.device())?;
         let inv_alpha = alpha_reshaped.add(&eps_tensor)?.recip()?;
 
         // x + 1/(alpha+eps) * sin^2(x*alpha)
@@ -138,7 +138,7 @@ impl SnakeBeta {
         let sin_squared = sin_x_alpha.broadcast_mul(&sin_x_alpha)?;
 
         // 1 / (beta + eps)
-        let eps_tensor = Tensor::full(eps, beta_reshaped.dims(), &beta_reshaped.device())?;
+        let eps_tensor = Tensor::full(eps, beta_reshaped.dims(), beta_reshaped.device())?;
         let inv_beta = beta_reshaped.add(&eps_tensor)?.recip()?;
 
         // x + 1/(beta+eps) * sin^2(x*alpha)
@@ -350,9 +350,7 @@ impl ResidualBlock {
 
         let padding = (kernel_size - 1) / 2;
 
-        Ok(Conv1dWeightNorm::new_with_cached(
-            weight_g, weight_v, bias, 1, padding, 1,
-        )?)
+        Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -497,9 +495,7 @@ impl BigVGAN {
 
         let padding = (kernel_size - 1) / 2;
 
-        Ok(Conv1dWeightNorm::new_with_cached(
-            weight_g, weight_v, bias, 1, padding, 1,
-        )?)
+        Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)
     }
 
     fn load_post_activation(

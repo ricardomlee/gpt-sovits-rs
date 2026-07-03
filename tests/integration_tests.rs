@@ -17,13 +17,13 @@ mod tests {
 
     #[test]
     fn test_language_from_str() {
-        assert_eq!(Language::from_str("zh"), Some(Language::Chinese));
-        assert_eq!(Language::from_str("en"), Some(Language::English));
-        assert_eq!(Language::from_str("ja"), Some(Language::Japanese));
-        assert_eq!(Language::from_str("ko"), Some(Language::Korean));
-        assert_eq!(Language::from_str("yue"), Some(Language::Cantonese));
-        assert_eq!(Language::from_str("auto"), Some(Language::Auto));
-        assert_eq!(Language::from_str("invalid"), None);
+        assert_eq!(Language::parse("zh"), Some(Language::Chinese));
+        assert_eq!(Language::parse("en"), Some(Language::English));
+        assert_eq!(Language::parse("ja"), Some(Language::Japanese));
+        assert_eq!(Language::parse("ko"), Some(Language::Korean));
+        assert_eq!(Language::parse("yue"), Some(Language::Cantonese));
+        assert_eq!(Language::parse("auto"), Some(Language::Auto));
+        assert_eq!(Language::parse("invalid"), None);
     }
 
     #[test]
@@ -111,6 +111,25 @@ mod tests {
     fn test_split_sentences_merges_short_chunks() {
         let chunks = split_sentences("你好。世界。今天测试长文本。", 5);
         assert_eq!(chunks, vec!["你好。世界。", "今天测试长文本。"]);
+    }
+
+    #[test]
+    fn test_split_sentences_matches_python_cut5_punctuation() {
+        let chunks = split_sentences("你好，世界！今天3.14很好", 5);
+        assert_eq!(chunks, vec!["你好，世界！", "今天3.14很好。"]);
+    }
+
+    #[test]
+    fn test_split_sentences_normalizes_repeated_marks() {
+        let chunks = split_sentences("等等……然后——继续。", 5);
+        assert_eq!(chunks, vec!["等等。然后，继续。"]);
+    }
+
+    #[test]
+    fn test_split_sentences_adds_english_period() {
+        let chunks =
+            gpt_sovits_rs::split_sentences_for_language("Hello world", 5, Language::English);
+        assert_eq!(chunks, vec!["Hello world."]);
     }
 }
 

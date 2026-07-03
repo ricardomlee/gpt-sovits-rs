@@ -181,7 +181,7 @@ cargo run --release --features cuda --bin gpt-sovits -- \
 ```bash
 cargo run --release --features cuda --bin gpt-sovits -- \
     --device cuda --mode auto --split-sentences \
-    --min-sentence-chars 12 --sentence-gap-ms 120 --sentence-fade-ms 8 \
+    --min-sentence-chars 5 --sentence-gap-ms 300 --sentence-fade-ms 0 \
     --max-tokens 500 --repetition-penalty 1.35 \
     --text "第一句话。第二句话。第三句话。" \
     --reference-audio ref.wav \
@@ -189,7 +189,7 @@ cargo run --release --features cuda --bin gpt-sovits -- \
     --output output_long.wav
 ```
 
-`--mode` 可选 `auto`、`plain`、`kv`、`cuda-graph`，默认是 `auto`：CUDA F32 使用 CUDA Graph，CPU/MPS 使用动态 KV。Graph 会校验第一次 launch，发现结果偏离时从已校验的 KV 状态继续。需要临时关闭 Graph 时设置 `GPT_SOVITS_DISABLE_CUDA_GRAPH=1`，或显式传 `--mode kv`。CLI 日志会输出 `profile mode=... target=... ref=... target_bert=... gpt=... sovits=... total=...`，便于看时间花在哪里。
+`--mode` 可选 `auto`、`plain`、`kv`、`cuda-graph`，默认是 `auto`：CUDA F32 使用 CUDA Graph，CPU/MPS 使用动态 KV。Graph 会校验第一次 launch，发现结果偏离时从已校验的 KV 状态继续。需要临时关闭 Graph 时设置 `GPT_SOVITS_DISABLE_CUDA_GRAPH=1`，或显式传 `--mode kv`。文本默认按 Python `cut5` 规则分段，短片段合并到至少 5 个字符，段间加入 300ms 静音；`--no-split-sentences` 可恢复单段生成。CLI 日志会输出 `profile mode=... target=... ref=... target_bert=... gpt=... sovits=... total=...`，便于看时间花在哪里。
 
 > BigVGAN 当前仍是实验加载入口，主推理路径使用 SoVITS 权重内置 decoder；普通 mel-to-waveform BigVGAN 不能直接替换 SoVITS latent decoder。
 
@@ -205,8 +205,8 @@ cargo run --release --features cuda --bin gpt-sovits -- \
   "mode": "auto",
   "split_sentences": true,
   "top_k": 15,
-  "top_p": 0.95,
-  "temperature": 0.8,
+  "top_p": 1.0,
+  "temperature": 1.0,
   "max_tokens": 500,
   "repetition_penalty": 1.35
 }
@@ -219,6 +219,8 @@ cargo run --release --features cuda --bin gpt-sovits -- \
 ```
 
 命令行参数会覆盖 voice profile 中的默认值。长期产品目标见 [docs/PRODUCT_GOAL.md](docs/PRODUCT_GOAL.md)，当前性能基线见 [docs/PERFORMANCE.md](docs/PERFORMANCE.md)。
+
+语速在 SoVITS latent 上调整，与 Python `speed_factor` 一致；不会通过重采样最终 WAV 改变音高。分段和韵律对齐说明见 [docs/PROSODY.md](docs/PROSODY.md)。
 
 查看已有音色不需要加载模型：
 

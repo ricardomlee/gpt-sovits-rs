@@ -32,7 +32,7 @@ impl MultiHeadAttention {
         vb: VarBuilder,
     ) -> Result<Self> {
         assert!(
-            channels % n_heads == 0,
+            channels.is_multiple_of(n_heads),
             "channels must be divisible by n_heads"
         );
 
@@ -329,7 +329,7 @@ impl MRTE {
     /// * `text` - Text features [batch, content_enc_channels, text_len]
     /// * `text_mask` - Mask for text features [batch, 1, text_len]
     /// * `ge` - Optional global embedding (speaker embedding) [batch, hidden_size, 1]
-    ///          Must have hidden_size=512 channels to match attention output
+    ///   Must have hidden_size=512 channels to match attention output
     ///
     /// # Returns
     /// Fused features [batch, out_channels, ssl_len]
