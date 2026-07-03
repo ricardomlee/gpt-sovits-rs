@@ -138,6 +138,11 @@ harness = false
 required-features = ["cuda"]
 
 [[bench]]
+name = "gpt_dtype_bench"
+harness = false
+required-features = ["cuda"]
+
+[[bench]]
 name = "conv1d_cpu_bench"
 harness = false
 required-features = ["mkl"]

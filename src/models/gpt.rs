@@ -1828,10 +1828,11 @@ impl GPTModel {
             .as_ref()
             .ok_or_else(|| Error::ModelLoadError("bert_proj not loaded".to_string()))?;
 
+        let bert_raw = bert_raw.to_dtype(proj_w.dtype())?;
         let bert = if bert_raw.dims().len() == 3 && bert_raw.dims()[1] == 1024 {
             bert_raw.transpose(1, 2)?
         } else {
-            bert_raw.clone()
+            bert_raw
         };
         let proj_w_3d = proj_w.t()?.unsqueeze(0)?;
         let projected = bert.matmul(&proj_w_3d)?;

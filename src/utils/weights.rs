@@ -446,8 +446,16 @@ impl LayerNorm {
         // Candle's fused kernel here: besides reducing temporary tensors, it avoids
         // broadcast stride metadata that cannot safely outlive CUDA graph capture.
         if is_last_dim && input.is_contiguous() {
-            return candle_nn::ops::layer_norm(input, &self.weight, &self.bias, self.eps as f32)
-                .map_err(Into::into);
+            let output_dtype = input.dtype();
+            let norm_input = input.to_dtype(self.weight.dtype())?;
+            return candle_nn::ops::layer_norm(
+                &norm_input,
+                &self.weight,
+                &self.bias,
+                self.eps as f32,
+            )
+            .and_then(|output| output.to_dtype(output_dtype))
+            .map_err(Into::into);
         }
 
         let dim = if is_last_dim {

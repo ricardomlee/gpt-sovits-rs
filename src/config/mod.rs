@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the GPT-SoVITS pipeline
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
     /// Device to use for inference
     pub device: Device,
@@ -13,18 +13,13 @@ pub struct Config {
     pub model_version: ModelVersion,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Device {
+    #[default]
     Cuda,
     Cpu,
     Mps,
-}
-
-impl Default for Device {
-    fn default() -> Self {
-        Device::Cuda
-    }
 }
 
 impl std::fmt::Display for Device {
@@ -37,30 +32,15 @@ impl std::fmt::Display for Device {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ModelVersion {
     V1,
+    #[default]
     V2,
     V2Pro,
     V3,
     V4,
-}
-
-impl Default for ModelVersion {
-    fn default() -> Self {
-        ModelVersion::V2
-    }
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            device: Device::default(),
-            half_precision: false,
-            model_version: ModelVersion::default(),
-        }
-    }
 }
 
 impl Config {
@@ -78,8 +58,8 @@ impl Config {
     }
 
     /// Dtype for the GPT autoregressive model — always F32.
-    /// F16 and BF16 both cause premature EOS due to accumulated rounding
-    /// errors across 16 transformer layers in a model trained in F32.
+    /// F16 causes premature EOS. BF16 with F32 LayerNorm completes generation,
+    /// but is slower on the current CUDA benchmark and changes tokens immediately.
     pub fn gpt_dtype(&self) -> candle_core::DType {
         candle_core::DType::F32
     }
@@ -158,18 +138,13 @@ impl ConfigBuilder {
     }
 
     pub fn build(self) -> Config {
+        #[cfg(feature = "cuda")]
+        let default_device = Device::Cuda;
+        #[cfg(not(feature = "cuda"))]
+        let default_device = Device::Cpu;
+
         Config {
-            device: self.device.unwrap_or_else(|| {
-                // Auto-detect: prefer GPU if available
-                #[cfg(feature = "cuda")]
-                {
-                    Device::Cuda
-                }
-                #[cfg(not(feature = "cuda"))]
-                {
-                    Device::Cpu
-                }
-            }),
+            device: self.device.unwrap_or(default_device),
             half_precision: self.half_precision.unwrap_or(false),
             model_version: self.model_version.unwrap_or_default(),
         }
