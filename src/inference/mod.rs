@@ -35,6 +35,14 @@ struct CachedSpeaker {
     ref_bert_aligned: Option<Tensor>,
 }
 
+struct PreparedTarget {
+    target_phoneme_ids: Vec<usize>,
+    phoneme_ids: Vec<usize>,
+    combined_bert: Option<Tensor>,
+    target_ms: u128,
+    bert_ms: u128,
+}
+
 /// Main TTS inference pipeline
 pub struct Pipeline {
     #[allow(dead_code)]
@@ -458,43 +466,25 @@ impl Pipeline {
         Ok(cached)
     }
 
-    pub fn inference<P: AsRef<Path>>(
-        &mut self,
+    fn prepare_target_features(
+        text_frontend: &mut TextFrontend,
+        bert_model: &mut Option<BertModel>,
+        device: &Device,
+        gpt: &GPTModel,
+        ref_feats: &CachedSpeaker,
         text: &str,
-        reference_audio: P,
-        reference_text: &str,
-        options: &InferenceOptions,
-    ) -> Result<AudioBuffer> {
-        if self.gpt_model.is_none() {
-            return Err(Error::ModelLoadError("GPT model not loaded".to_string()));
-        }
-        if self.sovits_model.is_none() {
-            return Err(Error::ModelLoadError("SoVITS model not loaded".to_string()));
-        }
-        let total_start = Instant::now();
-
-        // Target text features (not cached — depend on synthesis text)
+        language: Language,
+    ) -> Result<PreparedTarget> {
         let target_start = Instant::now();
-        let (target_phoneme_ids, target_word2ph, normalized_text) = self
-            .text_frontend
-            .process_with_word2ph_and_text(text, options.language)?;
+        let (target_phoneme_ids, target_word2ph, normalized_text) =
+            text_frontend.process_with_word2ph_and_text(text, language)?;
         let target_ms = target_start.elapsed().as_millis();
 
-        // Reference features (cached after first call)
-        let ref_start = Instant::now();
-        let ref_feats =
-            self.get_ref_features(&reference_audio, reference_text, options.language)?;
-        let ref_ms = ref_start.elapsed().as_millis();
-
-        let gpt = self.gpt_model.as_ref().unwrap();
-        let sovits = self.sovits_model.as_ref().unwrap();
-
-        // Target BERT aligned
         let bert_start = Instant::now();
-        let target_bert_aligned = if let Some(bert) = self.bert_model.as_mut() {
+        let target_bert_aligned = if let Some(bert) = bert_model.as_mut() {
             bert.extract(&normalized_text)
                 .ok()
-                .and_then(|f| f.to_device(&self.device).ok().or(Some(f)))
+                .and_then(|f| f.to_device(device).ok().or(Some(f)))
                 .and_then(|tb| {
                     gpt.project_and_align_bert(&tb, &target_word2ph, target_phoneme_ids.len())
                         .ok()
@@ -504,7 +494,6 @@ impl Pipeline {
         };
         let bert_ms = bert_start.elapsed().as_millis();
 
-        // Combined phoneme IDs and BERT: [ref | target]
         let phoneme_ids: Vec<usize> = ref_feats
             .ref_phoneme_ids
             .iter()
@@ -521,13 +510,55 @@ impl Pipeline {
             _ => None,
         };
 
+        Ok(PreparedTarget {
+            target_phoneme_ids,
+            phoneme_ids,
+            combined_bert,
+            target_ms,
+            bert_ms,
+        })
+    }
+
+    pub fn inference<P: AsRef<Path>>(
+        &mut self,
+        text: &str,
+        reference_audio: P,
+        reference_text: &str,
+        options: &InferenceOptions,
+    ) -> Result<AudioBuffer> {
+        if self.gpt_model.is_none() {
+            return Err(Error::ModelLoadError("GPT model not loaded".to_string()));
+        }
+        if self.sovits_model.is_none() {
+            return Err(Error::ModelLoadError("SoVITS model not loaded".to_string()));
+        }
+        let total_start = Instant::now();
+
+        // Reference features (cached after first call)
+        let ref_start = Instant::now();
+        let ref_feats =
+            self.get_ref_features(&reference_audio, reference_text, options.language)?;
+        let ref_ms = ref_start.elapsed().as_millis();
+
+        let gpt = self.gpt_model.as_ref().unwrap();
+        let sovits = self.sovits_model.as_ref().unwrap();
+        let prepared = Self::prepare_target_features(
+            &mut self.text_frontend,
+            &mut self.bert_model,
+            &self.device,
+            gpt,
+            &ref_feats,
+            text,
+            options.language,
+        )?;
+
         // GPT generation
         let gpt_start = Instant::now();
         let semantic_tokens = if !ref_feats.prompt_tokens.is_empty() {
             gpt.generate_with_prompts_aligned_bert(
-                &phoneme_ids,
+                &prepared.phoneme_ids,
                 &ref_feats.prompt_tokens,
-                combined_bert.as_ref(),
+                prepared.combined_bert.as_ref(),
                 options.top_k,
                 options.top_p,
                 options.temperature,
@@ -536,8 +567,8 @@ impl Pipeline {
             )?
         } else {
             gpt.generate_with_features(
-                &phoneme_ids,
-                combined_bert.as_ref(),
+                &prepared.phoneme_ids,
+                prepared.combined_bert.as_ref(),
                 None,
                 options.top_k,
                 options.top_p,
@@ -559,7 +590,7 @@ impl Pipeline {
         let sovits_start = Instant::now();
         let audio_samples = sovits.synthesize_with_speed(
             &semantic_tokens,
-            &target_phoneme_ids,
+            &prepared.target_phoneme_ids,
             ref_feats.ref_mel.as_ref(),
             0.5,
             options.speed,
@@ -567,9 +598,9 @@ impl Pipeline {
         let sovits_ms = sovits_start.elapsed().as_millis();
         tracing::info!(
             "profile mode=plain target={}ms ref={}ms target_bert={}ms gpt={}ms sovits={}ms total={}ms tokens={} audio_samples={}",
-            target_ms,
+            prepared.target_ms,
             ref_ms,
-            bert_ms,
+            prepared.bert_ms,
             gpt_ms,
             sovits_ms,
             total_start.elapsed().as_millis(),
@@ -588,12 +619,6 @@ impl Pipeline {
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
         let total_start = Instant::now();
-        // Target text features
-        let target_start = Instant::now();
-        let (target_phoneme_ids, target_word2ph, normalized_text) = self
-            .text_frontend
-            .process_with_word2ph_and_text(text, options.language)?;
-        let target_ms = target_start.elapsed().as_millis();
 
         // Reference features (cached after first call)
         let ref_start = Instant::now();
@@ -608,47 +633,25 @@ impl Pipeline {
             .gpt_model
             .as_ref()
             .ok_or_else(|| Error::ModelLoadError("GPT model not loaded".to_string()))?;
-
-        // Target BERT aligned
-        let bert_start = Instant::now();
-        let target_bert_aligned = if let Some(bert) = self.bert_model.as_mut() {
-            bert.extract(&normalized_text)
-                .ok()
-                .and_then(|f| f.to_device(&self.device).ok().or(Some(f)))
-                .and_then(|tb| {
-                    gpt.project_and_align_bert(&tb, &target_word2ph, target_phoneme_ids.len())
-                        .ok()
-                })
-        } else {
-            None
-        };
-        let bert_ms = bert_start.elapsed().as_millis();
+        let prepared = Self::prepare_target_features(
+            &mut self.text_frontend,
+            &mut self.bert_model,
+            &self.device,
+            gpt,
+            &ref_feats,
+            text,
+            options.language,
+        )?;
 
         let gpt = self.gpt_model.as_ref().unwrap();
         let sovits = self.sovits_model.as_ref().unwrap();
 
-        let phoneme_ids: Vec<usize> = ref_feats
-            .ref_phoneme_ids
-            .iter()
-            .chain(target_phoneme_ids.iter())
-            .cloned()
-            .collect();
-
-        let combined_bert = match (
-            ref_feats.ref_bert_aligned.as_ref(),
-            target_bert_aligned.as_ref(),
-        ) {
-            (Some(ra), Some(ta)) => Tensor::cat(&[ra, ta], 1).ok(),
-            (None, Some(ta)) => Some(ta.clone()),
-            _ => None,
-        };
-
         let gpt_start = Instant::now();
         let semantic_tokens = if !ref_feats.prompt_tokens.is_empty() {
             gpt.generate_with_prompts_aligned_bert_kv_cache(
-                &phoneme_ids,
+                &prepared.phoneme_ids,
                 &ref_feats.prompt_tokens,
-                combined_bert.as_ref(),
+                prepared.combined_bert.as_ref(),
                 options.top_k,
                 options.top_p,
                 options.temperature,
@@ -657,8 +660,8 @@ impl Pipeline {
             )?
         } else {
             gpt.generate_with_features(
-                &phoneme_ids,
-                combined_bert.as_ref(),
+                &prepared.phoneme_ids,
+                prepared.combined_bert.as_ref(),
                 None,
                 options.top_k,
                 options.top_p,
@@ -683,7 +686,7 @@ impl Pipeline {
         let sovits_start = Instant::now();
         let audio_samples = sovits.synthesize_with_speed(
             &semantic_tokens,
-            &target_phoneme_ids,
+            &prepared.target_phoneme_ids,
             ref_feats.ref_mel.as_ref(),
             0.5,
             options.speed,
@@ -691,9 +694,9 @@ impl Pipeline {
         let sovits_ms = sovits_start.elapsed().as_millis();
         tracing::info!(
             "profile mode=kv target={}ms ref={}ms target_bert={}ms gpt={}ms sovits={}ms total={}ms tokens={} audio_samples={}",
-            target_ms,
+            prepared.target_ms,
             ref_ms,
-            bert_ms,
+            prepared.bert_ms,
             gpt_ms,
             sovits_ms,
             total_start.elapsed().as_millis(),
@@ -717,11 +720,6 @@ impl Pipeline {
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
         let total_start = Instant::now();
-        let target_start = Instant::now();
-        let (target_phoneme_ids, target_word2ph, normalized_text) = self
-            .text_frontend
-            .process_with_word2ph_and_text(text, options.language)?;
-        let target_ms = target_start.elapsed().as_millis();
 
         let ref_start = Instant::now();
         let ref_feats =
@@ -735,50 +733,29 @@ impl Pipeline {
             .gpt_model
             .as_ref()
             .ok_or_else(|| Error::ModelLoadError("GPT model not loaded".to_string()))?;
-
-        let bert_start = Instant::now();
-        let target_bert_aligned = if let Some(bert) = self.bert_model.as_mut() {
-            bert.extract(&normalized_text)
-                .ok()
-                .and_then(|f| f.to_device(&self.device).ok().or(Some(f)))
-                .and_then(|tb| {
-                    gpt.project_and_align_bert(&tb, &target_word2ph, target_phoneme_ids.len())
-                        .ok()
-                })
-        } else {
-            None
-        };
-        let bert_ms = bert_start.elapsed().as_millis();
+        let prepared = Self::prepare_target_features(
+            &mut self.text_frontend,
+            &mut self.bert_model,
+            &self.device,
+            gpt,
+            &ref_feats,
+            text,
+            options.language,
+        )?;
 
         let gpt = self.gpt_model.as_ref().unwrap();
         let sovits = self.sovits_model.as_ref().unwrap();
 
-        let phoneme_ids: Vec<usize> = ref_feats
-            .ref_phoneme_ids
-            .iter()
-            .chain(target_phoneme_ids.iter())
-            .cloned()
-            .collect();
-
-        let combined_bert = match (
-            ref_feats.ref_bert_aligned.as_ref(),
-            target_bert_aligned.as_ref(),
-        ) {
-            (Some(ra), Some(ta)) => Tensor::cat(&[ra, ta], 1).ok(),
-            (None, Some(ta)) => Some(ta.clone()),
-            _ => None,
-        };
-
         // max_kv_len covers prefill + all generated tokens with a small safety margin
         let max_kv_len =
-            phoneme_ids.len() + ref_feats.prompt_tokens.len() + options.max_tokens + 32;
+            prepared.phoneme_ids.len() + ref_feats.prompt_tokens.len() + options.max_tokens + 32;
 
         let gpt_start = Instant::now();
         let semantic_tokens = if !ref_feats.prompt_tokens.is_empty() {
             gpt.generate_with_cuda_graph(
-                &phoneme_ids,
+                &prepared.phoneme_ids,
                 &ref_feats.prompt_tokens,
-                combined_bert.as_ref(),
+                prepared.combined_bert.as_ref(),
                 options.top_k,
                 options.top_p,
                 options.temperature,
@@ -788,8 +765,8 @@ impl Pipeline {
             )?
         } else {
             gpt.generate_with_features(
-                &phoneme_ids,
-                combined_bert.as_ref(),
+                &prepared.phoneme_ids,
+                prepared.combined_bert.as_ref(),
                 None,
                 options.top_k,
                 options.top_p,
@@ -814,7 +791,7 @@ impl Pipeline {
         if std::env::var("SOVITS_DEBUG").is_ok() {
             sovits.debug_pipeline(
                 &semantic_tokens,
-                &target_phoneme_ids,
+                &prepared.target_phoneme_ids,
                 ref_feats.ref_mel.as_ref(),
                 0.5,
             )?;
@@ -823,7 +800,7 @@ impl Pipeline {
         let sovits_start = Instant::now();
         let audio_samples = sovits.synthesize_with_speed(
             &semantic_tokens,
-            &target_phoneme_ids,
+            &prepared.target_phoneme_ids,
             ref_feats.ref_mel.as_ref(),
             0.5,
             options.speed,
@@ -831,9 +808,9 @@ impl Pipeline {
         let sovits_ms = sovits_start.elapsed().as_millis();
         tracing::info!(
             "profile mode=cuda-graph target={}ms ref={}ms target_bert={}ms gpt={}ms sovits={}ms total={}ms tokens={} audio_samples={}",
-            target_ms,
+            prepared.target_ms,
             ref_ms,
-            bert_ms,
+            prepared.bert_ms,
             gpt_ms,
             sovits_ms,
             total_start.elapsed().as_millis(),
