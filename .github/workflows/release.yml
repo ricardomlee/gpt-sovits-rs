@@ -46,7 +46,8 @@ jobs:
           cp target/release/gpt-sovits "dist/${package}/"
           soxr="$(ldconfig -p | awk '$1 == "libsoxr.so.0" { print $NF; exit }')"
           cp -L "${soxr}" "dist/${package}/lib/libsoxr.so.0"
-          patchelf --set-rpath '$ORIGIN/lib' "dist/${package}/gpt-sovits"
+          rpath="\$ORIGIN/lib"
+          patchelf --set-rpath "${rpath}" "dist/${package}/gpt-sovits"
           strip "dist/${package}/gpt-sovits"
           "dist/${package}/gpt-sovits" --version
           tar -C dist -czf "dist/${package}.tar.gz" "${package}"
@@ -201,7 +202,7 @@ jobs:
 
       - name: Create checksums
         working-directory: dist
-        run: sha256sum *.tar.gz > SHA256SUMS
+        run: sha256sum ./*.tar.gz > SHA256SUMS
 
       - name: Publish release
         uses: softprops/action-gh-release@v3
