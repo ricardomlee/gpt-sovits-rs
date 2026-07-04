@@ -10,7 +10,7 @@ use axum::{
 };
 use base64::Engine as _;
 use gpt_sovits_rs::voice::list_voice_profiles;
-use gpt_sovits_rs::{Config, Pipeline};
+use gpt_sovits_rs::{AudioBuffer, Config, InferenceOptions, Language, Pipeline, SplitMethod};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -24,8 +24,8 @@ mod response;
 
 use audio::{samples_to_pcm, streaming_wav_header};
 use request::{
-    resolve_synthesis, validate_text, BatchItemResult, OpenAiSpeechRequest, TtsBatchRequest,
-    TtsRequest,
+    resolve_synthesis, validate_text, BatchItemResult, OpenAiSpeechRequest, ResolvedSynthesis,
+    TtsBatchRequest, TtsRequest,
 };
 use response::{add_synthesis_headers, json_error, language_code, SpeechOutputFormat};
 
@@ -55,6 +55,77 @@ async fn voices_handler(State(state): State<AppState>) -> Result<Response<Body>,
         }
         Err(e) => Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
     }
+}
+
+struct BufferedInferenceJob {
+    text: String,
+    mode: String,
+    refer_path: String,
+    prompt_text: String,
+    options: InferenceOptions,
+    split_sentences: bool,
+    split_method: SplitMethod,
+    min_sentence_chars: usize,
+    sentence_gap_ms: u32,
+    sentence_fade_ms: u32,
+}
+
+fn into_buffered_job(
+    text: String,
+    resolved: ResolvedSynthesis,
+) -> (BufferedInferenceJob, Option<String>, Language) {
+    let voice = resolved.voice;
+    let language = resolved.language;
+    let job = BufferedInferenceJob {
+        text,
+        mode: resolved.mode,
+        refer_path: resolved.refer_path,
+        prompt_text: resolved.prompt_text,
+        options: resolved.options,
+        split_sentences: resolved.split_sentences,
+        split_method: resolved.split_method,
+        min_sentence_chars: resolved.min_sentence_chars,
+        sentence_gap_ms: resolved.sentence_gap_ms,
+        sentence_fade_ms: resolved.sentence_fade_ms,
+    };
+    (job, voice, language)
+}
+
+async fn run_buffered_inference(
+    pipeline: Arc<Mutex<Pipeline>>,
+    job: BufferedInferenceJob,
+) -> Result<Result<AudioBuffer, String>, StatusCode> {
+    tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Handle::current();
+        let mut pipeline = rt.block_on(pipeline.lock());
+        let result = if job.split_sentences {
+            pipeline.inference_split_with_method(
+                &job.text,
+                &job.refer_path,
+                &job.prompt_text,
+                &job.options,
+                &job.mode,
+                job.min_sentence_chars,
+                job.sentence_gap_ms,
+                job.sentence_fade_ms,
+                job.split_method,
+            )
+        } else {
+            pipeline.inference_with_mode(
+                &job.mode,
+                &job.text,
+                &job.refer_path,
+                &job.prompt_text,
+                &job.options,
+            )
+        };
+        result.map_err(|e| format!("Inference failed: {}", e))
+    })
+    .await
+    .map_err(|e| {
+        error!("spawn_blocking join error: {}", e);
+        StatusCode::INTERNAL_SERVER_ERROR
+    })
 }
 
 async fn openai_speech_handler(
@@ -92,44 +163,8 @@ async fn openai_speech_handler(
     };
     let text = req.input;
     let text_chars = text.chars().count();
-    let voice = resolved.voice;
-    let mode = resolved.mode;
-    let language = resolved.language;
-    let refer_path = resolved.refer_path;
-    let prompt_text = resolved.prompt_text;
-    let options = resolved.options;
-    let split_sentences = resolved.split_sentences;
-    let split_method = resolved.split_method;
-    let min_sentence_chars = resolved.min_sentence_chars;
-    let sentence_gap_ms = resolved.sentence_gap_ms;
-    let sentence_fade_ms = resolved.sentence_fade_ms;
-    let pipeline = Arc::clone(&state.pipeline);
-
-    let result = tokio::task::spawn_blocking(move || {
-        let rt = tokio::runtime::Handle::current();
-        let mut pipeline = rt.block_on(pipeline.lock());
-        let result = if split_sentences {
-            pipeline.inference_split_with_method(
-                &text,
-                &refer_path,
-                &prompt_text,
-                &options,
-                &mode,
-                min_sentence_chars,
-                sentence_gap_ms,
-                sentence_fade_ms,
-                split_method,
-            )
-        } else {
-            pipeline.inference_with_mode(&mode, &text, &refer_path, &prompt_text, &options)
-        };
-        result.map_err(|e| format!("Inference failed: {}", e))
-    })
-    .await
-    .map_err(|e| {
-        error!("spawn_blocking join error: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let (job, voice, language) = into_buffered_job(text, resolved);
+    let result = run_buffered_inference(Arc::clone(&state.pipeline), job).await?;
 
     match result {
         Ok(audio) => {
@@ -294,44 +329,8 @@ async fn tts_handler(
     };
     let text = req.text.clone();
     let text_chars = text.chars().count();
-    let voice = resolved.voice;
-    let mode = resolved.mode;
-    let language = resolved.language;
-    let refer_path = resolved.refer_path;
-    let prompt_text = resolved.prompt_text;
-    let options = resolved.options;
-    let split_sentences = resolved.split_sentences;
-    let split_method = resolved.split_method;
-    let min_sentence_chars = resolved.min_sentence_chars;
-    let sentence_gap_ms = resolved.sentence_gap_ms;
-    let sentence_fade_ms = resolved.sentence_fade_ms;
-    let pipeline = Arc::clone(&state.pipeline);
-
-    let result = tokio::task::spawn_blocking(move || {
-        let rt = tokio::runtime::Handle::current();
-        let mut pipeline = rt.block_on(pipeline.lock());
-        let result = if split_sentences {
-            pipeline.inference_split_with_method(
-                &text,
-                &refer_path,
-                &prompt_text,
-                &options,
-                &mode,
-                min_sentence_chars,
-                sentence_gap_ms,
-                sentence_fade_ms,
-                split_method,
-            )
-        } else {
-            pipeline.inference_with_mode(&mode, &text, &refer_path, &prompt_text, &options)
-        };
-        result.map_err(|e| format!("Inference failed: {}", e))
-    })
-    .await
-    .map_err(|e| {
-        error!("spawn_blocking join error: {}", e);
-        StatusCode::INTERNAL_SERVER_ERROR
-    })?;
+    let (job, voice, language) = into_buffered_job(text, resolved);
+    let result = run_buffered_inference(Arc::clone(&state.pipeline), job).await?;
 
     match result {
         Ok(audio) => {
