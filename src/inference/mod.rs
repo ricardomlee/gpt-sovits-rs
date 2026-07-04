@@ -5,43 +5,24 @@
 use crate::config::Config;
 use crate::models::{BertModel, BigVGAN, GPTModel, HubertModel, SemanticTokenizer, SoVITSModel};
 use crate::text_frontend::TextFrontend;
-use crate::utils::{AudioBuffer, SpectrogramExtractor};
-use crate::{Error, Language, Result};
-use candle_core::{Device, Tensor};
+use crate::utils::AudioBuffer;
+use crate::{Error, Result};
+use candle_core::Device;
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Instant;
 
 mod options;
+mod ref_audio;
+mod speaker;
 mod split;
 
 pub use options::{InferenceOptions, InferenceOptionsBuilder};
+use speaker::{CachedSpeaker, PreparedTarget};
 use split::split_text;
 pub use split::{
     split_cut5_for_language, split_sentences, split_sentences_for_language, SplitMethod,
 };
-
-/// Cached features derived from a (reference_audio, reference_text) pair.
-/// All fields are clone-cheap (Vec or Tensor with Arc-backed storage).
-#[derive(Clone)]
-struct CachedSpeaker {
-    /// VQ semantic tokens from HuBERT — used as GPT prefix
-    prompt_tokens: Vec<usize>,
-    /// STFT magnitude of reference audio — used for SoVITS ref_enc speaker conditioning
-    ref_mel: Option<Tensor>,
-    /// Phone IDs for reference text
-    ref_phoneme_ids: Vec<usize>,
-    /// BERT features aligned to reference phone level
-    ref_bert_aligned: Option<Tensor>,
-}
-
-struct PreparedTarget {
-    target_phoneme_ids: Vec<usize>,
-    phoneme_ids: Vec<usize>,
-    combined_bert: Option<Tensor>,
-    target_ms: u128,
-    bert_ms: u128,
-}
 
 #[derive(Debug, Clone, Copy)]
 enum DecodeBackend {
@@ -411,215 +392,6 @@ impl Pipeline {
         Ok(())
     }
 
-    /// Pre-compute and cache reference speaker features.
-    /// Call once per speaker before batch inference to avoid repeated HuBERT/BERT runs.
-    pub fn preload_speaker<P: AsRef<Path>>(
-        &mut self,
-        ref_audio: P,
-        ref_text: &str,
-        language: Language,
-    ) -> Result<()> {
-        let key = (
-            ref_audio.as_ref().to_string_lossy().into_owned(),
-            ref_text.to_owned(),
-        );
-        if !self.ref_cache.contains_key(&key) {
-            let sovits = self
-                .sovits_model
-                .as_ref()
-                .ok_or_else(|| Error::ModelLoadError("SoVITS model not loaded".to_string()))?;
-            let sr = sovits.sampling_rate();
-            let n_mels = sovits.n_mels();
-            let cached = Self::compute_ref_features(
-                &mut self.hubert_model,
-                &mut self.bert_model,
-                &mut self.text_frontend,
-                &self.semantic_tokenizer,
-                self.gpt_model.as_ref(),
-                ref_audio.as_ref(),
-                ref_text,
-                language,
-                &self.device,
-                sr,
-                n_mels,
-            )?;
-            self.ref_cache.insert(key, cached);
-        }
-        Ok(())
-    }
-
-    /// Drop all cached speaker features.
-    pub fn clear_speaker_cache(&mut self) {
-        self.ref_cache.clear();
-    }
-
-    /// Compute all features that depend only on (ref_audio, ref_text).
-    /// This is the shared hot path called by both inference() and inference_kv_cache().
-    #[allow(clippy::too_many_arguments)]
-    fn compute_ref_features(
-        hubert_model: &mut Option<HubertModel>,
-        bert_model: &mut Option<BertModel>,
-        text_frontend: &mut TextFrontend,
-        semantic_tokenizer: &Option<SemanticTokenizer>,
-        gpt_model: Option<&GPTModel>,
-        ref_audio: &Path,
-        ref_text: &str,
-        language: Language,
-        device: &Device,
-        sovits_sr: u32,
-        sovits_n_mels: usize,
-    ) -> Result<CachedSpeaker> {
-        // Ref text → phoneme IDs + word2ph
-        let (ref_phoneme_ids, ref_word2ph, normalized_ref_text) = if !ref_text.is_empty() {
-            text_frontend.process_with_word2ph_and_text(ref_text, language)?
-        } else {
-            (vec![], vec![], String::new())
-        };
-
-        // HuBERT features → prompt tokens
-        let (prompt_tokens, hubert_features) = if let Some(hubert) = hubert_model {
-            match hubert.extract(ref_audio) {
-                Ok(features) => {
-                    let features = features.to_device(device).unwrap_or(features);
-                    tracing::info!("Extracted Hubert features: {:?}", features.dims());
-                    let tokens = if let Some(tokenizer) = semantic_tokenizer {
-                        let hf_t = features.transpose(1, 2)?.to_device(device)?;
-                        tokenizer.extract(&hf_t).ok().inspect(|t| {
-                            tracing::debug!("Prompt tokens: {}", t.len());
-                        })
-                    } else {
-                        None
-                    };
-                    (tokens.unwrap_or_default(), Some(features))
-                }
-                Err(e) => {
-                    tracing::warn!("HuBERT extraction failed: {}", e);
-                    (vec![], None)
-                }
-            }
-        } else {
-            (vec![], None)
-        };
-        let _ = hubert_features; // only needed for tokenization above
-
-        // BERT features aligned to ref phone level
-        let ref_bert_aligned = if let (Some(bert), Some(gpt), false) =
-            (bert_model.as_mut(), gpt_model, ref_phoneme_ids.is_empty())
-        {
-            bert.extract(&normalized_ref_text)
-                .ok()
-                .and_then(|f| f.to_device(device).ok().or(Some(f)))
-                .and_then(|rb| {
-                    gpt.project_and_align_bert(&rb, &ref_word2ph, ref_phoneme_ids.len())
-                        .ok()
-                })
-        } else {
-            None
-        };
-
-        // Reference mel spectrogram for SoVITS ref_enc speaker conditioning
-        let ref_mel = Self::extract_ref_mel_static(ref_audio, device, sovits_sr, sovits_n_mels)?;
-
-        Ok(CachedSpeaker {
-            prompt_tokens,
-            ref_mel,
-            ref_phoneme_ids,
-            ref_bert_aligned,
-        })
-    }
-
-    /// Get cached ref features (compute and cache on miss).
-    fn get_ref_features<P: AsRef<Path>>(
-        &mut self,
-        ref_audio: P,
-        ref_text: &str,
-        language: Language,
-    ) -> Result<CachedSpeaker> {
-        let key = (
-            ref_audio.as_ref().to_string_lossy().into_owned(),
-            ref_text.to_owned(),
-        );
-        if let Some(cached) = self.ref_cache.get(&key) {
-            tracing::debug!("Speaker cache hit: {:?}", key.0);
-            return Ok(cached.clone());
-        }
-        tracing::debug!("Speaker cache miss: {:?}", key.0);
-        let sovits = self
-            .sovits_model
-            .as_ref()
-            .ok_or_else(|| Error::ModelLoadError("SoVITS model not loaded".to_string()))?;
-        let sr = sovits.sampling_rate();
-        let n_mels = sovits.n_mels();
-        let cached = Self::compute_ref_features(
-            &mut self.hubert_model,
-            &mut self.bert_model,
-            &mut self.text_frontend,
-            &self.semantic_tokenizer,
-            self.gpt_model.as_ref(),
-            ref_audio.as_ref(),
-            ref_text,
-            language,
-            &self.device,
-            sr,
-            n_mels,
-        )?;
-        self.ref_cache.insert(key, cached.clone());
-        Ok(cached)
-    }
-
-    fn prepare_target_features(
-        text_frontend: &mut TextFrontend,
-        bert_model: &mut Option<BertModel>,
-        device: &Device,
-        gpt: &GPTModel,
-        ref_feats: &CachedSpeaker,
-        text: &str,
-        language: Language,
-    ) -> Result<PreparedTarget> {
-        let target_start = Instant::now();
-        let (target_phoneme_ids, target_word2ph, normalized_text) =
-            text_frontend.process_with_word2ph_and_text(text, language)?;
-        let target_ms = target_start.elapsed().as_millis();
-
-        let bert_start = Instant::now();
-        let target_bert_aligned = if let Some(bert) = bert_model.as_mut() {
-            bert.extract(&normalized_text)
-                .ok()
-                .and_then(|f| f.to_device(device).ok().or(Some(f)))
-                .and_then(|tb| {
-                    gpt.project_and_align_bert(&tb, &target_word2ph, target_phoneme_ids.len())
-                        .ok()
-                })
-        } else {
-            None
-        };
-        let bert_ms = bert_start.elapsed().as_millis();
-
-        let phoneme_ids: Vec<usize> = ref_feats
-            .ref_phoneme_ids
-            .iter()
-            .chain(target_phoneme_ids.iter())
-            .cloned()
-            .collect();
-
-        let combined_bert = match (
-            ref_feats.ref_bert_aligned.as_ref(),
-            target_bert_aligned.as_ref(),
-        ) {
-            (Some(ra), Some(ta)) => Tensor::cat(&[ra, ta], 1).ok(),
-            (None, Some(ta)) => Some(ta.clone()),
-            _ => None,
-        };
-
-        Ok(PreparedTarget {
-            target_phoneme_ids,
-            phoneme_ids,
-            combined_bert,
-            target_ms,
-            bert_ms,
-        })
-    }
-
     pub fn inference<P: AsRef<Path>>(
         &mut self,
         text: &str,
@@ -828,76 +600,6 @@ impl Pipeline {
         );
 
         Ok(AudioBuffer::new(audio_samples, sovits.sampling_rate(), 1))
-    }
-
-    /// Static version of extract_ref_mel (no &self needed, called from compute_ref_features)
-    fn extract_ref_mel_static(
-        ref_audio: &Path,
-        device: &Device,
-        sovits_sr: u32,
-        sovits_n_mels: usize,
-    ) -> Result<Option<Tensor>> {
-        use hound::WavReader;
-
-        let mut reader = WavReader::open(ref_audio)
-            .map_err(|e| Error::AudioError(format!("Failed to open reference audio: {}", e)))?;
-
-        let spec = reader.spec();
-        let samples: Vec<f32> = match spec.sample_format {
-            hound::SampleFormat::Int => {
-                let max = match spec.bits_per_sample {
-                    8 => i8::MAX as f32,
-                    16 => i16::MAX as f32,
-                    24 => (1 << 23) as f32,
-                    _ => i16::MAX as f32,
-                };
-                reader
-                    .samples::<i32>()
-                    .filter_map(|s| s.ok())
-                    .map(|s| s as f32 / max)
-                    .collect()
-            }
-            hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
-        };
-
-        let samples = if spec.channels > 1 {
-            samples
-                .chunks(spec.channels as usize)
-                .map(|c| c.iter().sum::<f32>() / spec.channels as f32)
-                .collect()
-        } else {
-            samples
-        };
-
-        let samples = if spec.sample_rate != sovits_sr {
-            use soxr::{format::Mono, Soxr};
-            let ratio = sovits_sr as f64 / spec.sample_rate as f64;
-            let out_cap = (samples.len() as f64 * ratio).ceil() as usize + 64;
-            let mut output = vec![0.0f32; out_cap];
-            let mut resampler = Soxr::<Mono<f32>>::new(spec.sample_rate as f64, sovits_sr as f64)
-                .map_err(|e| Error::AudioError(format!("soxr init: {}", e)))?;
-            let proc = resampler
-                .process(&samples, &mut output)
-                .map_err(|e| Error::AudioError(format!("soxr process: {}", e)))?;
-            let mut tail = vec![0.0f32; out_cap];
-            let tail_n = resampler
-                .drain(&mut tail)
-                .map_err(|e| Error::AudioError(format!("soxr drain: {}", e)))?;
-            output.truncate(proc.output_frames);
-            output.extend_from_slice(&tail[..tail_n]);
-            output
-        } else {
-            samples
-        };
-
-        let n_fft = 2048;
-        let hop_length = 640;
-        let extractor = SpectrogramExtractor::new(sovits_sr, n_fft, hop_length, sovits_n_mels);
-        let stft_mag = extractor.extract_spectrogram_batched(&samples, device)?;
-        let stft_mag = stft_mag.narrow(1, 0, 704)?;
-
-        tracing::info!("Extracted reference STFT magnitude: {:?}", stft_mag.dims());
-        Ok(Some(stft_mag))
     }
 }
 
