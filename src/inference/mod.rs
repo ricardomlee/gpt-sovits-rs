@@ -1138,3 +1138,76 @@ impl<'a> Iterator for SentenceIterator<'a> {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inference_options_builder_overrides_only_selected_fields() {
+        let options = InferenceOptions::builder()
+            .top_k(7)
+            .temperature(0.6)
+            .language(Language::English)
+            .max_tokens(42)
+            .build();
+
+        assert_eq!(options.top_k, 7);
+        assert_eq!(options.top_p, 0.95);
+        assert!((options.temperature - 0.6).abs() < f32::EPSILON);
+        assert!((options.speed - 1.0).abs() < f32::EPSILON);
+        assert_eq!(options.language, Language::English);
+        assert_eq!(options.max_tokens, 42);
+        assert!((options.repetition_penalty - 1.35).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn split_cut5_keeps_decimal_numbers_together() {
+        let chunks = split_cut5_for_language("value is 3.14, then stop", 1, Language::English);
+
+        assert_eq!(chunks, vec!["value is 3.14,", "then stop."]);
+    }
+
+    #[test]
+    fn sentence_split_adds_language_appropriate_tail_punctuation() {
+        assert_eq!(
+            split_sentences_for_language("hello world", 1, Language::English),
+            vec!["hello world."]
+        );
+        assert_eq!(
+            split_sentences_for_language("hello world", 1, Language::Chinese),
+            vec!["hello world。"]
+        );
+    }
+
+    #[test]
+    fn automatic_mode_uses_kv_on_cpu_without_loaded_models() {
+        let pipeline = Pipeline::new(Config::builder().with_device("cpu").build()).unwrap();
+
+        assert_eq!(pipeline.automatic_inference_mode(), "kv");
+    }
+
+    #[test]
+    fn inference_mode_rejects_unknown_mode_before_model_access() {
+        let mut pipeline = Pipeline::new(Config::builder().with_device("cpu").build()).unwrap();
+        let options = InferenceOptions::default();
+        let error = pipeline
+            .inference_with_mode("bogus", "hello", "missing.wav", "prompt", &options)
+            .expect_err("unknown mode should fail");
+
+        assert!(matches!(error, Error::ConfigError(_)));
+        assert!(error.to_string().contains("Unsupported inference mode"));
+    }
+
+    #[test]
+    fn plain_inference_reports_missing_gpt_model_before_audio_access() {
+        let mut pipeline = Pipeline::new(Config::builder().with_device("cpu").build()).unwrap();
+        let options = InferenceOptions::default();
+        let error = pipeline
+            .inference_with_mode("plain", "hello", "missing.wav", "prompt", &options)
+            .expect_err("unloaded GPT should fail");
+
+        assert!(matches!(error, Error::ModelLoadError(_)));
+        assert!(error.to_string().contains("GPT model not loaded"));
+    }
+}
