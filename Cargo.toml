@@ -1,6 +1,6 @@
 [package]
 name = "gpt-sovits-rs"
-version = "1.0.1"
+version = "1.0.2"
 edition = "2021"
 authors = ["GPT-SoVITS Rust Contributors"]
 description = "High-performance Rust implementation of GPT-SoVITS TTS inference engine"
