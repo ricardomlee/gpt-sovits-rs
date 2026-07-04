@@ -15,6 +15,15 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  workflow-lint:
+    name: Validate workflows
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Run actionlint
+        uses: rhysd/actionlint@v1.7.9
+
   quality:
     name: Format, lint, and test
     runs-on: ubuntu-24.04
@@ -51,7 +60,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsoxr-dev
+          sudo apt-get install -y libsoxr-dev patchelf
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -65,6 +74,27 @@ jobs:
 
       - name: Smoke test binary
         run: target/release/gpt-sovits --version
+
+      - name: Package Linux CPU binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="gpt-sovits-ci-linux-x86_64"
+          mkdir -p "dist/${package}/lib"
+          cp target/release/gpt-sovits "dist/${package}/"
+          soxr="$(ldconfig -p | awk '$1 == "libsoxr.so.0" { print $NF; exit }')"
+          cp -L "${soxr}" "dist/${package}/lib/libsoxr.so.0"
+          patchelf --set-rpath '$ORIGIN/lib' "dist/${package}/gpt-sovits"
+          strip "dist/${package}/gpt-sovits"
+          "dist/${package}/gpt-sovits" --version
+          tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+
+      - name: Upload Linux CPU binary
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-x86_64-binary
+          path: dist/*.tar.gz
+          if-no-files-found: error
 
   docker:
     name: Build CPU container
