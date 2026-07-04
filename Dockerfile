@@ -40,6 +40,7 @@ FROM ${RUNTIME_IMAGE}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    curl \
     libssl3 \
     libsoxr0 \
     libgomp1 \

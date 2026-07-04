@@ -44,7 +44,7 @@ ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libssl3 ca-certificates libsoxr0 libstdc++6 libgomp1 \
+    libssl3 ca-certificates curl libsoxr0 libstdc++6 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy only the CUDA libs our binary actually links against (ldd verified)

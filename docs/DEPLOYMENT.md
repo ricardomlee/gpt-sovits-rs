@@ -14,7 +14,23 @@ outputs/  输出文件和测试报告，可选
 cp .env.example .env
 ```
 
-模型按 README 中的目录和文件名放好即可。文件名不同时，在 `.env` 里改对应路径。想试 voice profile，可以把 `voices.example/mao` 复制到 `voices/mao`，再把对应参考音频放到 `voices/mao/ref.wav`。
+模型按 README 中的目录和文件名放好即可。文件名不同时，在 `.env` 里改对应路径。
+
+创建一个本地 voice profile：
+
+```bash
+mkdir -p voices/demo
+cp /path/to/your-3-to-10-second-reference.wav voices/demo/ref.wav
+cat > voices/demo/voice.json <<'JSON'
+{
+  "reference_audio": "ref.wav",
+  "reference_text": "参考音频里逐字对应的文字",
+  "language": "zh",
+  "mode": "auto",
+  "split_sentences": true
+}
+JSON
+```
 
 官方 v2 模型可以自动准备：
 
@@ -33,6 +49,7 @@ CPU 镜像发布 `linux/amd64` 版本并启用静态链接的 MKL，适合没有
 ```bash
 docker compose -f compose.cpu.yml pull
 docker compose -f compose.cpu.yml up -d
+docker compose -f compose.cpu.yml ps
 curl http://localhost:9880/health
 curl http://localhost:9880/voices
 ```
@@ -60,6 +77,7 @@ H100:   latest-cuda-sm90
 ```bash
 docker compose -f compose.cuda.yml pull
 docker compose -f compose.cuda.yml up -d
+docker compose -f compose.cuda.yml ps
 curl http://localhost:9880/health
 curl http://localhost:9880/voices
 ```
@@ -102,7 +120,7 @@ voices/
 ```bash
 curl -X POST http://localhost:9880/tts \
   -H 'Content-Type: application/json' \
-  -d '{"voice":"mao","text":"人民，只有人民，才是创造世界历史的动力。"}' \
+  -d '{"voice":"demo","text":"你好，这是 GPT-SoVITS-RS 的本地语音服务。"}' \
   --output output.wav
 ```
 
@@ -116,3 +134,19 @@ curl -X POST http://localhost:9880/tts \
   "text_language": "zh"
 }
 ```
+
+## 排障
+
+容器带有 `/health` healthcheck。启动后先看状态：
+
+```bash
+docker compose -f compose.cpu.yml ps
+docker compose -f compose.cpu.yml logs --tail=100 gpt-sovits
+```
+
+常见问题：
+
+- `models/... not found`：模型目录没有挂载到容器，或 `.env` 里的模型路径和实际文件名不一致。
+- `voices` 为空：`VOICES_DIR` 没有挂载，或缺少 `voices/<name>/voice.json`。
+- 请求返回 `reference audio does not exist`：voice profile 里的 `reference_audio` 相对路径按该 voice 目录解析。
+- CPU 看起来很慢：先用短句验证；长文本建议走 `/tts/stream` 或启用分句配置。

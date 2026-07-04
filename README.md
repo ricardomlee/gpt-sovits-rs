@@ -84,6 +84,7 @@ docker compose -f compose.cuda.yml up -d
 Check the server:
 
 ```bash
+docker compose -f compose.cpu.yml ps   # or compose.cuda.yml
 curl http://localhost:9880/health
 curl http://localhost:9880/voices
 ```
