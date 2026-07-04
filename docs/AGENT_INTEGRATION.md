@@ -51,6 +51,23 @@ POST /v1/audio/speech
 
 如果 OpenClaw 默认请求 `mp3` 或 `opus`，需要在配置里改成 `wav` 或 `pcm`。本服务暂时不假装支持 MP3/Opus，避免返回内容和声明不一致。
 
+### 文本读音标注
+
+agent 可以在回复文本里给中文多音字加拼音标注，服务会在文本前端解析并执行：
+
+```text
+这个人很好[hao4]学，银行的行[hang2]长正在重[zhong4]新安排会议。
+```
+
+规则：
+
+- 格式是 `字[pinyin+声调数字]`，例如 `好[hao4]`、`行[hang2]`、`的[de5]`。
+- 标注只影响前一个中文字符，最终送进 BERT/G2P 的可见文本会移除方括号内容。
+- 声调必须是 `1` 到 `5`，`5` 表示轻声。
+- 未标注的字继续走默认分词、拼音和变调逻辑。
+
+推荐在 agent system prompt 里只要求它标注容易误读的多音字，不要给每个字都标。
+
 ### 路径 B：Local CLI Provider
 
 如果 OpenAI provider 不方便改输出格式，可以先用 OpenClaw 的 Local CLI provider 调本项目 CLI，把输出格式设为 `wav`。

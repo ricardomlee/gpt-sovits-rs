@@ -4,10 +4,45 @@
 //! matching GPT-SoVITS Python text frontend (symbols_v2 format).
 
 use crate::text_frontend::tone_sandhi::ToneSandhi;
-use crate::{Language, Result};
+use crate::{Error, Language, Result};
 use jieba_rs::Jieba;
 use pinyin::ToPinyin;
 use std::collections::HashMap;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PinyinOverride {
+    pub(crate) base: String,
+    pub(crate) tone: u32,
+}
+
+pub(crate) fn parse_pinyin_override(value: &str) -> Result<PinyinOverride> {
+    let value = value.trim();
+    let Some(tone_char) = value.chars().last() else {
+        return Err(Error::TextError("empty pinyin annotation".to_string()));
+    };
+    let Some(tone) = tone_char.to_digit(10) else {
+        return Err(Error::TextError(format!(
+            "pinyin annotation '{value}' must end with tone 1-5"
+        )));
+    };
+    if !(1..=5).contains(&tone) {
+        return Err(Error::TextError(format!(
+            "pinyin annotation '{value}' uses unsupported tone {tone}; expected 1-5"
+        )));
+    }
+
+    let base = value[..value.len() - tone_char.len_utf8()]
+        .to_ascii_lowercase()
+        .replace("u:", "v")
+        .replace('ü', "v");
+    if base.is_empty() || !base.chars().all(|ch| ch.is_ascii_lowercase() || ch == 'v') {
+        return Err(Error::TextError(format!(
+            "invalid pinyin annotation '{value}'"
+        )));
+    }
+
+    Ok(PinyinOverride { base, tone })
+}
 
 /// Mapping from pinyin base (without tone) to (initial, final) pairs.
 /// Matches Python's `text.chinese2.pinyin_to_symbol_map`.
@@ -569,6 +604,22 @@ impl G2PConverter {
     /// content token i (after CLS/SEP removal). Includes ALL characters; supported
     /// punctuation produces one phone, while spaces and unsupported characters produce zero.
     pub fn convert_chinese_with_word2ph(&self, text: &str) -> Result<(String, Vec<usize>)> {
+        self.convert_chinese_with_word2ph_and_overrides(text, &[])
+    }
+
+    pub(crate) fn convert_chinese_with_word2ph_and_overrides(
+        &self,
+        text: &str,
+        overrides: &[Option<PinyinOverride>],
+    ) -> Result<(String, Vec<usize>)> {
+        if !overrides.is_empty() && overrides.len() != text.chars().count() {
+            return Err(Error::TextError(format!(
+                "pinyin override count {} does not match text character count {}",
+                overrides.len(),
+                text.chars().count()
+            )));
+        }
+
         // Step 1: jieba POS tagging
         let tags = self.jieba.tag(text, true);
         let seg: Vec<(String, String)> = tags
@@ -582,6 +633,7 @@ impl G2PConverter {
         // Step 3: process each merged word
         let mut phonemes: Vec<String> = Vec::new();
         let mut word2ph: Vec<usize> = Vec::new();
+        let mut char_index = 0usize;
 
         for (word, pos) in &merged {
             // English words (jieba POS "eng" or all ASCII letters): use English G2P.
@@ -615,30 +667,39 @@ impl G2PConverter {
                         word2ph.push(per_char + if i < remainder { 1 } else { 0 });
                     }
                 }
+                char_index += n_chars;
                 continue;
             }
 
             // Chinese: Collect (base_pinyin, raw_tone) for each character in this word
-            let char_data: Vec<Option<(String, u32)>> = word
-                .as_str()
-                .to_pinyin()
-                .map(|opt| match opt {
-                    None => None,
-                    Some(py) => {
-                        let s = py.with_tone_num_end().to_string();
-                        if s.is_empty() {
-                            return None;
-                        }
-                        if let Some(last) = s.chars().last() {
-                            if last.is_ascii_digit() {
-                                let base = s[..s.len() - 1].to_string();
-                                let tone = last.to_digit(10).unwrap_or(5);
-                                Some((base, tone))
-                            } else {
-                                Some((s, 5u32))
+            let word_chars: Vec<char> = word.chars().collect();
+            let mut locked_tones = vec![false; word_chars.len()];
+            let char_data: Vec<Option<(String, u32)>> = word_chars
+                .iter()
+                .enumerate()
+                .map(|(local_index, ch)| {
+                    if let Some(Some(override_pinyin)) = overrides.get(char_index + local_index) {
+                        locked_tones[local_index] = true;
+                        return Some((override_pinyin.base.clone(), override_pinyin.tone));
+                    }
+                    match ch.to_pinyin() {
+                        None => None,
+                        Some(py) => {
+                            let s = py.with_tone_num_end().to_string();
+                            if s.is_empty() {
+                                return None;
                             }
-                        } else {
-                            None
+                            if let Some(last) = s.chars().last() {
+                                if last.is_ascii_digit() {
+                                    let base = s[..s.len() - 1].to_string();
+                                    let tone = last.to_digit(10).unwrap_or(5);
+                                    Some((base, tone))
+                                } else {
+                                    Some((s, 5u32))
+                                }
+                            } else {
+                                None
+                            }
                         }
                     }
                 })
@@ -651,9 +712,15 @@ impl G2PConverter {
                 .collect();
             self.tone_sandhi
                 .modified_tone(word, pos, &mut tones, &self.jieba);
+            for (i, opt) in char_data.iter().enumerate() {
+                if locked_tones[i] {
+                    if let Some((_, explicit_tone)) = opt {
+                        tones[i] = *explicit_tone;
+                    }
+                }
+            }
 
             // Convert each char to phonemes and record word2ph
-            let word_chars: Vec<char> = word.chars().collect();
             for (i, opt) in char_data.iter().enumerate() {
                 match opt {
                     None => {
@@ -673,6 +740,11 @@ impl G2PConverter {
                                 phonemes.push(initial.to_string());
                             }
                             phonemes.push(final_str);
+                        } else if locked_tones[i] {
+                            return Err(Error::TextError(format!(
+                                "unsupported pinyin annotation '{}{}'",
+                                base, tone
+                            )));
                         } else {
                             phonemes.push(format!("{}{}", base, tone));
                         }
@@ -680,6 +752,7 @@ impl G2PConverter {
                     }
                 }
             }
+            char_index += word_chars.len();
         }
 
         let phoneme_str = if phonemes.is_empty() {

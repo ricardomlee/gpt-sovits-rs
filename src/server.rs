@@ -25,7 +25,7 @@ mod response;
 use audio::{samples_to_pcm, streaming_wav_header};
 use request::{
     resolve_synthesis, validate_text, BatchItemResult, OpenAiSpeechRequest, ResolvedSynthesis,
-    TtsBatchRequest, TtsRequest,
+    SynthesisOverrides, TtsBatchRequest, TtsRequest,
 };
 use response::{add_synthesis_headers, json_error, language_code, SpeechOutputFormat};
 
@@ -152,10 +152,7 @@ async fn openai_speech_handler(
         req.text_language.as_deref(),
         None,
         None,
-        None,
-        None,
-        None,
-        req.speed,
+        SynthesisOverrides::from_openai(&req),
         &state.voices_dir,
     ) {
         Ok(resolved) => resolved,
@@ -207,15 +204,13 @@ async fn tts_stream_handler(
         return Ok(json_error(StatusCode::BAD_REQUEST, e));
     }
 
+    let overrides = SynthesisOverrides::from_tts(&req);
     let resolved = match resolve_synthesis(
         req.voice.as_deref(),
         req.text_language.as_deref(),
         req.refer_wav_path,
         req.prompt_text,
-        req.top_k,
-        req.top_p,
-        req.temperature,
-        req.speed,
+        overrides,
         &state.voices_dir,
     ) {
         Ok(resolved) => resolved,
@@ -313,15 +308,13 @@ async fn tts_handler(
         return Ok(json_error(StatusCode::BAD_REQUEST, e));
     }
 
+    let overrides = SynthesisOverrides::from_tts(&req);
     let resolved = match resolve_synthesis(
         req.voice.as_deref(),
         req.text_language.as_deref(),
         req.refer_wav_path,
         req.prompt_text,
-        req.top_k,
-        req.top_p,
-        req.temperature,
-        req.speed,
+        overrides,
         &state.voices_dir,
     ) {
         Ok(resolved) => resolved,
@@ -390,15 +383,13 @@ async fn tts_batch_handler(
         ));
     }
 
+    let overrides = SynthesisOverrides::from_batch(&req);
     let resolved = match resolve_synthesis(
         req.voice.as_deref(),
         req.text_language.as_deref(),
         req.refer_wav_path,
         req.prompt_text,
-        req.top_k,
-        req.top_p,
-        req.temperature,
-        req.speed,
+        overrides,
         &state.voices_dir,
     ) {
         Ok(resolved) => resolved,

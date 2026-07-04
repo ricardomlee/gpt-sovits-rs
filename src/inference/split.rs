@@ -44,6 +44,7 @@ pub(super) fn split_text(
     method: SplitMethod,
 ) -> Vec<String> {
     const SENTENCE_DELIMITERS: &[char] = &['.', '?', '!', '。', '？', '！', '…', '\n'];
+    const SENTENCE_SOFT_DELIMITERS: &[char] = &[',', ';', ':', '、', '，', '；', '：'];
     const CUT5_DELIMITERS: &[char] = &[
         ',', '.', ';', '?', '!', '、', '，', '。', '？', '！', '；', '：', ':', '…', '\n',
     ];
@@ -59,6 +60,8 @@ pub(super) fn split_text(
     let chars: Vec<char> = normalized.chars().collect();
     let mut sentences: Vec<String> = Vec::new();
     let mut current = String::new();
+    let soft_split_chars = soft_split_chars(language);
+    let hard_split_chars = hard_split_chars(language);
 
     for (index, &ch) in chars.iter().enumerate() {
         current.push(ch);
@@ -67,7 +70,14 @@ pub(super) fn split_text(
             && index + 1 < chars.len()
             && chars[index - 1].is_ascii_digit()
             && chars[index + 1].is_ascii_digit();
-        if delimiters.contains(&ch) && !decimal_point && !current.trim().is_empty() {
+        let current_chars = current.trim().chars().count();
+        let sentence_boundary = delimiters.contains(&ch) && !decimal_point;
+        let soft_boundary = method == SplitMethod::Sentence
+            && SENTENCE_SOFT_DELIMITERS.contains(&ch)
+            && !decimal_point
+            && current_chars >= soft_split_chars;
+        let hard_boundary = method == SplitMethod::Sentence && current_chars >= hard_split_chars;
+        if (sentence_boundary || soft_boundary || hard_boundary) && !current.trim().is_empty() {
             let trimmed = current.trim().to_string();
             if trimmed.chars().any(char::is_alphanumeric) {
                 sentences.push(trimmed);
@@ -102,13 +112,40 @@ pub(super) fn split_text(
     }
     if !acc.trim().is_empty() {
         if let Some(last) = merged.last_mut() {
-            last.push_str(&acc);
+            let merged_chars = last.chars().count() + acc.trim().chars().count();
+            if merged_chars <= hard_split_chars {
+                last.push_str(&acc);
+            } else {
+                merged.push(acc.trim().to_string());
+            }
         } else {
             merged.push(acc.trim().to_string());
         }
     }
 
     merged
+}
+
+fn soft_split_chars(language: Language) -> usize {
+    match language {
+        Language::English => 80,
+        Language::Chinese
+        | Language::Japanese
+        | Language::Korean
+        | Language::Cantonese
+        | Language::Auto => 32,
+    }
+}
+
+fn hard_split_chars(language: Language) -> usize {
+    match language {
+        Language::English => 140,
+        Language::Chinese
+        | Language::Japanese
+        | Language::Korean
+        | Language::Cantonese
+        | Language::Auto => 60,
+    }
 }
 
 #[cfg(test)]
@@ -132,5 +169,27 @@ mod tests {
             split_sentences_for_language("hello world", 1, Language::Chinese),
             vec!["hello world。"]
         );
+    }
+
+    #[test]
+    fn sentence_split_breaks_long_chinese_comma_clauses() {
+        let text = "这是一个很长的中文段落，它中间只有逗号和顿号，却没有句号，所以不能整段送进模型，否则长文本合成时容易吞字或者变成哼唱。";
+
+        let chunks = split_sentences_for_language(text, 12, Language::Chinese);
+
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 80));
+        assert_eq!(chunks.concat(), text);
+    }
+
+    #[test]
+    fn sentence_split_hard_wraps_long_text_without_punctuation() {
+        let text = "这是一段完全没有任何标点符号的长文本它需要被安全切开否则会作为一个过长片段进入模型导致生成结果不稳定而且在真实的长段语音合成请求中这类输入并不少见";
+
+        let chunks = split_sentences_for_language(text, 12, Language::Chinese);
+
+        assert!(chunks.len() > 1);
+        assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 61));
+        assert_eq!(chunks.concat(), format!("{text}。"));
     }
 }

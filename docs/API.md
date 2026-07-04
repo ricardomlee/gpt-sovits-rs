@@ -149,6 +149,47 @@ Common aliases are accepted for easier client integration:
 | `refer_wav_path` | `reference_audio`, `referenceAudio`, `prompt_wav_path`, `promptWavPath` |
 | `prompt_text` | `reference_text`, `referenceText` |
 
+Long text quality controls:
+
+| Field | Purpose |
+| --- | --- |
+| `split_sentences` | Enable chunked synthesis. Defaults to the voice profile value, usually `true`. |
+| `split_method` | `sentence` keeps sentence cadence and now protects very long comma clauses; `cut5` also splits on commas/semicolons like Python GPT-SoVITS. |
+| `min_sentence_chars` | Merge very short chunks until this many characters are reached. |
+| `sentence_gap_ms` | Silence between chunks. |
+| `sentence_fade_ms` | Fade each chunk in/out before concatenation. |
+| `max_tokens` | Maximum semantic tokens per chunk. Raise only when intentionally synthesizing longer chunks. |
+| `repetition_penalty` | GPT repetition penalty. |
+
+CamelCase aliases such as `splitMethod`, `minSentenceChars`, `maxTokens`, and `repetitionPenalty` are also accepted.
+
+For long Chinese prose, prefer explicit chunking:
+
+```bash
+curl -X POST http://localhost:9880/tts \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "voice": "demo",
+    "text": "臣亮言：先帝创业未半而中道崩殂，今天下三分，益州疲弊，此诚危急存亡之秋也。",
+    "split_method": "sentence",
+    "min_sentence_chars": 12,
+    "sentence_gap_ms": 120,
+    "sentence_fade_ms": 8
+  }' \
+  --output prose.wav
+```
+
+Chinese pronunciation annotations can be embedded directly in `text` for polyphonic characters:
+
+```json
+{
+  "voice": "demo",
+  "text": "这个人很好[hao4]学，银行的行[hang2]长正在重[zhong4]新安排会议。"
+}
+```
+
+The service removes the bracketed markers before BERT/G2P alignment and forces the marked character to use that pinyin. Use tone `1`-`5`; `5` is neutral tone.
+
 The response includes metadata headers such as:
 
 ```text

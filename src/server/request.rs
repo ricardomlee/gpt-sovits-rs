@@ -27,6 +27,20 @@ pub(super) struct TtsRequest {
     pub(super) top_p: Option<f32>,
     pub(super) temperature: Option<f32>,
     pub(super) speed: Option<f32>,
+    #[serde(alias = "maxTokens")]
+    pub(super) max_tokens: Option<usize>,
+    #[serde(alias = "repetitionPenalty")]
+    pub(super) repetition_penalty: Option<f32>,
+    #[serde(alias = "splitSentences")]
+    pub(super) split_sentences: Option<bool>,
+    #[serde(alias = "splitMethod")]
+    pub(super) split_method: Option<String>,
+    #[serde(alias = "minSentenceChars")]
+    pub(super) min_sentence_chars: Option<usize>,
+    #[serde(alias = "sentenceGapMs")]
+    pub(super) sentence_gap_ms: Option<u32>,
+    #[serde(alias = "sentenceFadeMs")]
+    pub(super) sentence_fade_ms: Option<u32>,
 }
 
 #[derive(Deserialize)]
@@ -48,6 +62,20 @@ pub(super) struct OpenAiSpeechRequest {
     #[allow(dead_code)]
     pub(super) instructions: Option<String>,
     pub(super) speed: Option<f32>,
+    #[serde(alias = "maxTokens")]
+    pub(super) max_tokens: Option<usize>,
+    #[serde(alias = "repetitionPenalty")]
+    pub(super) repetition_penalty: Option<f32>,
+    #[serde(alias = "splitSentences")]
+    pub(super) split_sentences: Option<bool>,
+    #[serde(alias = "splitMethod")]
+    pub(super) split_method: Option<String>,
+    #[serde(alias = "minSentenceChars")]
+    pub(super) min_sentence_chars: Option<usize>,
+    #[serde(alias = "sentenceGapMs")]
+    pub(super) sentence_gap_ms: Option<u32>,
+    #[serde(alias = "sentenceFadeMs")]
+    pub(super) sentence_fade_ms: Option<u32>,
 }
 
 /// POST /tts/batch — synthesize multiple texts in one call.
@@ -74,6 +102,20 @@ pub(super) struct TtsBatchRequest {
     pub(super) top_p: Option<f32>,
     pub(super) temperature: Option<f32>,
     pub(super) speed: Option<f32>,
+    #[serde(alias = "maxTokens")]
+    pub(super) max_tokens: Option<usize>,
+    #[serde(alias = "repetitionPenalty")]
+    pub(super) repetition_penalty: Option<f32>,
+    #[serde(alias = "splitSentences")]
+    pub(super) split_sentences: Option<bool>,
+    #[serde(alias = "splitMethod")]
+    pub(super) split_method: Option<String>,
+    #[serde(alias = "minSentenceChars")]
+    pub(super) min_sentence_chars: Option<usize>,
+    #[serde(alias = "sentenceGapMs")]
+    pub(super) sentence_gap_ms: Option<u32>,
+    #[serde(alias = "sentenceFadeMs")]
+    pub(super) sentence_fade_ms: Option<u32>,
 }
 
 pub(super) struct ResolvedSynthesis {
@@ -88,6 +130,69 @@ pub(super) struct ResolvedSynthesis {
     pub(super) sentence_fade_ms: u32,
     pub(super) refer_path: String,
     pub(super) prompt_text: String,
+}
+
+#[derive(Default)]
+pub(super) struct SynthesisOverrides {
+    pub(super) top_k: Option<usize>,
+    pub(super) top_p: Option<f32>,
+    pub(super) temperature: Option<f32>,
+    pub(super) speed: Option<f32>,
+    pub(super) max_tokens: Option<usize>,
+    pub(super) repetition_penalty: Option<f32>,
+    pub(super) split_sentences: Option<bool>,
+    pub(super) split_method: Option<String>,
+    pub(super) min_sentence_chars: Option<usize>,
+    pub(super) sentence_gap_ms: Option<u32>,
+    pub(super) sentence_fade_ms: Option<u32>,
+}
+
+impl SynthesisOverrides {
+    pub(super) fn from_tts(req: &TtsRequest) -> Self {
+        Self {
+            top_k: req.top_k,
+            top_p: req.top_p,
+            temperature: req.temperature,
+            speed: req.speed,
+            max_tokens: req.max_tokens,
+            repetition_penalty: req.repetition_penalty,
+            split_sentences: req.split_sentences,
+            split_method: req.split_method.clone(),
+            min_sentence_chars: req.min_sentence_chars,
+            sentence_gap_ms: req.sentence_gap_ms,
+            sentence_fade_ms: req.sentence_fade_ms,
+        }
+    }
+
+    pub(super) fn from_openai(req: &OpenAiSpeechRequest) -> Self {
+        Self {
+            speed: req.speed,
+            max_tokens: req.max_tokens,
+            repetition_penalty: req.repetition_penalty,
+            split_sentences: req.split_sentences,
+            split_method: req.split_method.clone(),
+            min_sentence_chars: req.min_sentence_chars,
+            sentence_gap_ms: req.sentence_gap_ms,
+            sentence_fade_ms: req.sentence_fade_ms,
+            ..Default::default()
+        }
+    }
+
+    pub(super) fn from_batch(req: &TtsBatchRequest) -> Self {
+        Self {
+            top_k: req.top_k,
+            top_p: req.top_p,
+            temperature: req.temperature,
+            speed: req.speed,
+            max_tokens: req.max_tokens,
+            repetition_penalty: req.repetition_penalty,
+            split_sentences: req.split_sentences,
+            split_method: req.split_method.clone(),
+            min_sentence_chars: req.min_sentence_chars,
+            sentence_gap_ms: req.sentence_gap_ms,
+            sentence_fade_ms: req.sentence_fade_ms,
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -112,10 +217,7 @@ pub(super) fn resolve_synthesis(
     text_language: Option<&str>,
     refer_wav_path: Option<String>,
     prompt_text: Option<String>,
-    top_k: Option<usize>,
-    top_p: Option<f32>,
-    temperature: Option<f32>,
-    speed: Option<f32>,
+    overrides: SynthesisOverrides,
     voices_dir: &Path,
 ) -> Result<ResolvedSynthesis, String> {
     let voice_name = voice_name.map(str::trim).filter(|name| !name.is_empty());
@@ -159,24 +261,38 @@ pub(super) fn resolve_synthesis(
     let options = defaults.to_inference_options(
         language,
         InferenceOptionOverrides {
-            top_k,
-            top_p,
-            temperature,
-            speed,
-            ..Default::default()
+            top_k: overrides.top_k,
+            top_p: overrides.top_p,
+            temperature: overrides.temperature,
+            speed: overrides.speed,
+            max_tokens: overrides.max_tokens,
+            repetition_penalty: overrides.repetition_penalty,
         },
     );
+    let split_method = match overrides.split_method.as_deref().map(str::trim) {
+        Some("") | None => defaults.split_method,
+        Some(method) => SplitMethod::parse(method)
+            .ok_or_else(|| format!("unsupported split_method: {method}"))?,
+    };
 
     Ok(ResolvedSynthesis {
         voice: voice.map(|v| v.name),
         mode: defaults.mode,
         language,
         options,
-        split_sentences: defaults.split_sentences,
-        split_method: defaults.split_method,
-        min_sentence_chars: defaults.min_sentence_chars,
-        sentence_gap_ms: defaults.sentence_gap_ms,
-        sentence_fade_ms: defaults.sentence_fade_ms,
+        split_sentences: overrides
+            .split_sentences
+            .unwrap_or(defaults.split_sentences),
+        split_method,
+        min_sentence_chars: overrides
+            .min_sentence_chars
+            .unwrap_or(defaults.min_sentence_chars),
+        sentence_gap_ms: overrides
+            .sentence_gap_ms
+            .unwrap_or(defaults.sentence_gap_ms),
+        sentence_fade_ms: overrides
+            .sentence_fade_ms
+            .unwrap_or(defaults.sentence_fade_ms),
         refer_path,
         prompt_text,
     })
@@ -213,10 +329,13 @@ mod tests {
             Some("zh"),
             Some(ref_path.to_string_lossy().into_owned()),
             Some("prompt".to_string()),
-            Some(20),
-            Some(0.9),
-            Some(0.7),
-            Some(1.1),
+            SynthesisOverrides {
+                top_k: Some(20),
+                top_p: Some(0.9),
+                temperature: Some(0.7),
+                speed: Some(1.1),
+                ..Default::default()
+            },
             temp.path(),
         )
         .unwrap();
@@ -257,10 +376,7 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
-            None,
-            None,
+            SynthesisOverrides::default(),
             temp.path(),
         )
         .unwrap();
@@ -306,10 +422,19 @@ mod tests {
             Some("en"),
             Some(request_ref.to_string_lossy().into_owned()),
             Some("request prompt".to_string()),
-            Some(33),
-            Some(0.7),
-            Some(0.5),
-            Some(0.9),
+            SynthesisOverrides {
+                top_k: Some(33),
+                top_p: Some(0.7),
+                temperature: Some(0.5),
+                speed: Some(0.9),
+                max_tokens: Some(321),
+                repetition_penalty: Some(1.1),
+                split_sentences: Some(false),
+                split_method: Some("cut5".to_string()),
+                min_sentence_chars: Some(5),
+                sentence_gap_ms: Some(300),
+                sentence_fade_ms: Some(0),
+            },
             temp.path(),
         )
         .unwrap();
@@ -321,6 +446,13 @@ mod tests {
         assert!((resolved.options.top_p - 0.7).abs() < 0.001);
         assert!((resolved.options.temperature - 0.5).abs() < 0.001);
         assert!((resolved.options.speed - 0.9).abs() < 0.001);
+        assert_eq!(resolved.options.max_tokens, 321);
+        assert!((resolved.options.repetition_penalty - 1.1).abs() < 0.001);
+        assert!(!resolved.split_sentences);
+        assert_eq!(resolved.split_method, SplitMethod::Cut5);
+        assert_eq!(resolved.min_sentence_chars, 5);
+        assert_eq!(resolved.sentence_gap_ms, 300);
+        assert_eq!(resolved.sentence_fade_ms, 0);
     }
 
     #[test]
@@ -344,10 +476,7 @@ mod tests {
             None,
             None,
             None,
-            None,
-            None,
-            None,
-            None,
+            SynthesisOverrides::default(),
             temp.path(),
         )
         .unwrap();
@@ -362,10 +491,7 @@ mod tests {
             Some("zh"),
             None,
             None,
-            None,
-            None,
-            None,
-            None,
+            SynthesisOverrides::default(),
             Path::new("voices"),
         )
         .err()
@@ -381,16 +507,36 @@ mod tests {
             Some("zh"),
             Some("missing.wav".to_string()),
             Some("prompt".to_string()),
-            None,
-            None,
-            None,
-            None,
+            SynthesisOverrides::default(),
             Path::new("voices"),
         )
         .err()
         .expect("missing reference path should fail");
 
         assert!(error.contains("reference audio not found"));
+    }
+
+    #[test]
+    fn rejects_invalid_request_split_method() {
+        let temp = tempfile::tempdir().unwrap();
+        let ref_path = temp.path().join("ref.wav");
+        write_ref_audio(&ref_path);
+
+        let error = resolve_synthesis(
+            None,
+            Some("zh"),
+            Some(ref_path.to_string_lossy().into_owned()),
+            Some("prompt".to_string()),
+            SynthesisOverrides {
+                split_method: Some("comma".to_string()),
+                ..Default::default()
+            },
+            temp.path(),
+        )
+        .err()
+        .expect("invalid split method should fail");
+
+        assert!(error.contains("unsupported split_method"));
     }
 
     #[test]
