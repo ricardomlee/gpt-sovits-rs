@@ -140,6 +140,15 @@ curl -X POST http://localhost:9880/tts \
   --output output.wav
 ```
 
+Common aliases are accepted for easier client integration:
+
+| Canonical field | Accepted aliases |
+| --- | --- |
+| `text` | `input` |
+| `text_language` | `language`, `lang`, `languageCode` |
+| `refer_wav_path` | `reference_audio`, `referenceAudio`, `prompt_wav_path`, `promptWavPath` |
+| `prompt_text` | `reference_text`, `referenceText` |
+
 The response includes metadata headers such as:
 
 ```text
@@ -173,12 +182,9 @@ curl -X POST http://localhost:9880/tts/batch \
     "voice": "demo",
     "texts": ["第一句话", "第二句话", "第三句话"]
   }' | while IFS= read -r line; do
-    echo "$line" | python3 -c "
-import sys,json,base64
-d=json.load(sys.stdin)
-open(f'out_{d[\"index\"]}.wav','wb').write(base64.b64decode(d['wav_base64']))
-print(f'[{d[\"index\"]}] {d[\"duration_s\"]:.2f}s  {d[\"inference_ms\"]}ms')
-"
+    index=$(echo "$line" | jq -r '.index')
+    echo "$line" | jq -r '.wav_base64' | base64 -d > "out_${index}.wav"
+    echo "$line" | jq -r '"[\(.index)] \(.duration_s)s  \(.inference_ms)ms"'
 done
 ```
 
@@ -210,3 +216,13 @@ Supported `response_format` values:
 - `pcm`
 
 Set the client base URL to `http://localhost:9880/v1` when using compatible agent frameworks.
+
+## Errors
+
+HTTP API errors use one JSON shape:
+
+```json
+{"success":false,"error":"text must not be empty","message":"text must not be empty"}
+```
+
+Requests are rejected before inference when required text is empty, the voice profile cannot be loaded, the language is unsupported, reference audio is missing, or reference text is empty.

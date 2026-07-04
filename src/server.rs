@@ -35,9 +35,18 @@ pub struct AppState {
 #[derive(Deserialize)]
 struct TtsRequest {
     voice: Option<String>,
+    #[serde(alias = "input")]
     text: String,
+    #[serde(alias = "language", alias = "lang", alias = "languageCode")]
     text_language: Option<String>,
+    #[serde(
+        alias = "reference_audio",
+        alias = "referenceAudio",
+        alias = "prompt_wav_path",
+        alias = "promptWavPath"
+    )]
     refer_wav_path: Option<String>,
+    #[serde(alias = "reference_text", alias = "referenceText")]
     prompt_text: Option<String>,
     #[allow(dead_code)]
     prompt_language: Option<String>,
@@ -74,10 +83,19 @@ struct OpenAiSpeechRequest {
 #[derive(Deserialize)]
 struct TtsBatchRequest {
     /// List of texts to synthesize (processed sequentially on GPU).
+    #[serde(alias = "inputs")]
     texts: Vec<String>,
     voice: Option<String>,
+    #[serde(alias = "language", alias = "lang", alias = "languageCode")]
     text_language: Option<String>,
+    #[serde(
+        alias = "reference_audio",
+        alias = "referenceAudio",
+        alias = "prompt_wav_path",
+        alias = "promptWavPath"
+    )]
     refer_wav_path: Option<String>,
+    #[serde(alias = "reference_text", alias = "referenceText")]
     prompt_text: Option<String>,
     top_k: Option<usize>,
     top_p: Option<f32>,
@@ -170,9 +188,11 @@ fn samples_to_pcm(samples: &[f32]) -> Vec<u8> {
 }
 
 fn json_error(status: StatusCode, message: impl AsRef<str>) -> Response<Body> {
+    let message = message.as_ref();
     let error_json = serde_json::json!({
         "success": false,
-        "message": message.as_ref(),
+        "error": message,
+        "message": message,
     });
     Response::builder()
         .status(status)
@@ -230,7 +250,8 @@ enum SpeechOutputFormat {
 
 impl SpeechOutputFormat {
     fn parse(format: Option<&str>) -> Result<Self, String> {
-        match format.unwrap_or("wav").to_ascii_lowercase().as_str() {
+        let format = format.unwrap_or("wav").trim().to_ascii_lowercase();
+        match format.as_str() {
             "wav" => Ok(Self::Wav),
             "pcm" => Ok(Self::Pcm),
             other => Err(format!(
@@ -259,12 +280,16 @@ fn resolve_synthesis(
     speed: Option<f32>,
     voices_dir: &Path,
 ) -> Result<ResolvedSynthesis, String> {
+    let voice_name = voice_name.map(str::trim).filter(|name| !name.is_empty());
     let voice = voice_name
         .map(|name| LoadedVoiceProfile::load(name, voices_dir))
         .transpose()?;
     let defaults = VoiceDefaults::from_profile(voice.as_ref().map(|v| &v.profile));
 
-    let language_text = text_language.unwrap_or(&defaults.language);
+    let language_text = text_language
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .unwrap_or(&defaults.language);
     let language = Language::parse(language_text)
         .ok_or_else(|| format!("unsupported text_language: {language_text}"))?;
 
@@ -279,6 +304,9 @@ fn resolve_synthesis(
             "reference audio is required; select a configured voice or pass refer_wav_path"
                 .to_string()
         })?;
+    if !Path::new(&refer_path).is_file() {
+        return Err(format!("reference audio not found: {refer_path}"));
+    }
     let prompt_text = prompt_text
         .or_else(|| {
             voice
@@ -316,10 +344,28 @@ fn resolve_synthesis(
     })
 }
 
+fn validate_text(text: &str, field: &str) -> Result<(), String> {
+    if text.trim().is_empty() {
+        Err(format!("{field} must not be empty"))
+    } else {
+        Ok(())
+    }
+}
+
 async fn openai_speech_handler(
     State(state): State<AppState>,
     Json(req): Json<OpenAiSpeechRequest>,
 ) -> Result<Response<Body>, StatusCode> {
+    if let Err(e) = validate_text(&req.input, "input") {
+        return Ok(json_error(StatusCode::BAD_REQUEST, e));
+    }
+    if req.voice.trim().is_empty() {
+        return Ok(json_error(
+            StatusCode::BAD_REQUEST,
+            "voice must not be empty",
+        ));
+    }
+
     let response_format = match SpeechOutputFormat::parse(req.response_format.as_deref()) {
         Ok(format) => format,
         Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
@@ -423,6 +469,10 @@ async fn tts_stream_handler(
     State(state): State<AppState>,
     Json(req): Json<TtsRequest>,
 ) -> Result<Response<Body>, StatusCode> {
+    if let Err(e) = validate_text(&req.text, "text") {
+        return Ok(json_error(StatusCode::BAD_REQUEST, e));
+    }
+
     let resolved = match resolve_synthesis(
         req.voice.as_deref(),
         req.text_language.as_deref(),
@@ -525,6 +575,10 @@ async fn tts_handler(
     State(state): State<AppState>,
     Json(req): Json<TtsRequest>,
 ) -> Result<Response<Body>, StatusCode> {
+    if let Err(e) = validate_text(&req.text, "text") {
+        return Ok(json_error(StatusCode::BAD_REQUEST, e));
+    }
+
     let resolved = match resolve_synthesis(
         req.voice.as_deref(),
         req.text_language.as_deref(),
@@ -624,11 +678,18 @@ async fn tts_batch_handler(
     Json(req): Json<TtsBatchRequest>,
 ) -> Result<Response<Body>, StatusCode> {
     if req.texts.is_empty() {
-        return Ok(Response::builder()
-            .status(StatusCode::BAD_REQUEST)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(r#"{"error":"texts array is empty"}"#))
-            .unwrap());
+        return Ok(json_error(StatusCode::BAD_REQUEST, "texts array is empty"));
+    }
+    if let Some((index, _)) = req
+        .texts
+        .iter()
+        .enumerate()
+        .find(|(_, text)| text.trim().is_empty())
+    {
+        return Ok(json_error(
+            StatusCode::BAD_REQUEST,
+            format!("texts[{index}] must not be empty"),
+        ));
     }
 
     let resolved = match resolve_synthesis(
@@ -876,23 +937,35 @@ pub fn run(
 mod tests {
     use super::*;
 
+    fn write_ref_audio(path: &Path) {
+        std::fs::write(
+            path,
+            b"not a real wav; resolve_synthesis only checks path existence",
+        )
+        .unwrap();
+    }
+
     #[test]
     fn resolves_legacy_reference_fields_without_voice() {
+        let temp = tempfile::tempdir().unwrap();
+        let ref_path = temp.path().join("ref.wav");
+        write_ref_audio(&ref_path);
+
         let resolved = resolve_synthesis(
             None,
             Some("zh"),
-            Some("ref.wav".to_string()),
+            Some(ref_path.to_string_lossy().into_owned()),
             Some("prompt".to_string()),
             Some(20),
             Some(0.9),
             Some(0.7),
             Some(1.1),
-            Path::new("voices"),
+            temp.path(),
         )
         .unwrap();
 
         assert_eq!(resolved.language, Language::Chinese);
-        assert_eq!(resolved.refer_path, "ref.wav");
+        assert_eq!(resolved.refer_path, ref_path.to_string_lossy());
         assert_eq!(resolved.prompt_text, "prompt");
         assert_eq!(resolved.options.top_k, 20);
         assert!((resolved.options.top_p - 0.9).abs() < 0.001);
@@ -905,6 +978,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let voice_dir = temp.path().join("mao");
         std::fs::create_dir(&voice_dir).unwrap();
+        write_ref_audio(&voice_dir.join("ref.wav"));
         std::fs::write(
             voice_dir.join("voice.json"),
             r#"{
@@ -954,6 +1028,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let voice_dir = temp.path().join("mao");
         std::fs::create_dir(&voice_dir).unwrap();
+        let request_ref = temp.path().join("request.wav");
+        write_ref_audio(&request_ref);
         std::fs::write(
             voice_dir.join("voice.json"),
             r#"{
@@ -971,7 +1047,7 @@ mod tests {
         let resolved = resolve_synthesis(
             Some("mao"),
             Some("en"),
-            Some("request.wav".to_string()),
+            Some(request_ref.to_string_lossy().into_owned()),
             Some("request prompt".to_string()),
             Some(33),
             Some(0.7),
@@ -982,7 +1058,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolved.language, Language::English);
-        assert_eq!(resolved.refer_path, "request.wav");
+        assert_eq!(resolved.refer_path, request_ref.to_string_lossy());
         assert_eq!(resolved.prompt_text, "request prompt");
         assert_eq!(resolved.options.top_k, 33);
         assert!((resolved.options.top_p - 0.7).abs() < 0.001);
@@ -995,6 +1071,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let voice_dir = temp.path().join("fast");
         std::fs::create_dir(&voice_dir).unwrap();
+        write_ref_audio(&voice_dir.join("ref.wav"));
         std::fs::write(
             voice_dir.join("voice.json"),
             r#"{
@@ -1041,6 +1118,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_reference_audio_path() {
+        let error = resolve_synthesis(
+            None,
+            Some("zh"),
+            Some("missing.wav".to_string()),
+            Some("prompt".to_string()),
+            None,
+            None,
+            None,
+            None,
+            Path::new("voices"),
+        )
+        .err()
+        .expect("missing reference path should fail");
+
+        assert!(error.contains("reference audio not found"));
+    }
+
+    #[test]
     fn sanitizes_non_ascii_header_values() {
         assert_eq!(safe_header_value("mao"), "mao");
         assert_eq!(safe_header_value("角色 A"), "__ A");
@@ -1057,7 +1153,7 @@ mod tests {
             SpeechOutputFormat::Wav
         );
         assert_eq!(
-            SpeechOutputFormat::parse(Some("PCM")).unwrap(),
+            SpeechOutputFormat::parse(Some(" PCM ")).unwrap(),
             SpeechOutputFormat::Pcm
         );
         assert!(SpeechOutputFormat::parse(Some("mp3")).is_err());
