@@ -43,6 +43,107 @@ struct PreparedTarget {
     bert_ms: u128,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum DecodeBackend {
+    Plain,
+    KvCache,
+    CudaGraph,
+}
+
+impl DecodeBackend {
+    fn profile_mode(self) -> &'static str {
+        match self {
+            Self::Plain => "plain",
+            Self::KvCache => "kv",
+            Self::CudaGraph => "cuda-graph",
+        }
+    }
+
+    fn generated_suffix(self) -> &'static str {
+        match self {
+            Self::Plain => "",
+            Self::KvCache => " (kv_cache)",
+            Self::CudaGraph => " (cuda-graph)",
+        }
+    }
+
+    fn generate_semantic_tokens(
+        self,
+        gpt: &GPTModel,
+        ref_feats: &CachedSpeaker,
+        prepared: &PreparedTarget,
+        options: &InferenceOptions,
+    ) -> Result<Vec<usize>> {
+        if ref_feats.prompt_tokens.is_empty() {
+            return gpt.generate_with_features(
+                &prepared.phoneme_ids,
+                prepared.combined_bert.as_ref(),
+                None,
+                options.top_k,
+                options.top_p,
+                options.temperature,
+                options.repetition_penalty,
+                options.max_tokens,
+            );
+        }
+
+        match self {
+            Self::Plain => gpt.generate_with_prompts_aligned_bert(
+                &prepared.phoneme_ids,
+                &ref_feats.prompt_tokens,
+                prepared.combined_bert.as_ref(),
+                options.top_k,
+                options.top_p,
+                options.temperature,
+                options.repetition_penalty,
+                options.max_tokens,
+            ),
+            Self::KvCache => gpt.generate_with_prompts_aligned_bert_kv_cache(
+                &prepared.phoneme_ids,
+                &ref_feats.prompt_tokens,
+                prepared.combined_bert.as_ref(),
+                options.top_k,
+                options.top_p,
+                options.temperature,
+                options.repetition_penalty,
+                options.max_tokens,
+            ),
+            Self::CudaGraph => {
+                let max_kv_len = prepared.phoneme_ids.len()
+                    + ref_feats.prompt_tokens.len()
+                    + options.max_tokens
+                    + 32;
+                gpt.generate_with_cuda_graph(
+                    &prepared.phoneme_ids,
+                    &ref_feats.prompt_tokens,
+                    prepared.combined_bert.as_ref(),
+                    options.top_k,
+                    options.top_p,
+                    options.temperature,
+                    options.repetition_penalty,
+                    options.max_tokens,
+                    max_kv_len,
+                )
+            }
+        }
+    }
+
+    fn log_generated(self, token_count: usize, max_tokens: usize) {
+        tracing::info!(
+            "Generated {} semantic tokens{}",
+            token_count,
+            self.generated_suffix()
+        );
+        if token_count >= max_tokens {
+            tracing::warn!(
+                "Generated token count reached max_tokens={} in {} mode; output may be truncated",
+                max_tokens,
+                self.profile_mode()
+            );
+        }
+    }
+}
+
 /// Main TTS inference pipeline
 pub struct Pipeline {
     #[allow(dead_code)]
@@ -554,38 +655,11 @@ impl Pipeline {
 
         // GPT generation
         let gpt_start = Instant::now();
-        let semantic_tokens = if !ref_feats.prompt_tokens.is_empty() {
-            gpt.generate_with_prompts_aligned_bert(
-                &prepared.phoneme_ids,
-                &ref_feats.prompt_tokens,
-                prepared.combined_bert.as_ref(),
-                options.top_k,
-                options.top_p,
-                options.temperature,
-                options.repetition_penalty,
-                options.max_tokens,
-            )?
-        } else {
-            gpt.generate_with_features(
-                &prepared.phoneme_ids,
-                prepared.combined_bert.as_ref(),
-                None,
-                options.top_k,
-                options.top_p,
-                options.temperature,
-                options.repetition_penalty,
-                options.max_tokens,
-            )?
-        };
+        let backend = DecodeBackend::Plain;
+        let semantic_tokens =
+            backend.generate_semantic_tokens(gpt, &ref_feats, &prepared, options)?;
         let gpt_ms = gpt_start.elapsed().as_millis();
-
-        tracing::info!("Generated {} semantic tokens", semantic_tokens.len());
-        if semantic_tokens.len() >= options.max_tokens {
-            tracing::warn!(
-                "Generated token count reached max_tokens={} in plain mode; output may be truncated",
-                options.max_tokens
-            );
-        }
+        backend.log_generated(semantic_tokens.len(), options.max_tokens);
 
         let sovits_start = Instant::now();
         let audio_samples = sovits.synthesize_with_speed(
@@ -647,41 +721,11 @@ impl Pipeline {
         let sovits = self.sovits_model.as_ref().unwrap();
 
         let gpt_start = Instant::now();
-        let semantic_tokens = if !ref_feats.prompt_tokens.is_empty() {
-            gpt.generate_with_prompts_aligned_bert_kv_cache(
-                &prepared.phoneme_ids,
-                &ref_feats.prompt_tokens,
-                prepared.combined_bert.as_ref(),
-                options.top_k,
-                options.top_p,
-                options.temperature,
-                options.repetition_penalty,
-                options.max_tokens,
-            )?
-        } else {
-            gpt.generate_with_features(
-                &prepared.phoneme_ids,
-                prepared.combined_bert.as_ref(),
-                None,
-                options.top_k,
-                options.top_p,
-                options.temperature,
-                options.repetition_penalty,
-                options.max_tokens,
-            )?
-        };
+        let backend = DecodeBackend::KvCache;
+        let semantic_tokens =
+            backend.generate_semantic_tokens(gpt, &ref_feats, &prepared, options)?;
         let gpt_ms = gpt_start.elapsed().as_millis();
-
-        tracing::info!(
-            "Generated {} semantic tokens (kv_cache)",
-            semantic_tokens.len()
-        );
-        if semantic_tokens.len() >= options.max_tokens {
-            tracing::warn!(
-                "Generated token count reached max_tokens={} in kv mode; output may be truncated",
-                options.max_tokens
-            );
-        }
+        backend.log_generated(semantic_tokens.len(), options.max_tokens);
 
         let sovits_start = Instant::now();
         let audio_samples = sovits.synthesize_with_speed(
@@ -746,47 +790,12 @@ impl Pipeline {
         let gpt = self.gpt_model.as_ref().unwrap();
         let sovits = self.sovits_model.as_ref().unwrap();
 
-        // max_kv_len covers prefill + all generated tokens with a small safety margin
-        let max_kv_len =
-            prepared.phoneme_ids.len() + ref_feats.prompt_tokens.len() + options.max_tokens + 32;
-
         let gpt_start = Instant::now();
-        let semantic_tokens = if !ref_feats.prompt_tokens.is_empty() {
-            gpt.generate_with_cuda_graph(
-                &prepared.phoneme_ids,
-                &ref_feats.prompt_tokens,
-                prepared.combined_bert.as_ref(),
-                options.top_k,
-                options.top_p,
-                options.temperature,
-                options.repetition_penalty,
-                options.max_tokens,
-                max_kv_len,
-            )?
-        } else {
-            gpt.generate_with_features(
-                &prepared.phoneme_ids,
-                prepared.combined_bert.as_ref(),
-                None,
-                options.top_k,
-                options.top_p,
-                options.temperature,
-                options.repetition_penalty,
-                options.max_tokens,
-            )?
-        };
+        let backend = DecodeBackend::CudaGraph;
+        let semantic_tokens =
+            backend.generate_semantic_tokens(gpt, &ref_feats, &prepared, options)?;
         let gpt_ms = gpt_start.elapsed().as_millis();
-
-        tracing::info!(
-            "Generated {} semantic tokens (cuda-graph)",
-            semantic_tokens.len()
-        );
-        if semantic_tokens.len() >= options.max_tokens {
-            tracing::warn!(
-                "Generated token count reached max_tokens={} in cuda-graph mode; output may be truncated",
-                options.max_tokens
-            );
-        }
+        backend.log_generated(semantic_tokens.len(), options.max_tokens);
 
         if std::env::var("SOVITS_DEBUG").is_ok() {
             sovits.debug_pipeline(
