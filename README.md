@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Run GPT-SoVITS inference as a small Rust binary, CLI, or HTTP service.</b><br>
-  Fewer Python runtime dependencies, simpler Docker deployment, and a stable API for agents and local tools.
+  No Python required for inference, simpler Docker deployment, and a stable API for agents and local tools.
 </p>
 
 <p align="center">
@@ -22,6 +22,8 @@
 GPT-SoVITS-RS is a Rust inference implementation for trained GPT-SoVITS voices. It is meant for local assistants, scripts, NAS boxes, and Docker services where installing and operating a full Python/PyTorch stack is inconvenient.
 
 Use the original [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) for training, fine-tuning, dataset preparation, and advanced experiments. Use this project when you already have compatible weights and want a deployable inference service.
+
+Inference runs without Python. Python is only used by the helper scripts that convert raw PyTorch `.ckpt` / `.pth` checkpoints into runtime `safetensors`.
 
 ## Why Use It?
 
@@ -96,6 +98,12 @@ curl -X POST http://localhost:9880/tts \
 ```
 
 See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for CUDA image tags, `.env` options, volumes, and production notes.
+
+Check a local setup before running inference:
+
+```bash
+./gpt-sovits --doctor --voice demo
+```
 
 ### Release Binary
 
@@ -241,6 +249,16 @@ curl -X POST http://localhost:9880/tts \
 ```
 
 Full API examples live in [docs/API.md](docs/API.md).
+
+## Troubleshooting
+
+Run doctor first:
+
+```bash
+./gpt-sovits --doctor --voice demo
+```
+
+It checks the model layout, safetensors headers, BERT tokenizer, requested device, voice profile, reference audio, and reference text without loading the full model stack.
 
 ## Performance
 

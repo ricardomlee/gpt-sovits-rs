@@ -20,6 +20,7 @@ Useful options:
 
 | Option | Purpose |
 |---|---|
+| `--doctor` | Check model files, voice profile, reference audio/text, and device setup without running inference. |
 | `--voice <name>` | Load `voices/<name>/voice.json`. |
 | `--models-dir <dir>` | Search a custom model directory. |
 | `--device auto|cuda|cpu|mps` | Select runtime device. |
@@ -29,6 +30,14 @@ Useful options:
 | `--max-tokens <n>` | Raise this for long sentences. |
 | `--list-voices` | List voice profiles without loading models. |
 | `--inspect <model.safetensors>` | Print model tensor names and shapes. |
+
+Run setup diagnostics:
+
+```bash
+./gpt-sovits --doctor --voice demo
+```
+
+`doctor` is intentionally lightweight: it validates file layout and safetensors headers, but does not load all model tensors or run inference.
 
 The CLI logs a profile line:
 
