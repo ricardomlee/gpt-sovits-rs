@@ -59,7 +59,7 @@ curl http://localhost:9880/voices
 ```text
 ghcr.io/ricardomlee/gpt-sovits-rs:latest
 ghcr.io/ricardomlee/gpt-sovits-rs:1.0
-ghcr.io/ricardomlee/gpt-sovits-rs:1.0.0
+ghcr.io/ricardomlee/gpt-sovits-rs:1.0.1
 ```
 
 ## CUDA
@@ -82,7 +82,7 @@ curl http://localhost:9880/health
 curl http://localhost:9880/voices
 ```
 
-版本固定标签使用 `1.0.0-cuda-sm89` 这种格式。其他 compute capability 可以本地构建：
+版本固定标签使用 `1.0.1-cuda-sm89` 这种格式。其他 compute capability 可以本地构建：
 
 ```bash
 docker build -f Dockerfile.cuda \
@@ -95,8 +95,8 @@ docker build -f Dockerfile.cuda \
 Release 中的 Linux x86_64 包已经携带 `libsoxr`，解压后可直接运行：
 
 ```bash
-tar -xzf gpt-sovits-1.0.0-linux-x86_64.tar.gz
-cd gpt-sovits-1.0.0-linux-x86_64
+tar -xzf gpt-sovits-1.0.1-linux-x86_64.tar.gz
+cd gpt-sovits-1.0.1-linux-x86_64
 ./gpt-sovits --models-dir /path/to/models \
   --http --port 9880
 ```

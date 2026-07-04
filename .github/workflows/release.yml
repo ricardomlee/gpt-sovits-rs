@@ -204,10 +204,22 @@ jobs:
         working-directory: dist
         run: sha256sum ./*.tar.gz > SHA256SUMS
 
+      - name: Select release notes
+        id: release-notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          body_path="docs/releases/${GITHUB_REF_NAME}.md"
+          if [[ ! -f "${body_path}" ]]; then
+            echo "::error file=${body_path}::Release notes file is missing"
+            exit 1
+          fi
+          echo "path=${body_path}" >> "${GITHUB_OUTPUT}"
+
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
-          body_path: docs/releases/v1.0.0.md
+          body_path: ${{ steps.release-notes.outputs.path }}
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS
