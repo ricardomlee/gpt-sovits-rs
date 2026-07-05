@@ -265,6 +265,14 @@ impl Pipeline {
         split_method: SplitMethod,
     ) -> impl Iterator<Item = Result<AudioBuffer>> + 'a {
         let sentences = split_text(text, min_sentence_chars, options.language, split_method);
+        log_split_plan(
+            "stream",
+            text,
+            &sentences,
+            split_method,
+            min_sentence_chars,
+            options.max_tokens,
+        );
         SentenceIterator {
             pipeline: self,
             sentences,
@@ -341,13 +349,28 @@ impl Pipeline {
         split_method: SplitMethod,
     ) -> Result<AudioBuffer> {
         let chunks = split_text(text, min_chars, options.language, split_method);
+        log_split_plan(
+            "buffered",
+            text,
+            &chunks,
+            split_method,
+            min_chars,
+            options.max_tokens,
+        );
         let reference_audio = reference_audio.as_ref().to_path_buf();
         self.preload_speaker(&reference_audio, reference_text, options.language)?;
 
         let mut output: Option<AudioBuffer> = None;
-        for chunk in chunks {
-            let mut audio =
-                self.inference_with_mode(mode, &chunk, &reference_audio, reference_text, options)?;
+        let chunk_total = chunks.len();
+        for (index, chunk) in chunks.into_iter().enumerate() {
+            let mut audio = self.inference_logged_chunk(
+                mode,
+                &chunk,
+                &reference_audio,
+                reference_text,
+                options,
+                (index, chunk_total),
+            )?;
             if fade_ms > 0 {
                 audio.fade_in(fade_ms);
                 audio.fade_out(fade_ms);
@@ -369,6 +392,39 @@ impl Pipeline {
             }
         }
         output.ok_or_else(|| Error::InferenceError("No sentence chunks generated".to_string()))
+    }
+
+    fn inference_logged_chunk<P: AsRef<Path>>(
+        &mut self,
+        mode: &str,
+        text: &str,
+        reference_audio: P,
+        reference_text: &str,
+        options: &InferenceOptions,
+        chunk_progress: (usize, usize),
+    ) -> Result<AudioBuffer> {
+        let (index, total) = chunk_progress;
+        let spoken_chars = spoken_char_count(text);
+        let preview = text_preview_for_logs(text, 48);
+        let span = tracing::info_span!(
+            "tts_chunk",
+            chunk_index = index + 1,
+            chunk_total = total,
+            chars = spoken_chars,
+            preview = %preview
+        );
+        let _guard = span.enter();
+
+        tracing::info!(
+            mode = mode,
+            max_tokens = options.max_tokens,
+            "synthesizing chunk"
+        );
+        let start = Instant::now();
+        let audio =
+            self.inference_with_mode(mode, text, reference_audio, reference_text, options)?;
+        log_chunk_result(text, &audio, start.elapsed().as_millis());
+        Ok(audio)
     }
 
     /// Select the production decode path for the active device and model dtype.
@@ -629,14 +685,162 @@ impl<'a> Iterator for SentenceIterator<'a> {
             self.sentences.len(),
             text
         );
-        Some(self.pipeline.inference_with_mode(
+        Some(self.pipeline.inference_logged_chunk(
             &self.mode,
             &text,
             &self.reference_audio,
             self.reference_text,
             self.options,
+            (self.index - 1, self.sentences.len()),
         ))
     }
+}
+
+fn log_split_plan(
+    context: &str,
+    text: &str,
+    chunks: &[String],
+    split_method: SplitMethod,
+    min_chars: usize,
+    max_tokens: usize,
+) {
+    tracing::info!(
+        context = context,
+        split_method = ?split_method,
+        text_chars = spoken_char_count(text),
+        chunks = chunks.len(),
+        min_chars = min_chars,
+        max_tokens = max_tokens,
+        "split text for inference"
+    );
+    if !chunk_text_logging_enabled() {
+        return;
+    }
+    for (index, chunk) in chunks.iter().enumerate() {
+        tracing::info!(
+            context = context,
+            chunk_index = index + 1,
+            chunk_total = chunks.len(),
+            chars = spoken_char_count(chunk),
+            preview = %text_preview(chunk, 72),
+            "planned chunk"
+        );
+    }
+}
+
+fn log_chunk_result(text: &str, audio: &AudioBuffer, elapsed_ms: u128) {
+    let spoken_chars = spoken_char_count(text);
+    let duration_s = audio.duration();
+    let min_duration_s = suspicious_min_duration_s(spoken_chars);
+    let chars_per_second = if duration_s > 0.0 {
+        spoken_chars as f32 / duration_s
+    } else {
+        f32::INFINITY
+    };
+
+    if spoken_chars >= 8 && duration_s < min_duration_s {
+        tracing::warn!(
+            chars = spoken_chars,
+            duration_s = format!("{duration_s:.3}"),
+            min_expected_duration_s = format!("{min_duration_s:.3}"),
+            chars_per_second = format!("{chars_per_second:.2}"),
+            samples = audio.samples.len(),
+            elapsed_ms = elapsed_ms,
+            "chunk audio is unusually short for its text; possible early EOS or skipped words"
+        );
+    } else {
+        tracing::info!(
+            chars = spoken_chars,
+            duration_s = format!("{duration_s:.3}"),
+            chars_per_second = format!("{chars_per_second:.2}"),
+            samples = audio.samples.len(),
+            elapsed_ms = elapsed_ms,
+            "chunk synthesized"
+        );
+    }
+}
+
+fn spoken_char_count(text: &str) -> usize {
+    let mut in_annotation = false;
+    text.chars()
+        .filter(|c| {
+            if in_annotation {
+                if *c == ']' {
+                    in_annotation = false;
+                }
+                return false;
+            }
+            if *c == '[' {
+                in_annotation = true;
+                return false;
+            }
+            !c.is_whitespace() && !is_punctuation_like(*c)
+        })
+        .count()
+}
+
+fn is_punctuation_like(c: char) -> bool {
+    matches!(
+        c,
+        '\u{3000}'
+            | '，'
+            | '。'
+            | '、'
+            | '；'
+            | '：'
+            | '？'
+            | '！'
+            | '“'
+            | '”'
+            | '‘'
+            | '’'
+            | '《'
+            | '》'
+            | '（'
+            | '）'
+            | '('
+            | ')'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | ','
+            | '.'
+            | ';'
+            | ':'
+            | '?'
+            | '!'
+            | '"'
+            | '\''
+            | '-'
+            | '_'
+            | '/'
+            | '\\'
+    )
+}
+
+fn suspicious_min_duration_s(spoken_chars: usize) -> f32 {
+    (spoken_chars as f32 * 0.04).clamp(0.24, 2.4)
+}
+
+fn text_preview(text: &str, limit: usize) -> String {
+    let mut preview: String = text.chars().take(limit).collect();
+    if text.chars().count() > limit {
+        preview.push_str("...");
+    }
+    preview
+}
+
+fn text_preview_for_logs(text: &str, limit: usize) -> String {
+    if chunk_text_logging_enabled() {
+        text_preview(text, limit)
+    } else {
+        "<redacted; set GPT_SOVITS_LOG_CHUNK_TEXT=1>".to_string()
+    }
+}
+
+fn chunk_text_logging_enabled() -> bool {
+    std::env::var("GPT_SOVITS_LOG_CHUNK_TEXT").as_deref() == Ok("1")
 }
 
 #[cfg(test)]
@@ -672,5 +876,27 @@ mod tests {
 
         assert!(matches!(error, Error::ModelLoadError(_)));
         assert!(error.to_string().contains("GPT model not loaded"));
+    }
+
+    #[test]
+    fn spoken_char_count_ignores_punctuation_and_pronunciation_annotations() {
+        assert_eq!(spoken_char_count("盖[gai4]追先帝之殊遇。"), 7);
+        assert_eq!(spoken_char_count("！？。，"), 0);
+    }
+
+    #[test]
+    fn text_preview_truncates_by_characters() {
+        assert_eq!(text_preview("先帝创业未半", 20), "先帝创业未半");
+        assert_eq!(text_preview("先帝创业未半而中道崩殂", 4), "先帝创业...");
+    }
+
+    #[test]
+    fn text_preview_for_logs_redacts_by_default() {
+        std::env::remove_var("GPT_SOVITS_LOG_CHUNK_TEXT");
+
+        assert_eq!(
+            text_preview_for_logs("先帝创业未半", 20),
+            "<redacted; set GPT_SOVITS_LOG_CHUNK_TEXT=1>"
+        );
     }
 }
