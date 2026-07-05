@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 import types
+from io import BytesIO
 from pathlib import Path
 from typing import Callable
 
@@ -21,6 +22,16 @@ DEFAULT_FILES = {
     "bert": "chinese-roberta-wwm-ext-large/pytorch_model.bin",
     "tokenizer": "chinese-roberta-wwm-ext-large/tokenizer.json",
     "hubert": "chinese-hubert-base/pytorch_model.bin",
+}
+
+SOVITS_HEADER_VERSION = {
+    b"00": "v1",
+    b"01": "v2",
+    b"02": "v3",
+    b"03": "v3",
+    b"04": "v4",
+    b"05": "v2Pro",
+    b"06": "v2ProPlus",
 }
 
 
@@ -45,11 +56,28 @@ def load_state_dict(
     *,
     allow_unsafe_pickle: bool = False,
 ) -> dict[str, torch.Tensor]:
-    if allow_unsafe_pickle:
+    checkpoint = load_checkpoint(path, allow_unsafe_pickle=allow_unsafe_pickle)
+    return checkpoint_tensors(path, checkpoint)
+
+
+def load_checkpoint(
+    path: Path,
+    *,
+    allow_unsafe_pickle: bool = False,
+):
+    data = path.read_bytes()
+    header = data[:2]
+    is_versioned_sovits = header in SOVITS_HEADER_VERSION and header != b"PK"
+    source = BytesIO(b"PK" + data[2:]) if is_versioned_sovits else path
+
+    if allow_unsafe_pickle or is_versioned_sovits:
         install_legacy_hparams_stub()
-        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+        return torch.load(source, map_location="cpu", weights_only=False)
     else:
-        checkpoint = torch.load(path, map_location="cpu", weights_only=True)
+        return torch.load(source, map_location="cpu", weights_only=True)
+
+
+def checkpoint_tensors(path: Path, checkpoint) -> dict[str, torch.Tensor]:
     if not isinstance(checkpoint, dict):
         raise TypeError(f"{path} did not contain a state dictionary")
 
@@ -66,14 +94,30 @@ def load_state_dict(
     }
 
 
-def save_state_dict(weights: dict[str, torch.Tensor], output: Path) -> None:
+def sovits_version_from_checkpoint(source: Path, weights: dict[str, torch.Tensor]) -> str:
+    header = source.read_bytes()[:2]
+    if header in SOVITS_HEADER_VERSION:
+        return SOVITS_HEADER_VERSION[header]
+    if "ge_to512.weight" in weights and "sv_emb.weight" in weights:
+        return "v2Pro"
+    embedding = weights.get("enc_p.text_embedding.weight")
+    if embedding is not None and embedding.shape[0] == 322:
+        return "v1"
+    return "v2"
+
+
+def save_state_dict(
+    weights: dict[str, torch.Tensor],
+    output: Path,
+    metadata: dict[str, str] | None = None,
+) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(f"{output.suffix}.tmp")
     converted = {
         key: value.detach().to(dtype=torch.float32, device="cpu").contiguous()
         for key, value in weights.items()
     }
-    save_file(converted, temporary)
+    save_file(converted, temporary, metadata=metadata)
     os.replace(temporary, output)
     size_mb = output.stat().st_size / (1024 * 1024)
     print(f"Saved {len(converted)} tensors to {output} ({size_mb:.1f} MiB)")
@@ -100,11 +144,13 @@ def convert_sovits(
     allow_unsafe_pickle: bool = False,
 ) -> None:
     print(f"Converting SoVITS checkpoint: {source}")
-    weights = load_state_dict(source, allow_unsafe_pickle=allow_unsafe_pickle)
+    checkpoint = load_checkpoint(source, allow_unsafe_pickle=allow_unsafe_pickle)
+    weights = checkpoint_tensors(source, checkpoint)
     required = "enc_p.text_embedding.weight"
     if required not in weights:
         raise KeyError(f"SoVITS checkpoint is missing {required}")
-    save_state_dict(weights, output)
+    version = sovits_version_from_checkpoint(source, weights)
+    save_state_dict(weights, output, metadata={"model_type": "sovits", "model_version": version})
 
 
 def convert_bert(source: Path, output: Path) -> None:

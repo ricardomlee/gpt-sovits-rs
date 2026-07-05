@@ -137,8 +137,8 @@ pub struct Pipeline {
     hubert_model: Option<HubertModel>,
     bigvgan_model: Option<BigVGAN>,
     semantic_tokenizer: Option<SemanticTokenizer>,
-    /// Cache keyed by (ref_audio_path, ref_text)
-    ref_cache: HashMap<(String, String), CachedSpeaker>,
+    /// Cache keyed by (ref_audio_path, ref_text, sv_embedding_path)
+    ref_cache: HashMap<(String, String, Option<String>), CachedSpeaker>,
 }
 
 impl Pipeline {
@@ -358,7 +358,7 @@ impl Pipeline {
             options.max_tokens,
         );
         let reference_audio = reference_audio.as_ref().to_path_buf();
-        self.preload_speaker(&reference_audio, reference_text, options.language)?;
+        self.preload_speaker_with_options(&reference_audio, reference_text, options)?;
 
         let mut output: Option<AudioBuffer> = None;
         let chunk_total = chunks.len();
@@ -465,8 +465,7 @@ impl Pipeline {
 
         // Reference features (cached after first call)
         let ref_start = Instant::now();
-        let ref_feats =
-            self.get_ref_features(&reference_audio, reference_text, options.language)?;
+        let ref_feats = self.get_ref_features(&reference_audio, reference_text, options)?;
         let ref_ms = ref_start.elapsed().as_millis();
 
         let gpt = self.gpt_model.as_ref().unwrap();
@@ -490,10 +489,11 @@ impl Pipeline {
         backend.log_generated(semantic_tokens.len(), options.max_tokens);
 
         let sovits_start = Instant::now();
-        let audio_samples = sovits.synthesize_with_speed(
+        let audio_samples = sovits.synthesize_with_speed_and_sv(
             &semantic_tokens,
             &prepared.target_phoneme_ids,
             ref_feats.ref_mel.as_ref(),
+            ref_feats.sv_embedding.as_ref(),
             0.5,
             options.speed,
         )?;
@@ -524,8 +524,7 @@ impl Pipeline {
 
         // Reference features (cached after first call)
         let ref_start = Instant::now();
-        let ref_feats =
-            self.get_ref_features(&reference_audio, reference_text, options.language)?;
+        let ref_feats = self.get_ref_features(&reference_audio, reference_text, options)?;
         let ref_ms = ref_start.elapsed().as_millis();
 
         if self.sovits_model.is_none() {
@@ -556,10 +555,11 @@ impl Pipeline {
         backend.log_generated(semantic_tokens.len(), options.max_tokens);
 
         let sovits_start = Instant::now();
-        let audio_samples = sovits.synthesize_with_speed(
+        let audio_samples = sovits.synthesize_with_speed_and_sv(
             &semantic_tokens,
             &prepared.target_phoneme_ids,
             ref_feats.ref_mel.as_ref(),
+            ref_feats.sv_embedding.as_ref(),
             0.5,
             options.speed,
         )?;
@@ -594,8 +594,7 @@ impl Pipeline {
         let total_start = Instant::now();
 
         let ref_start = Instant::now();
-        let ref_feats =
-            self.get_ref_features(&reference_audio, reference_text, options.language)?;
+        let ref_feats = self.get_ref_features(&reference_audio, reference_text, options)?;
         let ref_ms = ref_start.elapsed().as_millis();
 
         if self.sovits_model.is_none() {
@@ -635,10 +634,11 @@ impl Pipeline {
         }
 
         let sovits_start = Instant::now();
-        let audio_samples = sovits.synthesize_with_speed(
+        let audio_samples = sovits.synthesize_with_speed_and_sv(
             &semantic_tokens,
             &prepared.target_phoneme_ids,
             ref_feats.ref_mel.as_ref(),
+            ref_feats.sv_embedding.as_ref(),
             0.5,
             options.speed,
         )?;

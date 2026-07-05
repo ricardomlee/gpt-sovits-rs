@@ -82,8 +82,31 @@ python convert_sovits_weights.py \
   models/sovits-model.safetensors
 ```
 
-GPT 与 SoVITS 必须来自兼容的 GPT-SoVITS v2 架构。v3、v4、v2Pro 和改过网络结构的
+GPT 与 SoVITS 必须来自兼容的 GPT-SoVITS v2 或 v2Pro 架构。v3、v4 和改过网络结构的
 checkpoint 不能仅靠改扩展名使用。
+
+v2Pro 的 SoVITS `.pth` 使用官方 `05`/`06` 版本头，`convert_sovits_weights.py` 会自动处理。
+如果训练预处理目录里有 `logs/<voice>_v2pro/7-sv_cn/<ref>.wav.pt`，可以把它转换成 Rust
+runtime 可读的 speaker-verification embedding：
+
+```bash
+python convert_sv_embedding.py \
+  logs/diana_v2pro/7-sv_cn/ref.wav.pt \
+  voices/diana/ref_sv.safetensors
+```
+
+然后在 `voices/diana/voice.json` 中配置：
+
+```json
+{
+  "reference_audio": "ref.wav",
+  "reference_text": "参考音频对应的文字",
+  "sv_embedding": "ref_sv.safetensors",
+  "language": "zh"
+}
+```
+
+不提供 `sv_embedding` 时，v2Pro 仍可运行，但会使用零 SV embedding，音色相似度通常不如官方完整路径。
 
 部分旧版或第三方 checkpoint 会在 `.ckpt`/`.pth` 里保存 `utils.HParams` 等 Python
 对象，PyTorch 的安全 `weights_only=True` 路径会拒绝读取。只在确认文件来源可信时使用

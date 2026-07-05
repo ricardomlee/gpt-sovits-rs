@@ -1,6 +1,7 @@
 //! Inference option defaults and builder.
 
 use crate::Language;
+use std::path::PathBuf;
 
 /// Inference options
 #[derive(Debug, Clone)]
@@ -12,6 +13,7 @@ pub struct InferenceOptions {
     pub language: Language,
     pub max_tokens: usize,
     pub repetition_penalty: f32,
+    pub sv_embedding: Option<PathBuf>,
 }
 
 impl Default for InferenceOptions {
@@ -24,6 +26,7 @@ impl Default for InferenceOptions {
             language: Language::Chinese,
             max_tokens: 500,
             repetition_penalty: 1.35,
+            sv_embedding: None,
         }
     }
 }
@@ -43,6 +46,7 @@ pub struct InferenceOptionsBuilder {
     language: Option<Language>,
     max_tokens: Option<usize>,
     repetition_penalty: Option<f32>,
+    sv_embedding: Option<PathBuf>,
 }
 
 impl InferenceOptionsBuilder {
@@ -74,6 +78,10 @@ impl InferenceOptionsBuilder {
         self.repetition_penalty = Some(p);
         self
     }
+    pub fn sv_embedding<P: Into<PathBuf>>(mut self, path: P) -> Self {
+        self.sv_embedding = Some(path.into());
+        self
+    }
 
     pub fn build(self) -> InferenceOptions {
         InferenceOptions {
@@ -84,6 +92,7 @@ impl InferenceOptionsBuilder {
             language: self.language.unwrap_or(Language::Chinese),
             max_tokens: self.max_tokens.unwrap_or(500),
             repetition_penalty: self.repetition_penalty.unwrap_or(1.35),
+            sv_embedding: self.sv_embedding,
         }
     }
 }

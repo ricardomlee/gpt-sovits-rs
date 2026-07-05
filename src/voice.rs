@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 pub struct VoiceProfile {
     pub reference_audio: Option<String>,
     pub reference_text: Option<String>,
+    pub sv_embedding: Option<String>,
     pub language: Option<String>,
     pub mode: Option<String>,
     pub split_sentences: Option<bool>,
@@ -82,6 +83,13 @@ impl LoadedVoiceProfile {
 
     pub fn reference_text(&self) -> Option<&str> {
         self.profile.reference_text.as_deref()
+    }
+
+    pub fn sv_embedding_path(&self) -> Option<PathBuf> {
+        self.profile
+            .sv_embedding
+            .as_deref()
+            .map(|path| self.resolve_path(path))
     }
 }
 
@@ -307,6 +315,22 @@ mod tests {
         assert_eq!(
             loaded.reference_audio_path().unwrap(),
             PathBuf::from("/tmp/voices/test/ref.wav")
+        );
+    }
+
+    #[test]
+    fn resolves_relative_sv_embedding_from_voice_dir() {
+        let loaded = LoadedVoiceProfile {
+            name: "test".to_string(),
+            dir: PathBuf::from("/tmp/voices/test"),
+            profile: VoiceProfile {
+                sv_embedding: Some("ref_sv.safetensors".to_string()),
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            loaded.sv_embedding_path().unwrap(),
+            PathBuf::from("/tmp/voices/test/ref_sv.safetensors")
         );
     }
 

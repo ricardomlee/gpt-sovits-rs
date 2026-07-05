@@ -21,6 +21,8 @@ pub(super) struct TtsRequest {
     pub(super) refer_wav_path: Option<String>,
     #[serde(alias = "reference_text", alias = "referenceText")]
     pub(super) prompt_text: Option<String>,
+    #[serde(alias = "svEmbedding", alias = "speakerEmbedding")]
+    pub(super) sv_embedding: Option<String>,
     #[allow(dead_code)]
     pub(super) prompt_language: Option<String>,
     pub(super) top_k: Option<usize>,
@@ -98,6 +100,8 @@ pub(super) struct TtsBatchRequest {
     pub(super) refer_wav_path: Option<String>,
     #[serde(alias = "reference_text", alias = "referenceText")]
     pub(super) prompt_text: Option<String>,
+    #[serde(alias = "svEmbedding", alias = "speakerEmbedding")]
+    pub(super) sv_embedding: Option<String>,
     pub(super) top_k: Option<usize>,
     pub(super) top_p: Option<f32>,
     pub(super) temperature: Option<f32>,
@@ -145,6 +149,7 @@ pub(super) struct SynthesisOverrides {
     pub(super) min_sentence_chars: Option<usize>,
     pub(super) sentence_gap_ms: Option<u32>,
     pub(super) sentence_fade_ms: Option<u32>,
+    pub(super) sv_embedding: Option<String>,
 }
 
 impl SynthesisOverrides {
@@ -161,6 +166,7 @@ impl SynthesisOverrides {
             min_sentence_chars: req.min_sentence_chars,
             sentence_gap_ms: req.sentence_gap_ms,
             sentence_fade_ms: req.sentence_fade_ms,
+            sv_embedding: req.sv_embedding.clone(),
         }
     }
 
@@ -174,6 +180,7 @@ impl SynthesisOverrides {
             min_sentence_chars: req.min_sentence_chars,
             sentence_gap_ms: req.sentence_gap_ms,
             sentence_fade_ms: req.sentence_fade_ms,
+            sv_embedding: None,
             ..Default::default()
         }
     }
@@ -191,6 +198,7 @@ impl SynthesisOverrides {
             min_sentence_chars: req.min_sentence_chars,
             sentence_gap_ms: req.sentence_gap_ms,
             sentence_fade_ms: req.sentence_fade_ms,
+            sv_embedding: req.sv_embedding.clone(),
         }
     }
 }
@@ -257,6 +265,20 @@ pub(super) fn resolve_synthesis(
         .ok_or_else(|| {
             "reference text is required; select a configured voice or pass prompt_text".to_string()
         })?;
+    let sv_embedding = overrides
+        .sv_embedding
+        .filter(|path| !path.trim().is_empty())
+        .or_else(|| {
+            voice
+                .as_ref()
+                .and_then(|v| v.sv_embedding_path())
+                .map(|p| p.to_string_lossy().into_owned())
+        });
+    if let Some(path) = sv_embedding.as_deref() {
+        if !Path::new(path).is_file() {
+            return Err(format!("SV embedding not found: {path}"));
+        }
+    }
 
     let options = defaults.to_inference_options(
         language,
@@ -269,6 +291,14 @@ pub(super) fn resolve_synthesis(
             repetition_penalty: overrides.repetition_penalty,
         },
     );
+    let options = if let Some(path) = sv_embedding.as_ref() {
+        InferenceOptions {
+            sv_embedding: Some(path.into()),
+            ..options
+        }
+    } else {
+        options
+    };
     let split_method = match overrides.split_method.as_deref().map(str::trim) {
         Some("") | None => defaults.split_method,
         Some(method) => SplitMethod::parse(method)
@@ -434,6 +464,7 @@ mod tests {
                 min_sentence_chars: Some(5),
                 sentence_gap_ms: Some(300),
                 sentence_fade_ms: Some(0),
+                sv_embedding: None,
             },
             temp.path(),
         )
@@ -453,6 +484,37 @@ mod tests {
         assert_eq!(resolved.min_sentence_chars, 5);
         assert_eq!(resolved.sentence_gap_ms, 300);
         assert_eq!(resolved.sentence_fade_ms, 0);
+    }
+
+    #[test]
+    fn resolves_sv_embedding_from_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let ref_path = temp.path().join("ref.wav");
+        let sv_path = temp.path().join("sv.safetensors");
+        write_ref_audio(&ref_path);
+        std::fs::write(
+            &sv_path,
+            b"not a real safetensors; resolver only checks existence",
+        )
+        .unwrap();
+
+        let resolved = resolve_synthesis(
+            None,
+            Some("zh"),
+            Some(ref_path.to_string_lossy().into_owned()),
+            Some("prompt".to_string()),
+            SynthesisOverrides {
+                sv_embedding: Some(sv_path.to_string_lossy().into_owned()),
+                ..Default::default()
+            },
+            temp.path(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved.options.sv_embedding.as_deref(),
+            Some(sv_path.as_path())
+        );
     }
 
     #[test]

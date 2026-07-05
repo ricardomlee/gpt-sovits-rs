@@ -45,7 +45,7 @@ cargo fmt --check
 cargo test --quiet
 cargo test --quiet --features http-api
 cargo clippy --all-targets --features http-api -- -D warnings
-python3 -m py_compile prepare_models.py convert_gpt_weights.py convert_sovits_weights.py
+python3 -m py_compile prepare_models.py convert_gpt_weights.py convert_sovits_weights.py convert_sv_embedding.py
 ```
 
 The default Rust test suite must not require model files. Tests that load real models should be
@@ -189,7 +189,7 @@ cargo fmt --check
 cargo test --quiet
 cargo test --quiet --features http-api
 cargo clippy --all-targets --features http-api -- -D warnings
-python3 -m py_compile prepare_models.py convert_gpt_weights.py convert_sovits_weights.py
+python3 -m py_compile prepare_models.py convert_gpt_weights.py convert_sovits_weights.py convert_sv_embedding.py
 ```
 
 Then:

@@ -4,7 +4,8 @@ use super::ref_audio;
 use super::Pipeline;
 use crate::models::{BertModel, GPTModel, HubertModel, SemanticTokenizer};
 use crate::text_frontend::TextFrontend;
-use crate::{Error, Language, Result};
+use crate::utils::load_safetensors;
+use crate::{Error, InferenceOptions, Language, Result};
 use candle_core::{Device, Tensor};
 use std::path::Path;
 use std::time::Instant;
@@ -17,6 +18,8 @@ pub(super) struct CachedSpeaker {
     pub(super) prompt_tokens: Vec<usize>,
     /// STFT magnitude of reference audio - used for SoVITS ref_enc speaker conditioning.
     pub(super) ref_mel: Option<Tensor>,
+    /// Optional v2Pro speaker-verification embedding, shape [1, 20480].
+    pub(super) sv_embedding: Option<Tensor>,
     /// Phone IDs for reference text.
     pub(super) ref_phoneme_ids: Vec<usize>,
     /// BERT features aligned to reference phone level.
@@ -40,9 +43,29 @@ impl Pipeline {
         ref_text: &str,
         language: Language,
     ) -> Result<()> {
+        let options = InferenceOptions {
+            language,
+            ..InferenceOptions::default()
+        };
+        self.preload_speaker_with_options(ref_audio, ref_text, &options)
+    }
+
+    /// Pre-compute and cache reference speaker features with full inference options.
+    /// This includes v2Pro SV embeddings when configured.
+    pub fn preload_speaker_with_options<P: AsRef<Path>>(
+        &mut self,
+        ref_audio: P,
+        ref_text: &str,
+        options: &InferenceOptions,
+    ) -> Result<()> {
+        let sv_embedding_key = options
+            .sv_embedding
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned());
         let key = (
             ref_audio.as_ref().to_string_lossy().into_owned(),
             ref_text.to_owned(),
+            sv_embedding_key,
         );
         if !self.ref_cache.contains_key(&key) {
             let sovits = self
@@ -59,10 +82,11 @@ impl Pipeline {
                 self.gpt_model.as_ref(),
                 ref_audio.as_ref(),
                 ref_text,
-                language,
+                options.language,
                 &self.device,
                 sr,
                 n_mels,
+                options.sv_embedding.as_deref(),
             )?;
             self.ref_cache.insert(key, cached);
         }
@@ -79,11 +103,16 @@ impl Pipeline {
         &mut self,
         ref_audio: P,
         ref_text: &str,
-        language: Language,
+        options: &InferenceOptions,
     ) -> Result<CachedSpeaker> {
+        let sv_embedding_key = options
+            .sv_embedding
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned());
         let key = (
             ref_audio.as_ref().to_string_lossy().into_owned(),
             ref_text.to_owned(),
+            sv_embedding_key,
         );
         if let Some(cached) = self.ref_cache.get(&key) {
             tracing::debug!("Speaker cache hit: {:?}", key.0);
@@ -104,10 +133,11 @@ impl Pipeline {
             self.gpt_model.as_ref(),
             ref_audio.as_ref(),
             ref_text,
-            language,
+            options.language,
             &self.device,
             sr,
             n_mels,
+            options.sv_embedding.as_deref(),
         )?;
         self.ref_cache.insert(key, cached.clone());
         Ok(cached)
@@ -180,6 +210,7 @@ impl Pipeline {
         device: &Device,
         sovits_sr: u32,
         sovits_n_mels: usize,
+        sv_embedding_path: Option<&Path>,
     ) -> Result<CachedSpeaker> {
         let (ref_phoneme_ids, ref_word2ph, normalized_ref_text) = if !ref_text.is_empty() {
             text_frontend.process_with_word2ph_and_text(ref_text, language)?
@@ -227,12 +258,41 @@ impl Pipeline {
         };
 
         let ref_mel = ref_audio::extract_ref_mel(ref_audio, device, sovits_sr, sovits_n_mels)?;
+        let sv_embedding = sv_embedding_path
+            .map(|path| load_sv_embedding(path, device))
+            .transpose()?;
 
         Ok(CachedSpeaker {
             prompt_tokens,
             ref_mel,
+            sv_embedding,
             ref_phoneme_ids,
             ref_bert_aligned,
         })
+    }
+}
+
+fn load_sv_embedding(path: &Path, device: &Device) -> Result<Tensor> {
+    let weights = load_safetensors(path)?;
+    let tensor = weights
+        .get("sv_embedding")
+        .or_else(|| weights.get("embedding"))
+        .or_else(|| weights.values().next())
+        .ok_or_else(|| {
+            Error::ModelLoadError(format!(
+                "SV embedding safetensors contains no tensors: {}",
+                path.display()
+            ))
+        })?
+        .clone()
+        .to_device(device)?;
+    match tensor.dims() {
+        [20480] => Ok(tensor.unsqueeze(0)?),
+        [1, 20480] => Ok(tensor),
+        other => Err(Error::ModelLoadError(format!(
+            "SV embedding must have shape [20480] or [1, 20480], got {:?}: {}",
+            other,
+            path.display()
+        ))),
     }
 }
