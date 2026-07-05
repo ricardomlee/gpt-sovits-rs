@@ -251,6 +251,8 @@ curl -X POST http://localhost:9880/tts \
 
 Full API examples live in [docs/API.md](docs/API.md).
 
+For real-time assistants, send short completed speech chunks to `/tts` as the LLM produces sentences; use `/tts/stream` when the full text is already known. See [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
+
 ## Troubleshooting
 
 Run doctor first:

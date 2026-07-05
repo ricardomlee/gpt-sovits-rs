@@ -140,6 +140,17 @@ curl -X POST http://localhost:9880/tts \
   --output output.wav
 ```
 
+For agent integrations that stream text from an LLM, prefer sending one finished speech chunk per `/tts` request instead of waiting for a full paragraph:
+
+```bash
+curl -X POST http://localhost:9880/tts \
+  -H 'Content-Type: application/json' \
+  -d '{"voice":"demo","text":"先帝创业未半而中道崩殂。"}' \
+  --output chunk_001.wav
+```
+
+Keep chunks short and speech-like. For Chinese, 10-25 spoken characters per chunk is usually safer than one long paragraph. The client should play returned chunks in order.
+
 Common aliases are accepted for easier client integration:
 
 | Canonical field | Accepted aliases |
@@ -203,7 +214,7 @@ X-TTS-Channels
 
 ### `POST /tts/stream`
 
-Synthesize one request as sentence chunks and stream the WAV response.
+Synthesize one already-complete text request as sentence chunks and stream one WAV response.
 
 ```bash
 curl -X POST http://localhost:9880/tts/stream \
@@ -211,6 +222,10 @@ curl -X POST http://localhost:9880/tts/stream \
   -d '{"voice":"demo","text":"第一句话。第二句话。第三句话。"}' \
   --output stream.wav
 ```
+
+This endpoint is useful when the client already has the full text and wants lower first-byte latency than buffered `/tts`. It is not a token-streaming input endpoint for LLM output. When an agent is still generating text, split complete sentences on the client side and call `/tts` once per speech chunk.
+
+On a single local service instance, concurrent TTS requests are queued behind one inference pipeline. Parallel calls mostly add scheduling complexity unless you run multiple workers or multiple GPUs.
 
 ### `POST /tts/batch`
 
