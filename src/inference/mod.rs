@@ -2,6 +2,7 @@
 //!
 //! Main pipeline for TTS inference
 
+use crate::audio_checks::{validate_audio_quality, AudioQualityMetrics, AudioQualityThresholds};
 use crate::config::Config;
 use crate::models::{BertModel, BigVGAN, GPTModel, HubertModel, SemanticTokenizer, SoVITSModel};
 use crate::text_frontend::TextFrontend;
@@ -23,6 +24,10 @@ use split::split_text;
 pub use split::{
     split_cut5_for_language, split_sentences, split_sentences_for_language, SplitMethod,
 };
+
+const CHUNK_RETRY_TEMPERATURE: f32 = 0.65;
+const CHUNK_RETRY_TOP_P: f32 = 0.85;
+const CHUNK_RETRY_MIN_MAX_TOKENS: usize = 800;
 
 #[derive(Debug, Clone, Copy)]
 enum DecodeBackend {
@@ -345,9 +350,15 @@ impl Pipeline {
         self.preload_speaker(&reference_audio, reference_text, options.language)?;
 
         let mut output: Option<AudioBuffer> = None;
-        for chunk in chunks {
-            let mut audio =
-                self.inference_with_mode(mode, &chunk, &reference_audio, reference_text, options)?;
+        for (index, chunk) in chunks.iter().enumerate() {
+            let mut audio = self.inference_chunk_with_quality_retry(
+                mode,
+                chunk,
+                &reference_audio,
+                reference_text,
+                options,
+                (index, chunks.len()),
+            )?;
             if fade_ms > 0 {
                 audio.fade_in(fade_ms);
                 audio.fade_out(fade_ms);
@@ -369,6 +380,67 @@ impl Pipeline {
             }
         }
         output.ok_or_else(|| Error::InferenceError("No sentence chunks generated".to_string()))
+    }
+
+    fn inference_chunk_with_quality_retry<P: AsRef<Path>>(
+        &mut self,
+        mode: &str,
+        text: &str,
+        reference_audio: P,
+        reference_text: &str,
+        options: &InferenceOptions,
+        chunk_progress: (usize, usize),
+    ) -> Result<AudioBuffer> {
+        let (chunk_index, chunk_total) = chunk_progress;
+        let audio =
+            self.inference_with_mode(mode, text, &reference_audio, reference_text, options)?;
+        let issues = chunk_quality_issues(text, &audio);
+        if issues.is_empty() {
+            return Ok(audio);
+        }
+
+        tracing::warn!(
+            "suspicious generated chunk {}/{}; retrying with conservative sampling; issues={:?}; text={:?}",
+            chunk_index + 1,
+            chunk_total,
+            issues,
+            text
+        );
+
+        let retry_options = conservative_retry_options(options);
+        let retry_audio =
+            self.inference_with_mode(mode, text, reference_audio, reference_text, &retry_options)?;
+        let retry_issues = chunk_quality_issues(text, &retry_audio);
+        if retry_issues.is_empty() {
+            tracing::info!(
+                "chunk {}/{} passed quality check after retry",
+                chunk_index + 1,
+                chunk_total
+            );
+            return Ok(retry_audio);
+        }
+
+        let original_score = chunk_quality_score(&audio, issues.len());
+        let retry_score = chunk_quality_score(&retry_audio, retry_issues.len());
+        if retry_score > original_score {
+            tracing::warn!(
+                "chunk {}/{} retry still suspicious but improved; retry_issues={:?}; text={:?}",
+                chunk_index + 1,
+                chunk_total,
+                retry_issues,
+                text
+            );
+            Ok(retry_audio)
+        } else {
+            tracing::warn!(
+                "chunk {}/{} retry did not improve quality; keeping original; retry_issues={:?}; text={:?}",
+                chunk_index + 1,
+                chunk_total,
+                retry_issues,
+                text
+            );
+            Ok(audio)
+        }
     }
 
     /// Select the production decode path for the active device and model dtype.
@@ -629,14 +701,110 @@ impl<'a> Iterator for SentenceIterator<'a> {
             self.sentences.len(),
             text
         );
-        Some(self.pipeline.inference_with_mode(
+        Some(self.pipeline.inference_chunk_with_quality_retry(
             &self.mode,
             &text,
             &self.reference_audio,
             self.reference_text,
             self.options,
+            (self.index - 1, self.sentences.len()),
         ))
     }
+}
+
+fn conservative_retry_options(options: &InferenceOptions) -> InferenceOptions {
+    let mut retry_options = options.clone();
+    retry_options.temperature = retry_options.temperature.min(CHUNK_RETRY_TEMPERATURE);
+    retry_options.top_p = retry_options.top_p.min(CHUNK_RETRY_TOP_P);
+    retry_options.max_tokens = retry_options.max_tokens.max(CHUNK_RETRY_MIN_MAX_TOKENS);
+    retry_options
+}
+
+fn chunk_quality_issues(text: &str, audio: &AudioBuffer) -> Vec<String> {
+    let spoken_chars = spoken_char_count(text);
+    if spoken_chars == 0 {
+        return Vec::new();
+    }
+
+    let thresholds = AudioQualityThresholds {
+        min_duration_s: min_chunk_duration_s(spoken_chars),
+        max_duration_s: None,
+        min_rms: 8e-5,
+        max_peak: 1.2,
+        max_clipping_ratio: 0.05,
+        max_silence_ratio: 0.995,
+        max_abs_dc_offset: 0.35,
+    };
+    let metrics = AudioQualityMetrics::from_audio(audio);
+    validate_audio_quality(&metrics, &thresholds)
+}
+
+fn spoken_char_count(text: &str) -> usize {
+    let mut in_pronunciation_annotation = false;
+    text.chars()
+        .filter(|c| {
+            if in_pronunciation_annotation {
+                if *c == ']' {
+                    in_pronunciation_annotation = false;
+                }
+                return false;
+            }
+            if *c == '[' {
+                in_pronunciation_annotation = true;
+                return false;
+            }
+            !c.is_whitespace() && !is_punctuation_like(*c)
+        })
+        .count()
+}
+
+fn is_punctuation_like(c: char) -> bool {
+    matches!(
+        c,
+        '\u{3000}'
+            | '，'
+            | '。'
+            | '、'
+            | '；'
+            | '：'
+            | '？'
+            | '！'
+            | '“'
+            | '”'
+            | '‘'
+            | '’'
+            | '《'
+            | '》'
+            | '（'
+            | '）'
+            | '('
+            | ')'
+            | '['
+            | ']'
+            | '{'
+            | '}'
+            | ','
+            | '.'
+            | ';'
+            | ':'
+            | '?'
+            | '!'
+            | '"'
+            | '\''
+            | '-'
+            | '_'
+            | '/'
+            | '\\'
+    )
+}
+
+fn min_chunk_duration_s(spoken_chars: usize) -> f32 {
+    (spoken_chars as f32 * 0.045).clamp(0.18, 2.8)
+}
+
+fn chunk_quality_score(audio: &AudioBuffer, issue_count: usize) -> f32 {
+    let metrics = AudioQualityMetrics::from_audio(audio);
+    metrics.duration_s + metrics.rms.min(1.0) - issue_count as f32 * 4.0
 }
 
 #[cfg(test)]
@@ -672,5 +840,55 @@ mod tests {
 
         assert!(matches!(error, Error::ModelLoadError(_)));
         assert!(error.to_string().contains("GPT model not loaded"));
+    }
+
+    #[test]
+    fn chunk_quality_accepts_reasonable_audio() {
+        let samples = (0..48_000)
+            .map(|i| ((i as f32) * 0.02).sin() * 0.12)
+            .collect();
+        let audio = AudioBuffer::new(samples, 24_000, 1);
+
+        let issues = chunk_quality_issues("臣本布衣，躬耕于南阳。", &audio);
+
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn chunk_quality_flags_audio_that_is_too_short_for_text() {
+        let audio = AudioBuffer::new(vec![0.1; 2_400], 24_000, 1);
+
+        let issues = chunk_quality_issues("先帝创业未半而中道崩殂。", &audio);
+
+        assert!(issues.iter().any(|issue| issue.contains("duration")));
+    }
+
+    #[test]
+    fn chunk_quality_ignores_punctuation_only_chunks() {
+        let audio = AudioBuffer::new(Vec::new(), 24_000, 1);
+
+        let issues = chunk_quality_issues("！？。，", &audio);
+
+        assert!(issues.is_empty(), "{issues:?}");
+    }
+
+    #[test]
+    fn spoken_char_count_ignores_pronunciation_annotations() {
+        assert_eq!(spoken_char_count("盖[gai4]追先帝遗[wei4]陛下"), 7);
+    }
+
+    #[test]
+    fn conservative_retry_options_make_sampling_less_random() {
+        let options = InferenceOptions::builder()
+            .temperature(0.9)
+            .top_p(0.95)
+            .max_tokens(300)
+            .build();
+
+        let retry_options = conservative_retry_options(&options);
+
+        assert_eq!(retry_options.temperature, CHUNK_RETRY_TEMPERATURE);
+        assert_eq!(retry_options.top_p, CHUNK_RETRY_TOP_P);
+        assert_eq!(retry_options.max_tokens, CHUNK_RETRY_MIN_MAX_TOKENS);
     }
 }
