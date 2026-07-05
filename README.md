@@ -84,6 +84,24 @@ cat > voices/demo/voice.json <<'JSON'
 JSON
 ```
 
+For v2Pro voices, put the converted speaker-verification embedding in the same voice directory and
+add `sv_embedding` to `voice.json`:
+
+```bash
+gpt-sovits-convert sv /path/to/logs/demo_v2pro/7-sv_cn/ref.wav.pt voices/demo/ref_sv.safetensors
+```
+
+```json
+{
+  "reference_audio": "ref.wav",
+  "reference_text": "参考音频里逐字对应的文字",
+  "sv_embedding": "ref_sv.safetensors",
+  "language": "zh",
+  "mode": "auto",
+  "split_sentences": true
+}
+```
+
 CPU / NAS:
 
 ```bash

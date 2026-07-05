@@ -32,6 +32,26 @@ cat > voices/demo/voice.json <<'JSON'
 JSON
 ```
 
+v2Pro 音色还应把 SV embedding 放进同一个 voice 目录，并在 `voice.json` 里引用。compose
+只挂载整个 `VOICES_DIR`，不需要给每个音色单独加环境变量：
+
+```bash
+gpt-sovits-convert sv \
+  /path/to/logs/demo_v2pro/7-sv_cn/ref.wav.pt \
+  voices/demo/ref_sv.safetensors
+```
+
+```json
+{
+  "reference_audio": "ref.wav",
+  "reference_text": "参考音频里逐字对应的文字",
+  "sv_embedding": "ref_sv.safetensors",
+  "language": "zh",
+  "mode": "auto",
+  "split_sentences": true
+}
+```
+
 官方 v2 模型或自训练模型使用 Rust converter 准备。项目不分发模型权重，用户需要自行
 下载官方模型、复用已有 GPT-SoVITS 安装目录，或使用自己训练出的 checkpoint：
 
@@ -136,6 +156,7 @@ curl -X POST http://localhost:9880/tts \
   "text": "你好世界",
   "refer_wav_path": "/app/voices/mao/ref.wav",
   "prompt_text": "参考音频对应的文字",
+  "sv_embedding": "/app/voices/mao/ref_sv.safetensors",
   "text_language": "zh"
 }
 ```
