@@ -44,12 +44,16 @@ jobs:
           package="gpt-sovits-${version}-linux-x86_64"
           mkdir -p "dist/${package}/lib"
           cp target/release/gpt-sovits "dist/${package}/"
+          cp target/release/gpt-sovits-convert "dist/${package}/"
           soxr="$(ldconfig -p | awk '$1 == "libsoxr.so.0" { print $NF; exit }')"
           cp -L "${soxr}" "dist/${package}/lib/libsoxr.so.0"
           rpath="\$ORIGIN/lib"
           patchelf --set-rpath "${rpath}" "dist/${package}/gpt-sovits"
+          patchelf --set-rpath "${rpath}" "dist/${package}/gpt-sovits-convert"
           strip "dist/${package}/gpt-sovits"
+          strip "dist/${package}/gpt-sovits-convert"
           "dist/${package}/gpt-sovits" --version
+          "dist/${package}/gpt-sovits-convert" --version
           tar -C dist -czf "dist/${package}.tar.gz" "${package}"
 
       - uses: actions/upload-artifact@v7
@@ -93,13 +97,16 @@ jobs:
           package="gpt-sovits-${version}-macos-${{ matrix.arch }}"
           mkdir -p "dist/${package}"
           cp target/release/gpt-sovits "dist/${package}/"
+          cp target/release/gpt-sovits-convert "dist/${package}/"
           soxr="$(brew --prefix libsoxr)/lib/libsoxr.0.dylib"
           cp -L "${soxr}" "dist/${package}/libsoxr.0.dylib"
           old_soxr="$(otool -L "dist/${package}/gpt-sovits" | awk '/libsoxr/ { print $1; exit }')"
           install_name_tool -change "${old_soxr}" \
             '@loader_path/libsoxr.0.dylib' "dist/${package}/gpt-sovits"
           strip -x "dist/${package}/gpt-sovits"
+          strip -x "dist/${package}/gpt-sovits-convert"
           "dist/${package}/gpt-sovits" --version
+          "dist/${package}/gpt-sovits-convert" --version
           tar -C dist -czf "dist/${package}.tar.gz" "${package}"
 
       - uses: actions/upload-artifact@v7

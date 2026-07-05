@@ -32,7 +32,8 @@ cat > voices/demo/voice.json <<'JSON'
 JSON
 ```
 
-官方 v2 模型使用 Rust converter 准备：
+官方 v2 模型或自训练模型使用 Rust converter 准备。项目不分发模型权重，用户需要自行
+下载官方模型、复用已有 GPT-SoVITS 安装目录，或使用自己训练出的 checkpoint：
 
 ```bash
 mkdir -p models/bert models/hubert
@@ -61,7 +62,7 @@ curl http://localhost:9880/voices
 ```text
 ghcr.io/ricardomlee/gpt-sovits-rs:latest
 ghcr.io/ricardomlee/gpt-sovits-rs:1.0
-ghcr.io/ricardomlee/gpt-sovits-rs:1.0.1
+ghcr.io/ricardomlee/gpt-sovits-rs:1.1.0
 ```
 
 ## CUDA
@@ -84,7 +85,7 @@ curl http://localhost:9880/health
 curl http://localhost:9880/voices
 ```
 
-版本固定标签使用 `1.0.1-cuda-sm89` 这种格式。其他 compute capability 可以本地构建：
+版本固定标签使用 `1.1.0-cuda-sm89` 这种格式。其他 compute capability 可以本地构建：
 
 ```bash
 docker build -f Dockerfile.cuda \
@@ -94,11 +95,13 @@ docker build -f Dockerfile.cuda \
 
 ## Binary
 
-Release 中的 Linux x86_64 包已经携带 `libsoxr`，解压后可直接运行：
+Release 中的 Linux x86_64 包已经携带 `libsoxr`，并包含 `gpt-sovits` 与
+`gpt-sovits-convert` 两个可执行文件，解压后可直接运行：
 
 ```bash
-tar -xzf gpt-sovits-1.0.1-linux-x86_64.tar.gz
-cd gpt-sovits-1.0.1-linux-x86_64
+tar -xzf gpt-sovits-1.1.0-linux-x86_64.tar.gz
+cd gpt-sovits-1.1.0-linux-x86_64
+./gpt-sovits-convert --version
 ./gpt-sovits --models-dir /path/to/models \
   --http --port 9880
 ```

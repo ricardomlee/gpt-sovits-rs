@@ -39,6 +39,8 @@ Inference and checkpoint conversion run without Python. Use `gpt-sovits-convert`
 ### Docker
 
 Docker Compose pulls prebuilt images from GHCR. Models, voices, and outputs stay in mounted folders.
+The images do not contain model weights, but they do include both `gpt-sovits` and
+`gpt-sovits-convert`.
 
 ```bash
 git clone https://github.com/ricardomlee/gpt-sovits-rs.git
@@ -52,6 +54,18 @@ cp /path/to/chinese-roberta-wwm-ext-large/tokenizer.json models/bert/tokenizer.j
 gpt-sovits-convert hubert /path/to/chinese-hubert-base/pytorch_model.bin models/hubert/hubert.safetensors
 
 cp .env.example .env
+```
+
+If you want a Docker-only conversion flow, run the converter from the image and mount your own
+source-model directory plus a writable output directory:
+
+```bash
+docker run --rm \
+  -v "$PWD/models:/models" \
+  -v "/path/to/source-models:/source:ro" \
+  --entrypoint gpt-sovits-convert \
+  ghcr.io/ricardomlee/gpt-sovits-rs:latest \
+  gpt /source/s1bert25hz.ckpt /models/gpt-model.safetensors
 ```
 
 Create a voice profile from your own 3-10 second reference clip:
@@ -109,10 +123,11 @@ Check a local setup before running inference:
 
 ### Release Binary
 
-Download a release package, then run:
+Download a release package. It contains both the inference server and the Rust model converter:
 
 ```bash
 ./gpt-sovits --version
+./gpt-sovits-convert --version
 ./gpt-sovits \
   --text "你好，这是一次语音合成测试。" \
   --reference-audio ref.wav \
@@ -162,7 +177,8 @@ If you want browser playback directly on GitHub, use a GitHub Pages demo page wi
 
 ## Models
 
-Models are not bundled with the binary or Docker images. Download the official GPT-SoVITS v2 checkpoints and convert them with the Rust converter:
+Models are not bundled with the binary or Docker images. Download official GPT-SoVITS v2
+checkpoints, or use your own trained checkpoints, then convert them with the Rust converter:
 
 ```bash
 mkdir -p models/bert models/hubert

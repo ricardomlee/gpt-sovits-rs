@@ -1,6 +1,7 @@
 # 模型下载与转换
 
-`gpt-sovits-rs` 不在 binary 或 Docker 镜像中分发模型权重。默认推理需要四部分：
+`gpt-sovits-rs` 不在源码仓库、release binary 或 Docker 镜像中分发模型权重。用户应自行
+从官方渠道下载、从已有 GPT-SoVITS 安装目录复制，或使用自己训练好的模型。默认推理需要四部分：
 
 | 组件 | 默认来源 | 转换后路径 |
 |---|---|---|
@@ -48,8 +49,20 @@ gpt-sovits-convert hubert \
   models/hubert/hubert.safetensors
 ```
 
-当前仓库不内置下载器；下载可以通过浏览器、`huggingface-cli`、`git lfs`、系统包管理器或
-你已有的 GPT-SoVITS 安装目录完成。转换本身不需要 Python。
+当前仓库不内置下载器，也不镜像第三方模型。下载可以通过浏览器、`huggingface-cli`、
+`git lfs`、系统包管理器或你已有的 GPT-SoVITS 安装目录完成。转换本身不需要 Python。
+
+如果只想使用 Docker 镜像里的转换器，可以把源模型目录只读挂载进去，把输出写入本机
+`models/`：
+
+```bash
+docker run --rm \
+  -v "$PWD/models:/models" \
+  -v "/path/to/source-models:/source:ro" \
+  --entrypoint gpt-sovits-convert \
+  ghcr.io/ricardomlee/gpt-sovits-rs:latest \
+  sovits /source/gsv-v2final-pretrained/s2G2333k.pth /models/sovits-model.safetensors
+```
 
 ## 自训练音色模型
 

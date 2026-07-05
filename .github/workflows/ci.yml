@@ -73,7 +73,9 @@ jobs:
         run: cargo build --release --locked --features http-api,mkl
 
       - name: Smoke test binary
-        run: target/release/gpt-sovits --version
+        run: |
+          target/release/gpt-sovits --version
+          target/release/gpt-sovits-convert --version
 
       - name: Package Linux CPU binary
         shell: bash
@@ -82,12 +84,16 @@ jobs:
           package="gpt-sovits-ci-linux-x86_64"
           mkdir -p "dist/${package}/lib"
           cp target/release/gpt-sovits "dist/${package}/"
+          cp target/release/gpt-sovits-convert "dist/${package}/"
           soxr="$(ldconfig -p | awk '$1 == "libsoxr.so.0" { print $NF; exit }')"
           cp -L "${soxr}" "dist/${package}/lib/libsoxr.so.0"
           rpath="\$ORIGIN/lib"
           patchelf --set-rpath "${rpath}" "dist/${package}/gpt-sovits"
+          patchelf --set-rpath "${rpath}" "dist/${package}/gpt-sovits-convert"
           strip "dist/${package}/gpt-sovits"
+          strip "dist/${package}/gpt-sovits-convert"
           "dist/${package}/gpt-sovits" --version
+          "dist/${package}/gpt-sovits-convert" --version
           tar -C dist -czf "dist/${package}.tar.gz" "${package}"
 
       - name: Upload Linux CPU binary

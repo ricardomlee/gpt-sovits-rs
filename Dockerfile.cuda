@@ -31,7 +31,8 @@ COPY . .
 
 # Build binary — cuda enables Candle CUDA; BERT/HuBERT use native Candle (no ORT)
 RUN cargo build --release --locked --features http-api,cuda && \
-    cp target/release/gpt-sovits /app/gpt-sovits
+    cp target/release/gpt-sovits /app/gpt-sovits && \
+    cp target/release/gpt-sovits-convert /app/gpt-sovits-convert
 
 # ============================================================
 # Runtime stage — ubuntu:24.04 + only required CUDA libs
@@ -54,6 +55,7 @@ COPY --from=builder /usr/local/cuda/lib64/libcublasLt.so.13.3.0.5 /usr/local/lib
 COPY --from=builder /usr/local/cuda/lib64/libcurand.so.10.4.2.51  /usr/local/lib/
 
 COPY --from=builder /app/gpt-sovits /usr/local/bin/gpt-sovits
+COPY --from=builder /app/gpt-sovits-convert /usr/local/bin/gpt-sovits-convert
 
 RUN ldconfig && mkdir -p /app/models
 
