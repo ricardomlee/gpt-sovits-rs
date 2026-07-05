@@ -7,7 +7,7 @@
 //! → enc_p → flow → decoder
 
 use crate::utils::profiling::{sync_profile_enabled, sync_profile_stage};
-use crate::utils::{load_safetensors, StateDict};
+use crate::utils::{load_safetensors, Linear, StateDict};
 use crate::{Error, Result};
 use candle_core::{DType, Device, Tensor};
 use std::time::Instant;
@@ -40,6 +40,12 @@ pub struct SoVITSModel {
 
     // Reference encoder for speaker embedding (MelStyleEncoder)
     ref_enc: RefEnc,
+
+    // v2Pro conditioning layers. The reference encoder produces a 1024-channel
+    // speaker condition, which is projected to 512 only for enc_p.
+    ge_to512: Option<Linear>,
+    sv_emb: Option<Linear>,
+    prelu_weight: Option<Tensor>,
 
     // Configuration
     n_mels: usize,
@@ -153,7 +159,6 @@ impl SoVITSModel {
         // Configuration
         let hidden_channels = 192;
         let n_layers = 6;
-        let gin_channels = 512;
         let enc_out_channels = 192;
 
         // Load quantizer (dimension=768 matches codebook embedding size)
@@ -195,6 +200,55 @@ impl SoVITSModel {
 
         // Load RefEnc (MelStyleEncoder for speaker embedding)
         let ref_enc = RefEnc::load(&state_dict, device, dtype)?;
+        let gin_channels = state_dict
+            .get("ref_enc.fc.fc.weight")?
+            .dims()
+            .first()
+            .copied()
+            .unwrap_or(512);
+
+        let ge_to512 = if state_dict.contains("ge_to512.weight") {
+            let weight = state_dict
+                .get("ge_to512.weight")?
+                .to_device(device)?
+                .to_dtype(dtype)?;
+            let bias = state_dict
+                .get("ge_to512.bias")
+                .ok()
+                .cloned()
+                .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
+                .transpose()?;
+            Some(Linear::new(weight, bias))
+        } else {
+            None
+        };
+
+        let sv_emb = if state_dict.contains("sv_emb.weight") {
+            let weight = state_dict
+                .get("sv_emb.weight")?
+                .to_device(device)?
+                .to_dtype(dtype)?;
+            let bias = state_dict
+                .get("sv_emb.bias")
+                .ok()
+                .cloned()
+                .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
+                .transpose()?;
+            Some(Linear::new(weight, bias))
+        } else {
+            None
+        };
+
+        let prelu_weight = if state_dict.contains("prelu.weight") {
+            Some(
+                state_dict
+                    .get("prelu.weight")?
+                    .to_device(device)?
+                    .to_dtype(dtype)?,
+            )
+        } else {
+            None
+        };
 
         Ok(Self {
             device: device.clone(),
@@ -205,6 +259,9 @@ impl SoVITSModel {
             flow,
             decoder,
             ref_enc,
+            ge_to512,
+            sv_emb,
+            prelu_weight,
             n_mels: 100,
             sampling_rate: 32000,
             gin_channels,
@@ -247,6 +304,30 @@ impl SoVITSModel {
         noise_scale: f32,
         speed: f32,
     ) -> Result<Vec<f32>> {
+        self.synthesize_with_speed_and_sv(
+            semantic_tokens,
+            text_tokens,
+            ref_audio_mel,
+            None,
+            noise_scale,
+            speed,
+        )
+    }
+
+    /// Synthesize audio with an optional v2Pro speaker-verification embedding.
+    ///
+    /// `sv_embedding` must be `[1, 20480]` or `[20480]` and is only used by v2Pro/v2ProPlus
+    /// checkpoints that contain `sv_emb.*` weights. When omitted, a zero embedding is used so
+    /// v2Pro checkpoints can still run from the reference mel alone.
+    pub fn synthesize_with_speed_and_sv(
+        &self,
+        semantic_tokens: &[usize],
+        text_tokens: &[usize],
+        ref_audio_mel: Option<&Tensor>,
+        sv_embedding: Option<&Tensor>,
+        noise_scale: f32,
+        speed: f32,
+    ) -> Result<Vec<f32>> {
         let profile_start = Instant::now();
         if semantic_tokens.is_empty() {
             return Err(Error::InferenceError("Empty semantic tokens".to_string()));
@@ -263,23 +344,8 @@ impl SoVITSModel {
         let text_vec: Vec<i64> = text_tokens.iter().map(|&x| x as i64).collect();
         let text = Tensor::from_vec(text_vec, (1, text_tokens.len()), &self.device)?;
 
-        // Compute speaker embedding using ref_enc (MelStyleEncoder)
-        // Python: ge = self.ref_enc(refer[:, :704] * refer_mask, refer_mask)
-        let ge = if let Some(mel) = ref_audio_mel {
-            // Caller must pre-truncate to 704 bins: mel[:, :704, :]
-            let mel_in = mel.clone();
-
-            // Build refer_mask from time dimension (all valid since we have full audio)
-            let time = mel_in.dims()[2];
-            let refer_mask =
-                Tensor::full(1.0f32, &[1, 1, time], &self.device)?.to_dtype(mel_in.dtype())?;
-
-            // Apply mask and compute ge
-            let mel_masked = mel_in.broadcast_mul(&refer_mask)?;
-            self.ref_enc.forward(&mel_masked, &refer_mask)?
-        } else {
-            Tensor::zeros((1, 512, 1), self.dtype, &self.device)?
-        };
+        let ge = self.compute_ge(ref_audio_mel, sv_embedding)?;
+        let ge_enc = self.ge_for_enc_p(&ge)?;
         sync_profile_stage(&self.device)?;
         let ref_enc_ms = profile_start.elapsed().as_millis();
 
@@ -299,9 +365,14 @@ impl SoVITSModel {
 
         // Pass through enc_p
         let stage_start = Instant::now();
-        let (_y, m_p, logs_p, y_mask) =
-            self.enc_p
-                .forward(&quantized_up, &y_lengths, &text, &text_lengths, &ge, speed)?;
+        let (_y, m_p, logs_p, y_mask) = self.enc_p.forward(
+            &quantized_up,
+            &y_lengths,
+            &text,
+            &text_lengths,
+            &ge_enc,
+            speed,
+        )?;
         sync_profile_stage(&self.device)?;
         let enc_p_ms = stage_start.elapsed().as_millis();
 
@@ -346,6 +417,57 @@ impl SoVITSModel {
         Ok(output)
     }
 
+    fn compute_ge(
+        &self,
+        ref_audio_mel: Option<&Tensor>,
+        sv_embedding: Option<&Tensor>,
+    ) -> Result<Tensor> {
+        let ge = if let Some(mel) = ref_audio_mel {
+            let mel_in = mel.to_dtype(self.dtype)?;
+            let time = mel_in.dims()[2];
+            let refer_mask =
+                Tensor::full(1.0f32, &[1, 1, time], &self.device)?.to_dtype(mel_in.dtype())?;
+            let mel_masked = mel_in.broadcast_mul(&refer_mask)?;
+            self.ref_enc.forward(&mel_masked, &refer_mask)?
+        } else {
+            Tensor::zeros((1, self.gin_channels, 1), self.dtype, &self.device)?
+        };
+
+        if let Some(sv_emb) = &self.sv_emb {
+            let sv = match sv_embedding {
+                Some(tensor) if tensor.dims() == [20480] => tensor.unsqueeze(0)?,
+                Some(tensor) => tensor.clone(),
+                None => Tensor::zeros((1, 20480), self.dtype, &self.device)?,
+            }
+            .to_device(&self.device)?
+            .to_dtype(self.dtype)?;
+            let sv = sv_emb.forward(&sv)?.unsqueeze(2)?;
+            let ge = ge.broadcast_add(&sv)?;
+            if let Some(weight) = &self.prelu_weight {
+                return self.prelu(&ge, weight);
+            }
+            return Ok(ge);
+        }
+
+        Ok(ge)
+    }
+
+    fn ge_for_enc_p(&self, ge: &Tensor) -> Result<Tensor> {
+        if let Some(project) = &self.ge_to512 {
+            let ge = ge.transpose(1, 2)?;
+            return Ok(project.forward(&ge)?.transpose(1, 2)?);
+        }
+        Ok(ge.clone())
+    }
+
+    fn prelu(&self, x: &Tensor, weight: &Tensor) -> Result<Tensor> {
+        let zeros = Tensor::zeros_like(x)?;
+        let positive = x.maximum(&zeros)?;
+        let negative = x.minimum(&zeros)?;
+        let alpha = weight.reshape((1, weight.dims()[0], 1))?;
+        Ok(positive.add(&negative.broadcast_mul(&alpha)?)?)
+    }
+
     fn sample_noise(&self, mean: &Tensor) -> Result<Tensor> {
         Ok(Tensor::randn(0.0f32, 1.0, mean.dims(), &self.device)?.to_dtype(mean.dtype())?)
     }
@@ -371,16 +493,8 @@ impl SoVITSModel {
         let text_vec: Vec<i64> = text_tokens.iter().map(|&x| x as i64).collect();
         let text = Tensor::from_vec(text_vec, (1, text_tokens.len()), &self.device)?;
 
-        let ge = if let Some(mel) = ref_audio_mel {
-            let mel_in = mel.clone();
-            let time = mel_in.dims()[2];
-            let refer_mask =
-                Tensor::full(1.0f32, &[1, 1, time], &self.device)?.to_dtype(mel_in.dtype())?;
-            let mel_masked = mel_in.broadcast_mul(&refer_mask)?;
-            self.ref_enc.forward(&mel_masked, &refer_mask)?
-        } else {
-            Tensor::zeros((1, 512, 1), self.dtype, &self.device)?
-        };
+        let ge = self.compute_ge(ref_audio_mel, None)?;
+        let ge_enc = self.ge_for_enc_p(&ge)?;
 
         let quantized = self.quantizer.decode(&codes)?;
         let quantized_up = nearest_upsample_2x(&quantized)?;
@@ -391,9 +505,14 @@ impl SoVITSModel {
         let time_len = quantized_up.dims()[2];
         let y_mask = build_sequence_mask_typed(&y_lengths, time_len, 1, &self.device, self.dtype)?;
 
-        let (_y, m_p, logs_p, _y_mask_enc) =
-            self.enc_p
-                .forward(&quantized_up, &y_lengths, &text, &text_lengths, &ge, 1.0)?;
+        let (_y, m_p, logs_p, _y_mask_enc) = self.enc_p.forward(
+            &quantized_up,
+            &y_lengths,
+            &text,
+            &text_lengths,
+            &ge_enc,
+            1.0,
+        )?;
 
         // enc_p.forward() already clamps logs to [-5.0, 2.0]
         let noise = self.sample_noise(&m_p)?;
@@ -492,17 +611,10 @@ impl SoVITSModel {
             }
         }
 
-        let ge = if let Some(mel) = ref_audio_mel {
-            let mel_in = mel.to_dtype(self.dtype)?;
-            let refer_mask_m = Tensor::full(1.0f32, &[1, 1, mel_in.dims()[2]], &self.device)?
-                .to_dtype(self.dtype)?;
-            let mel_masked = mel_in.broadcast_mul(&refer_mask_m)?;
-            let ge = self.ref_enc.forward(&mel_masked, &refer_mask_m)?;
-            self.save_tensor("sovits_debug_ge", &ge)?;
-            ge
-        } else {
-            Tensor::zeros((1, 512, 1), self.dtype, &self.device)?
-        };
+        let ge = self.compute_ge(ref_audio_mel, None)?;
+        let ge_enc = self.ge_for_enc_p(&ge)?;
+        self.save_tensor("sovits_debug_ge", &ge)?;
+        self.save_tensor("sovits_debug_ge_enc", &ge_enc)?;
 
         // Quantizer
         let quantized = self.quantizer.decode(&codes)?;
@@ -518,9 +630,14 @@ impl SoVITSModel {
         let y_mask = build_sequence_mask_typed(&y_lengths, time_len, 1, &self.device, self.dtype)?;
 
         // enc_p
-        let (_y, m_p, logs_p, _y_mask_enc) =
-            self.enc_p
-                .forward(&quantized_up, &y_lengths, &text, &text_lengths, &ge, 1.0)?;
+        let (_y, m_p, logs_p, _y_mask_enc) = self.enc_p.forward(
+            &quantized_up,
+            &y_lengths,
+            &text,
+            &text_lengths,
+            &ge_enc,
+            1.0,
+        )?;
         self.save_tensor("sovits_debug_encp_m", &m_p)?;
         self.save_tensor("sovits_debug_encp_logs", &logs_p)?;
 

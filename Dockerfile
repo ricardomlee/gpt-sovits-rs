@@ -31,7 +31,8 @@ RUN if [ "${TARGETARCH}" = "amd64" ]; then \
     else \
         cargo build --release --locked --features http-api; \
     fi && \
-    cp target/release/gpt-sovits /app/gpt-sovits
+    cp target/release/gpt-sovits /app/gpt-sovits && \
+    cp target/release/gpt-sovits-convert /app/gpt-sovits-convert
 
 # ============================================================
 # Stage 2: Runtime (minimal)
@@ -47,6 +48,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/gpt-sovits /usr/local/bin/gpt-sovits
+COPY --from=builder /app/gpt-sovits-convert /usr/local/bin/gpt-sovits-convert
 
 RUN mkdir -p /app/models
 

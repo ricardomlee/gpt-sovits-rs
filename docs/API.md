@@ -28,6 +28,7 @@ Useful options:
 | `--split-sentences` | Split long text and concatenate chunks. |
 | `--split-method sentence|cut5` | Use smooth sentence splitting or Python-compatible punctuation splitting. |
 | `--max-tokens <n>` | Raise this for long sentences. |
+| `--sv-embedding <path>` | Optional v2Pro speaker-verification embedding safetensors. |
 | `--list-voices` | List voice profiles without loading models. |
 | `--inspect <model.safetensors>` | Print model tensor names and shapes. |
 
@@ -159,6 +160,7 @@ Common aliases are accepted for easier client integration:
 | `text_language` | `language`, `lang`, `languageCode` |
 | `refer_wav_path` | `reference_audio`, `referenceAudio`, `prompt_wav_path`, `promptWavPath` |
 | `prompt_text` | `reference_text`, `referenceText` |
+| `sv_embedding` | `svEmbedding`, `speakerEmbedding` |
 
 Long text quality controls:
 

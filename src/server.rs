@@ -239,7 +239,7 @@ async fn tts_stream_handler(
         let mut pipeline = rt.block_on(pipeline.lock());
 
         // Preload speaker features (cached — free on 2nd+ call)
-        if let Err(e) = pipeline.preload_speaker(&refer_path, &prompt_text, options.language) {
+        if let Err(e) = pipeline.preload_speaker_with_options(&refer_path, &prompt_text, &options) {
             warn!("Failed to preload speaker: {}", e);
         }
 
@@ -422,7 +422,7 @@ async fn tts_batch_handler(
         let mut pipeline = rt.block_on(pipeline.lock());
 
         // Preload speaker once — free on subsequent calls (cache hit)
-        if let Err(e) = pipeline.preload_speaker(&refer_path, &prompt_text, language) {
+        if let Err(e) = pipeline.preload_speaker_with_options(&refer_path, &prompt_text, &options) {
             warn!("Speaker preload failed: {}", e);
         }
 

@@ -75,6 +75,10 @@ pub(crate) struct Args {
     #[arg(long)]
     pub(crate) reference_text: Option<String>,
 
+    /// v2Pro speaker-verification embedding safetensors file
+    #[arg(long)]
+    pub(crate) sv_embedding: Option<PathBuf>,
+
     /// Language of reference audio
     #[arg(long)]
     pub(crate) language: Option<String>,
@@ -295,6 +299,16 @@ pub(crate) fn run() {
             std::process::exit(1);
         }
     };
+    let sv_embedding = resolve_sv_embedding(&args, voice_profile.as_ref());
+    if let Some(path) = sv_embedding.as_ref() {
+        if !path.is_file() {
+            eprintln!(
+                "Error: --sv-embedding file does not exist: {}",
+                path.display()
+            );
+            std::process::exit(1);
+        }
+    }
 
     let output = args.output;
 
@@ -411,6 +425,14 @@ pub(crate) fn run() {
             repetition_penalty: args.repetition_penalty,
         },
     );
+    let options = if let Some(path) = sv_embedding {
+        InferenceOptions {
+            sv_embedding: Some(path),
+            ..options
+        }
+    } else {
+        options
+    };
 
     // Run inference
     info!("Running inference...");
@@ -519,6 +541,12 @@ fn resolve_reference_text(args: &Args, voice: Option<&LoadedVoiceProfile>) -> Op
     args.reference_text
         .clone()
         .or_else(|| voice.and_then(|v| v.reference_text().map(str::to_string)))
+}
+
+fn resolve_sv_embedding(args: &Args, voice: Option<&LoadedVoiceProfile>) -> Option<PathBuf> {
+    args.sv_embedding
+        .clone()
+        .or_else(|| voice.and_then(|v| v.sv_embedding_path()))
 }
 
 /// Inspect model file

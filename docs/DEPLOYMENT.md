@@ -32,13 +32,16 @@ cat > voices/demo/voice.json <<'JSON'
 JSON
 ```
 
-官方 v2 模型可以自动准备：
+官方 v2 模型或自训练模型使用 Rust converter 准备。项目不分发模型权重，用户需要自行
+下载官方模型、复用已有 GPT-SoVITS 安装目录，或使用自己训练出的 checkpoint：
 
 ```bash
-python3 -m venv .venv-models
-. .venv-models/bin/activate
-pip install -r requirements-models.txt
-python prepare_models.py
+mkdir -p models/bert models/hubert
+gpt-sovits-convert gpt /path/to/s1bert25hz.ckpt models/gpt-model.safetensors
+gpt-sovits-convert sovits /path/to/s2G2333k.pth models/sovits-model.safetensors
+gpt-sovits-convert bert /path/to/chinese-roberta-wwm-ext-large/pytorch_model.bin models/bert/bert.safetensors
+cp /path/to/chinese-roberta-wwm-ext-large/tokenizer.json models/bert/tokenizer.json
+gpt-sovits-convert hubert /path/to/chinese-hubert-base/pytorch_model.bin models/hubert/hubert.safetensors
 ```
 
 ## CPU
@@ -59,7 +62,7 @@ curl http://localhost:9880/voices
 ```text
 ghcr.io/ricardomlee/gpt-sovits-rs:latest
 ghcr.io/ricardomlee/gpt-sovits-rs:1.0
-ghcr.io/ricardomlee/gpt-sovits-rs:1.0.1
+ghcr.io/ricardomlee/gpt-sovits-rs:1.1.0
 ```
 
 ## CUDA
@@ -82,7 +85,7 @@ curl http://localhost:9880/health
 curl http://localhost:9880/voices
 ```
 
-版本固定标签使用 `1.0.1-cuda-sm89` 这种格式。其他 compute capability 可以本地构建：
+版本固定标签使用 `1.1.0-cuda-sm89` 这种格式。其他 compute capability 可以本地构建：
 
 ```bash
 docker build -f Dockerfile.cuda \
@@ -92,11 +95,13 @@ docker build -f Dockerfile.cuda \
 
 ## Binary
 
-Release 中的 Linux x86_64 包已经携带 `libsoxr`，解压后可直接运行：
+Release 中的 Linux x86_64 包已经携带 `libsoxr`，并包含 `gpt-sovits` 与
+`gpt-sovits-convert` 两个可执行文件，解压后可直接运行：
 
 ```bash
-tar -xzf gpt-sovits-1.0.1-linux-x86_64.tar.gz
-cd gpt-sovits-1.0.1-linux-x86_64
+tar -xzf gpt-sovits-1.1.0-linux-x86_64.tar.gz
+cd gpt-sovits-1.1.0-linux-x86_64
+./gpt-sovits-convert --version
 ./gpt-sovits --models-dir /path/to/models \
   --http --port 9880
 ```

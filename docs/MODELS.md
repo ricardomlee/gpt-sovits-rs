@@ -1,6 +1,7 @@
 # 模型下载与转换
 
-`gpt-sovits-rs` 不在 binary 或 Docker 镜像中分发模型权重。默认推理需要四部分：
+`gpt-sovits-rs` 不在源码仓库、release binary 或 Docker 镜像中分发模型权重。用户应自行
+从官方渠道下载、从已有 GPT-SoVITS 安装目录复制，或使用自己训练好的模型。默认推理需要四部分：
 
 | 组件 | 默认来源 | 转换后路径 |
 |---|---|---|
@@ -12,18 +13,9 @@
 模型源文件和转换结果合计需要约 3 GiB。转换时建议至少保留 6 GiB 可用磁盘空间和
 4 GiB 可用内存。
 
-## 自动下载
+## 准备官方 v2 模型
 
-创建独立 Python 环境：
-
-```bash
-python3 -m venv .venv-models
-. .venv-models/bin/activate
-pip install -r requirements-models.txt
-python prepare_models.py
-```
-
-脚本下载这些官方 v2 文件：
+先从 GPT-SoVITS 官方模型仓库或 Hugging Face 缓存中取得这些源文件：
 
 ```text
 gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt
@@ -33,39 +25,43 @@ chinese-roberta-wwm-ext-large/tokenizer.json
 chinese-hubert-base/pytorch_model.bin
 ```
 
-已存在的输出默认不会覆盖。重新生成时使用：
+然后用 Rust converter 生成运行时文件：
 
 ```bash
-python prepare_models.py --force
+mkdir -p models/bert models/hubert
+
+gpt-sovits-convert gpt \
+  /path/to/gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt \
+  models/gpt-model.safetensors
+
+gpt-sovits-convert sovits \
+  /path/to/gsv-v2final-pretrained/s2G2333k.pth \
+  models/sovits-model.safetensors
+
+gpt-sovits-convert bert \
+  /path/to/chinese-roberta-wwm-ext-large/pytorch_model.bin \
+  models/bert/bert.safetensors
+
+cp /path/to/chinese-roberta-wwm-ext-large/tokenizer.json models/bert/tokenizer.json
+
+gpt-sovits-convert hubert \
+  /path/to/chinese-hubert-base/pytorch_model.bin \
+  models/hubert/hubert.safetensors
 ```
 
-Hugging Face 下载缓存遵循 `HF_HOME`。例如把缓存放到大容量磁盘：
+当前仓库不内置下载器，也不镜像第三方模型。下载可以通过浏览器、`huggingface-cli`、
+`git lfs`、系统包管理器或你已有的 GPT-SoVITS 安装目录完成。转换本身不需要 Python。
+
+如果只想使用 Docker 镜像里的转换器，可以把源模型目录只读挂载进去，把输出写入本机
+`models/`：
 
 ```bash
-HF_HOME=/data/huggingface python prepare_models.py
-```
-
-## 使用本地源模型
-
-如果已经安装原版 GPT-SoVITS：
-
-```bash
-python prepare_models.py \
-  --source-dir /path/to/GPT-SoVITS/GPT_SoVITS/pretrained_models
-```
-
-脚本优先读取本地文件，缺失项才会下载。
-
-也可以逐项覆盖：
-
-```bash
-python prepare_models.py \
-  --gpt-checkpoint /path/to/model.ckpt \
-  --sovits-checkpoint /path/to/model.pth \
-  --bert-checkpoint /path/to/bert/pytorch_model.bin \
-  --bert-tokenizer /path/to/bert/tokenizer.json \
-  --hubert-checkpoint /path/to/hubert/pytorch_model.bin \
-  --force
+docker run --rm \
+  -v "$PWD/models:/models" \
+  -v "/path/to/source-models:/source:ro" \
+  --entrypoint gpt-sovits-convert \
+  ghcr.io/ricardomlee/gpt-sovits-rs:latest \
+  sovits /source/gsv-v2final-pretrained/s2G2333k.pth /models/sovits-model.safetensors
 ```
 
 ## 自训练音色模型
@@ -73,38 +69,43 @@ python prepare_models.py \
 自训练或微调的 GPT、SoVITS 模型只需要替换前两项：
 
 ```bash
-python convert_gpt_weights.py \
+gpt-sovits-convert gpt \
   /path/to/custom-gpt.ckpt \
   models/gpt-model.safetensors
 
-python convert_sovits_weights.py \
+gpt-sovits-convert sovits \
   /path/to/custom-sovits.pth \
   models/sovits-model.safetensors
 ```
 
-GPT 与 SoVITS 必须来自兼容的 GPT-SoVITS v2 架构。v3、v4、v2Pro 和改过网络结构的
+GPT 与 SoVITS 必须来自兼容的 GPT-SoVITS v2 或 v2Pro 架构。v3、v4 和改过网络结构的
 checkpoint 不能仅靠改扩展名使用。
 
-部分旧版或第三方 checkpoint 会在 `.ckpt`/`.pth` 里保存 `utils.HParams` 等 Python
-对象，PyTorch 的安全 `weights_only=True` 路径会拒绝读取。只在确认文件来源可信时使用
-legacy pickle 开关：
+v2Pro 的 SoVITS `.pth` 使用官方 `05`/`06` 版本头，`gpt-sovits-convert sovits` 会自动处理。
+如果训练预处理目录里有 `logs/<voice>_v2pro/7-sv_cn/<ref>.wav.pt`，可以把它转换成 Rust
+runtime 可读的 speaker-verification embedding：
 
 ```bash
-mkdir -p models/diana
-
-python convert_gpt_weights.py \
-  models/Diana-GPT.ckpt \
-  models/diana/gpt-model.safetensors \
-  --allow-unsafe-pickle
-
-python convert_sovits_weights.py \
-  models/Diana-SoVITS.pth \
-  models/diana/sovits-model.safetensors \
-  --allow-unsafe-pickle
+gpt-sovits-convert sv \
+  logs/diana_v2pro/7-sv_cn/ref.wav.pt \
+  voices/diana/ref_sv.safetensors
 ```
 
-这类音色模型仍然需要一段与文本严格对应的参考音频。可以用 ASR 先转写，再人工修正成
-3 到 10 秒的短参考文本。
+然后在 `voices/diana/voice.json` 中配置：
+
+```json
+{
+  "reference_audio": "ref.wav",
+  "reference_text": "参考音频对应的文字",
+  "sv_embedding": "ref_sv.safetensors",
+  "language": "zh"
+}
+```
+
+不提供 `sv_embedding` 时，v2Pro 仍可运行，但会使用零 SV embedding，音色相似度通常不如官方完整路径。
+
+自训练音色仍然需要一段与文本严格对应的参考音频。可以用 ASR 先转写，再人工修正成 3 到
+10 秒的短参考文本。
 
 ## 验证
 

@@ -75,10 +75,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Example Complete ===");
     println!("\nNote: This example shows the API usage.");
     println!("To run actual inference, download and convert the models first:");
-    println!("  python scripts/download_and_convert.py --output-dir models");
+    println!("  gpt-sovits-convert gpt /path/to/gpt.ckpt models/gpt-model.safetensors");
+    println!("  gpt-sovits-convert sovits /path/to/sovits.pth models/sovits-model.safetensors");
     println!("\nThen run with:");
-    println!("  cargo run --release -- --gpt-model models/gpt-s1bert.safetensors \\");
-    println!("    --sovits-model models/sovits-s2G.safetensors \\");
+    println!(
+        "  cargo run --release --bin gpt-sovits -- --gpt-model models/gpt-model.safetensors \\"
+    );
+    println!("    --sovits-model models/sovits-model.safetensors \\");
     println!("    --text '你好世界' \\");
     println!("    --reference-audio ref.wav \\");
     println!("    --reference-text '参考文本' \\");
