@@ -1320,7 +1320,7 @@ dependencies = [
  "rand 0.8.5",
  "rayon",
  "rustfft",
- "safetensors 0.4.5",
+ "safetensors 0.7.0",
  "serde",
  "serde_json",
  "soxr",
@@ -1333,6 +1333,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "zip",
 ]
 
 [[package]]

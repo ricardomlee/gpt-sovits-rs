@@ -32,13 +32,15 @@ cat > voices/demo/voice.json <<'JSON'
 JSON
 ```
 
-官方 v2 模型可以自动准备：
+官方 v2 模型使用 Rust converter 准备：
 
 ```bash
-python3 -m venv .venv-models
-. .venv-models/bin/activate
-pip install -r requirements-models.txt
-python prepare_models.py
+mkdir -p models/bert models/hubert
+gpt-sovits-convert gpt /path/to/s1bert25hz.ckpt models/gpt-model.safetensors
+gpt-sovits-convert sovits /path/to/s2G2333k.pth models/sovits-model.safetensors
+gpt-sovits-convert bert /path/to/chinese-roberta-wwm-ext-large/pytorch_model.bin models/bert/bert.safetensors
+cp /path/to/chinese-roberta-wwm-ext-large/tokenizer.json models/bert/tokenizer.json
+gpt-sovits-convert hubert /path/to/chinese-hubert-base/pytorch_model.bin models/hubert/hubert.safetensors
 ```
 
 ## CPU

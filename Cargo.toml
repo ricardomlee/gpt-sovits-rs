@@ -17,6 +17,10 @@ path = "src/lib.rs"
 name = "gpt-sovits"
 path = "src/main.rs"
 
+[[bin]]
+name = "gpt-sovits-convert"
+path = "src/bin/gpt-sovits-convert.rs"
+
 [[example]]
 name = "cli_inference"
 path = "examples/cli_inference.rs"
@@ -51,7 +55,8 @@ soxr = "0.6"                     # libsoxr bindings — exact match to librosa's
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-safetensors = "0.4"
+safetensors = "0.7"
+zip = { version = "7.2", default-features = false }
 
 # Text Processing
 # rust-opencc = "0.3"              # Chinese conversion - removed, not available

@@ -12,18 +12,9 @@
 模型源文件和转换结果合计需要约 3 GiB。转换时建议至少保留 6 GiB 可用磁盘空间和
 4 GiB 可用内存。
 
-## 自动下载
+## 准备官方 v2 模型
 
-创建独立 Python 环境：
-
-```bash
-python3 -m venv .venv-models
-. .venv-models/bin/activate
-pip install -r requirements-models.txt
-python prepare_models.py
-```
-
-脚本下载这些官方 v2 文件：
+先从 GPT-SoVITS 官方模型仓库或 Hugging Face 缓存中取得这些源文件：
 
 ```text
 gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt
@@ -33,51 +24,43 @@ chinese-roberta-wwm-ext-large/tokenizer.json
 chinese-hubert-base/pytorch_model.bin
 ```
 
-已存在的输出默认不会覆盖。重新生成时使用：
+然后用 Rust converter 生成运行时文件：
 
 ```bash
-python prepare_models.py --force
+mkdir -p models/bert models/hubert
+
+gpt-sovits-convert gpt \
+  /path/to/gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt \
+  models/gpt-model.safetensors
+
+gpt-sovits-convert sovits \
+  /path/to/gsv-v2final-pretrained/s2G2333k.pth \
+  models/sovits-model.safetensors
+
+gpt-sovits-convert bert \
+  /path/to/chinese-roberta-wwm-ext-large/pytorch_model.bin \
+  models/bert/bert.safetensors
+
+cp /path/to/chinese-roberta-wwm-ext-large/tokenizer.json models/bert/tokenizer.json
+
+gpt-sovits-convert hubert \
+  /path/to/chinese-hubert-base/pytorch_model.bin \
+  models/hubert/hubert.safetensors
 ```
 
-Hugging Face 下载缓存遵循 `HF_HOME`。例如把缓存放到大容量磁盘：
-
-```bash
-HF_HOME=/data/huggingface python prepare_models.py
-```
-
-## 使用本地源模型
-
-如果已经安装原版 GPT-SoVITS：
-
-```bash
-python prepare_models.py \
-  --source-dir /path/to/GPT-SoVITS/GPT_SoVITS/pretrained_models
-```
-
-脚本优先读取本地文件，缺失项才会下载。
-
-也可以逐项覆盖：
-
-```bash
-python prepare_models.py \
-  --gpt-checkpoint /path/to/model.ckpt \
-  --sovits-checkpoint /path/to/model.pth \
-  --bert-checkpoint /path/to/bert/pytorch_model.bin \
-  --bert-tokenizer /path/to/bert/tokenizer.json \
-  --hubert-checkpoint /path/to/hubert/pytorch_model.bin \
-  --force
-```
+当前仓库不内置下载器；下载可以通过浏览器、`huggingface-cli`、`git lfs`、系统包管理器或
+你已有的 GPT-SoVITS 安装目录完成。转换本身不需要 Python。
 
 ## 自训练音色模型
 
 自训练或微调的 GPT、SoVITS 模型只需要替换前两项：
 
 ```bash
-python convert_gpt_weights.py \
+gpt-sovits-convert gpt \
   /path/to/custom-gpt.ckpt \
   models/gpt-model.safetensors
 
-python convert_sovits_weights.py \
+gpt-sovits-convert sovits \
   /path/to/custom-sovits.pth \
   models/sovits-model.safetensors
 ```
@@ -85,12 +68,12 @@ python convert_sovits_weights.py \
 GPT 与 SoVITS 必须来自兼容的 GPT-SoVITS v2 或 v2Pro 架构。v3、v4 和改过网络结构的
 checkpoint 不能仅靠改扩展名使用。
 
-v2Pro 的 SoVITS `.pth` 使用官方 `05`/`06` 版本头，`convert_sovits_weights.py` 会自动处理。
+v2Pro 的 SoVITS `.pth` 使用官方 `05`/`06` 版本头，`gpt-sovits-convert sovits` 会自动处理。
 如果训练预处理目录里有 `logs/<voice>_v2pro/7-sv_cn/<ref>.wav.pt`，可以把它转换成 Rust
 runtime 可读的 speaker-verification embedding：
 
 ```bash
-python convert_sv_embedding.py \
+gpt-sovits-convert sv \
   logs/diana_v2pro/7-sv_cn/ref.wav.pt \
   voices/diana/ref_sv.safetensors
 ```
@@ -108,26 +91,8 @@ python convert_sv_embedding.py \
 
 不提供 `sv_embedding` 时，v2Pro 仍可运行，但会使用零 SV embedding，音色相似度通常不如官方完整路径。
 
-部分旧版或第三方 checkpoint 会在 `.ckpt`/`.pth` 里保存 `utils.HParams` 等 Python
-对象，PyTorch 的安全 `weights_only=True` 路径会拒绝读取。只在确认文件来源可信时使用
-legacy pickle 开关：
-
-```bash
-mkdir -p models/diana
-
-python convert_gpt_weights.py \
-  models/Diana-GPT.ckpt \
-  models/diana/gpt-model.safetensors \
-  --allow-unsafe-pickle
-
-python convert_sovits_weights.py \
-  models/Diana-SoVITS.pth \
-  models/diana/sovits-model.safetensors \
-  --allow-unsafe-pickle
-```
-
-这类音色模型仍然需要一段与文本严格对应的参考音频。可以用 ASR 先转写，再人工修正成
-3 到 10 秒的短参考文本。
+自训练音色仍然需要一段与文本严格对应的参考音频。可以用 ASR 先转写，再人工修正成 3 到
+10 秒的短参考文本。
 
 ## 验证
 
