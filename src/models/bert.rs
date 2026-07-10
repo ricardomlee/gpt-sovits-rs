@@ -2,6 +2,7 @@
 
 use crate::Result;
 use candle_core::{Device, Tensor};
+use std::sync::Arc;
 
 fn device_str(dev: &Device) -> &'static str {
     match dev {
@@ -11,8 +12,9 @@ fn device_str(dev: &Device) -> &'static str {
     }
 }
 
+#[derive(Clone)]
 pub struct BertModel {
-    model: super::bert_candle::BertCandleModel,
+    model: Arc<super::bert_candle::BertCandleModel>,
     device: &'static str,
     #[allow(dead_code)]
     max_length: usize,
@@ -48,7 +50,7 @@ impl BertModel {
             dtype,
         )?;
         Ok(Self {
-            model,
+            model: Arc::new(model),
             device: device_str(device),
             max_length: 512,
         })

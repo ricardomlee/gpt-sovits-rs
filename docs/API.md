@@ -116,6 +116,22 @@ Example response:
 {"voices":["demo","character_a"]}
 ```
 
+`voices/<name>/voice.json` may also bind fine-tuned model weights. The HTTP server keeps the same
+request shape (`voice` + `text`) and lazily loads the model pair for that voice:
+
+```json
+{
+  "reference_audio": "ref.wav",
+  "reference_text": "参考音频对应的文字",
+  "gpt_model": "character_a/gpt.safetensors",
+  "sovits_model": "character_a/sovits.safetensors"
+}
+```
+
+Model paths are relative to `--models-dir`; reference audio and SV embedding paths are relative to
+the voice directory. Model pairs use a bounded LRU cache (two entries by default), while BERT and
+HuBERT are shared between pipelines. Change the limit with `--max-cached-pipelines`.
+
 ### `POST /tts`
 
 Synthesize one WAV.
@@ -126,11 +142,15 @@ curl -X POST http://localhost:9880/tts \
   -d '{
     "text": "你好世界。",
     "text_language": "zh",
-    "refer_wav_path": "ref.wav",
+    "refer_wav_path": "voices/demo/ref.wav",
     "prompt_text": "参考音频对应的文字"
   }' \
   --output output.wav
 ```
+
+Request-supplied `refer_wav_path` and `sv_embedding` files must be inside `--voices-dir` by default.
+Locally managed `voice.json` paths are trusted. For a debugging setup that intentionally reads other
+directories, start the server with `--allow-external-reference-paths`.
 
 With a voice profile:
 

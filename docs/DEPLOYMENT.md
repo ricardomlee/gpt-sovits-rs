@@ -131,7 +131,8 @@ macOS 包同时携带对应的 `libsoxr.0.dylib`。首次运行若被 Gatekeeper
 
 ## 音色目录
 
-每个音色放在 `voices/<name>/voice.json`。`voice.json` 里的相对路径按该目录解析。
+每个音色放在 `voices/<name>/voice.json`。参考音频和 SV embedding 的相对路径按该 voice
+目录解析。
 
 ```text
 voices/
@@ -139,6 +140,31 @@ voices/
     voice.json
     ref.wav
 ```
+
+微调音色可以在 `voice.json` 里绑定自己的 GPT/SoVITS 权重。模型字段的相对路径按
+`MODELS_DIR` / 容器内 `/app/models` 解析；服务会在第一次请求该 voice 时加载并缓存对应
+pipeline：
+
+```json
+{
+  "reference_audio": "ref.wav",
+  "reference_text": "参考音频对应的文字",
+  "sv_embedding": "ref_sv.safetensors",
+  "gpt_model": "carol/gpt.safetensors",
+  "sovits_model": "carol/sovits.safetensors",
+  "language": "zh",
+  "split_sentences": true
+}
+```
+
+这意味着一个容器可以同时服务多个微调音色；请求仍然只需要传 `voice` 和 `text`。
+GPT/SoVITS pipeline 使用有上限的 LRU 缓存，BERT 和 HuBERT 在音色间共享，GPU 推理保持
+串行。Compose 默认缓存两套模型（包括启动时的默认模型）；显存足够时可以调整 `.env`
+里的 `MAX_CACHED_PIPELINES`，显存较小时设为 `1`。
+
+HTTP 请求直接传入的参考音频和 SV embedding 默认必须位于 `VOICES_DIR` 内。日常接入应
+只传 `voice + text`；只有明确需要读取其他挂载目录进行调试时，才给启动命令增加
+`--allow-external-reference-paths`。
 
 助手调用示例：
 

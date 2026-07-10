@@ -1,6 +1,8 @@
 //! HTTP request models and request-to-inference resolution.
 
-use gpt_sovits_rs::voice::{InferenceOptionOverrides, LoadedVoiceProfile, VoiceDefaults};
+use gpt_sovits_rs::voice::{
+    InferenceOptionOverrides, LoadedVoiceProfile, VoiceDefaults, VoiceModelPaths,
+};
 use gpt_sovits_rs::{InferenceOptions, Language, SplitMethod};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -124,6 +126,7 @@ pub(super) struct TtsBatchRequest {
 
 pub(super) struct ResolvedSynthesis {
     pub(super) voice: Option<String>,
+    pub(super) models: VoiceModelPaths,
     pub(super) mode: String,
     pub(super) language: Language,
     pub(super) options: InferenceOptions,
@@ -134,6 +137,11 @@ pub(super) struct ResolvedSynthesis {
     pub(super) sentence_fade_ms: u32,
     pub(super) refer_path: String,
     pub(super) prompt_text: String,
+}
+
+#[derive(Clone, Copy, Default)]
+pub(super) struct RequestPathPolicy {
+    pub(super) allow_external_reference_paths: bool,
 }
 
 #[derive(Default)]
@@ -227,6 +235,8 @@ pub(super) fn resolve_synthesis(
     prompt_text: Option<String>,
     overrides: SynthesisOverrides,
     voices_dir: &Path,
+    models_dir: &Path,
+    path_policy: RequestPathPolicy,
 ) -> Result<ResolvedSynthesis, String> {
     let voice_name = voice_name.map(str::trim).filter(|name| !name.is_empty());
     let voice = voice_name
@@ -241,17 +251,19 @@ pub(super) fn resolve_synthesis(
     let language = Language::parse(language_text)
         .ok_or_else(|| format!("unsupported text_language: {language_text}"))?;
 
-    let refer_path = refer_wav_path
-        .or_else(|| {
-            voice
-                .as_ref()
-                .and_then(|v| v.reference_audio_path())
-                .map(|p| p.to_string_lossy().into_owned())
-        })
-        .ok_or_else(|| {
-            "reference audio is required; select a configured voice or pass refer_wav_path"
-                .to_string()
-        })?;
+    let refer_path = match refer_wav_path {
+        Some(path) => {
+            validate_request_file_path("reference audio", &path, voices_dir, path_policy)?
+        }
+        None => voice
+            .as_ref()
+            .and_then(|v| v.reference_audio_path())
+            .map(|p| p.to_string_lossy().into_owned())
+            .ok_or_else(|| {
+                "reference audio is required; select a configured voice or pass refer_wav_path"
+                    .to_string()
+            })?,
+    };
     if !Path::new(&refer_path).is_file() {
         return Err(format!("reference audio not found: {refer_path}"));
     }
@@ -265,15 +277,21 @@ pub(super) fn resolve_synthesis(
         .ok_or_else(|| {
             "reference text is required; select a configured voice or pass prompt_text".to_string()
         })?;
-    let sv_embedding = overrides
+    let request_sv_embedding = overrides
         .sv_embedding
-        .filter(|path| !path.trim().is_empty())
-        .or_else(|| {
-            voice
-                .as_ref()
-                .and_then(|v| v.sv_embedding_path())
-                .map(|p| p.to_string_lossy().into_owned())
-        });
+        .filter(|path| !path.trim().is_empty());
+    let sv_embedding = match request_sv_embedding {
+        Some(path) => Some(validate_request_file_path(
+            "SV embedding",
+            &path,
+            voices_dir,
+            path_policy,
+        )?),
+        None => voice
+            .as_ref()
+            .and_then(|v| v.sv_embedding_path())
+            .map(|p| p.to_string_lossy().into_owned()),
+    };
     if let Some(path) = sv_embedding.as_deref() {
         if !Path::new(path).is_file() {
             return Err(format!("SV embedding not found: {path}"));
@@ -305,8 +323,17 @@ pub(super) fn resolve_synthesis(
             .ok_or_else(|| format!("unsupported split_method: {method}"))?,
     };
 
+    let models = voice
+        .as_ref()
+        .map(|v| v.model_paths(models_dir))
+        .unwrap_or_default();
+    validate_optional_model_path("GPT", models.gpt.as_deref())?;
+    validate_optional_model_path("SoVITS", models.sovits.as_deref())?;
+    validate_optional_model_path("BigVGAN", models.bigvgan.as_deref())?;
+
     Ok(ResolvedSynthesis {
         voice: voice.map(|v| v.name),
+        models,
         mode: defaults.mode,
         language,
         options,
@@ -326,6 +353,45 @@ pub(super) fn resolve_synthesis(
         refer_path,
         prompt_text,
     })
+}
+
+fn validate_request_file_path(
+    label: &str,
+    path: &str,
+    voices_dir: &Path,
+    policy: RequestPathPolicy,
+) -> Result<String, String> {
+    let path = Path::new(path);
+    if !path.is_file() {
+        return Err(format!("{label} not found: {}", path.display()));
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|e| format!("Failed to resolve {label} {}: {e}", path.display()))?;
+    if !policy.allow_external_reference_paths {
+        let voices_root = voices_dir.canonicalize().map_err(|e| {
+            format!(
+                "Failed to resolve voices directory {}: {e}",
+                voices_dir.display()
+            )
+        })?;
+        if !canonical.starts_with(&voices_root) {
+            return Err(format!(
+                "{label} must be inside {} (start the server with --allow-external-reference-paths to override)",
+                voices_dir.display()
+            ));
+        }
+    }
+    Ok(canonical.to_string_lossy().into_owned())
+}
+
+fn validate_optional_model_path(name: &str, path: Option<&Path>) -> Result<(), String> {
+    if let Some(path) = path {
+        if !path.is_file() {
+            return Err(format!("{} model not found: {}", name, path.display()));
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn validate_text(text: &str, field: &str) -> Result<(), String> {
@@ -367,6 +433,8 @@ mod tests {
                 ..Default::default()
             },
             temp.path(),
+            temp.path(),
+            RequestPathPolicy::default(),
         )
         .unwrap();
 
@@ -408,6 +476,8 @@ mod tests {
             None,
             SynthesisOverrides::default(),
             temp.path(),
+            temp.path(),
+            RequestPathPolicy::default(),
         )
         .unwrap();
 
@@ -467,6 +537,8 @@ mod tests {
                 sv_embedding: None,
             },
             temp.path(),
+            temp.path(),
+            RequestPathPolicy::default(),
         )
         .unwrap();
 
@@ -508,6 +580,8 @@ mod tests {
                 ..Default::default()
             },
             temp.path(),
+            temp.path(),
+            RequestPathPolicy::default(),
         )
         .unwrap();
 
@@ -540,10 +614,87 @@ mod tests {
             None,
             SynthesisOverrides::default(),
             temp.path(),
+            temp.path(),
+            RequestPathPolicy::default(),
         )
         .unwrap();
 
         assert_eq!(resolved.mode, "cuda-graph");
+    }
+
+    #[test]
+    fn resolves_voice_model_paths_from_models_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let models_dir = temp.path().join("models");
+        std::fs::create_dir_all(models_dir.join("custom")).unwrap();
+        std::fs::write(models_dir.join("custom/gpt.safetensors"), b"gpt").unwrap();
+        std::fs::write(models_dir.join("custom/sovits.safetensors"), b"sovits").unwrap();
+        let voice_dir = temp.path().join("voices").join("custom");
+        std::fs::create_dir_all(&voice_dir).unwrap();
+        write_ref_audio(&voice_dir.join("ref.wav"));
+        std::fs::write(
+            voice_dir.join("voice.json"),
+            r#"{
+                "reference_audio":"ref.wav",
+                "reference_text":"prompt",
+                "gpt_model":"custom/gpt.safetensors",
+                "sovits_model":"custom/sovits.safetensors"
+            }"#,
+        )
+        .unwrap();
+
+        let resolved = resolve_synthesis(
+            Some("custom"),
+            None,
+            None,
+            None,
+            SynthesisOverrides::default(),
+            &temp.path().join("voices"),
+            &models_dir,
+            RequestPathPolicy::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved.models.gpt,
+            Some(models_dir.join("custom/gpt.safetensors"))
+        );
+        assert_eq!(
+            resolved.models.sovits,
+            Some(models_dir.join("custom/sovits.safetensors"))
+        );
+    }
+
+    #[test]
+    fn rejects_missing_voice_model_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let voice_dir = temp.path().join("voices").join("custom");
+        std::fs::create_dir_all(&voice_dir).unwrap();
+        write_ref_audio(&voice_dir.join("ref.wav"));
+        std::fs::write(
+            voice_dir.join("voice.json"),
+            r#"{
+                "reference_audio":"ref.wav",
+                "reference_text":"prompt",
+                "gpt_model":"missing/gpt.safetensors"
+            }"#,
+        )
+        .unwrap();
+
+        let error = resolve_synthesis(
+            Some("custom"),
+            None,
+            None,
+            None,
+            SynthesisOverrides::default(),
+            &temp.path().join("voices"),
+            &temp.path().join("models"),
+            RequestPathPolicy::default(),
+        )
+        .err()
+        .expect("missing voice model should fail");
+
+        assert!(error.contains("GPT model not found"));
     }
 
     #[test]
@@ -555,6 +706,8 @@ mod tests {
             None,
             SynthesisOverrides::default(),
             Path::new("voices"),
+            Path::new("models"),
+            RequestPathPolicy::default(),
         )
         .err()
         .expect("missing reference data should fail");
@@ -571,6 +724,8 @@ mod tests {
             Some("prompt".to_string()),
             SynthesisOverrides::default(),
             Path::new("voices"),
+            Path::new("models"),
+            RequestPathPolicy::default(),
         )
         .err()
         .expect("missing reference path should fail");
@@ -594,11 +749,62 @@ mod tests {
                 ..Default::default()
             },
             temp.path(),
+            temp.path(),
+            RequestPathPolicy::default(),
         )
         .err()
         .expect("invalid split method should fail");
 
         assert!(error.contains("unsupported split_method"));
+    }
+
+    #[test]
+    fn rejects_external_request_paths_by_default() {
+        let temp = tempfile::tempdir().unwrap();
+        let voices_dir = temp.path().join("voices");
+        std::fs::create_dir(&voices_dir).unwrap();
+        let outside = temp.path().join("outside.wav");
+        write_ref_audio(&outside);
+
+        let error = resolve_synthesis(
+            None,
+            Some("zh"),
+            Some(outside.to_string_lossy().into_owned()),
+            Some("prompt".to_string()),
+            SynthesisOverrides::default(),
+            &voices_dir,
+            temp.path(),
+            RequestPathPolicy::default(),
+        )
+        .err()
+        .expect("external reference path should fail");
+
+        assert!(error.contains("must be inside"));
+    }
+
+    #[test]
+    fn allows_external_request_paths_when_enabled() {
+        let temp = tempfile::tempdir().unwrap();
+        let voices_dir = temp.path().join("voices");
+        std::fs::create_dir(&voices_dir).unwrap();
+        let outside = temp.path().join("outside.wav");
+        write_ref_audio(&outside);
+
+        let resolved = resolve_synthesis(
+            None,
+            Some("zh"),
+            Some(outside.to_string_lossy().into_owned()),
+            Some("prompt".to_string()),
+            SynthesisOverrides::default(),
+            &voices_dir,
+            temp.path(),
+            RequestPathPolicy {
+                allow_external_reference_paths: true,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(resolved.refer_path, outside.to_string_lossy());
     }
 
     #[test]

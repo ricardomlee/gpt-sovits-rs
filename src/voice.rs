@@ -9,6 +9,12 @@ pub struct VoiceProfile {
     pub reference_audio: Option<String>,
     pub reference_text: Option<String>,
     pub sv_embedding: Option<String>,
+    #[serde(alias = "gptModel")]
+    pub gpt_model: Option<String>,
+    #[serde(alias = "sovitsModel")]
+    pub sovits_model: Option<String>,
+    #[serde(alias = "bigvganModel")]
+    pub bigvgan_model: Option<String>,
     pub language: Option<String>,
     pub mode: Option<String>,
     pub split_sentences: Option<bool>,
@@ -31,8 +37,16 @@ pub struct LoadedVoiceProfile {
     pub profile: VoiceProfile,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VoiceModelPaths {
+    pub gpt: Option<PathBuf>,
+    pub sovits: Option<PathBuf>,
+    pub bigvgan: Option<PathBuf>,
+}
+
 impl LoadedVoiceProfile {
     pub fn load(name: &str, voices_dir: &Path) -> Result<Self, String> {
+        validate_voice_name(name)?;
         let dir = voices_dir.join(name);
         let path = dir.join("voice.json");
         let data = std::fs::read_to_string(&path)
@@ -90,6 +104,58 @@ impl LoadedVoiceProfile {
             .sv_embedding
             .as_deref()
             .map(|path| self.resolve_path(path))
+    }
+
+    pub fn model_paths(&self, models_dir: &Path) -> VoiceModelPaths {
+        VoiceModelPaths {
+            gpt: self
+                .profile
+                .gpt_model
+                .as_deref()
+                .map(|path| resolve_model_path(models_dir, path)),
+            sovits: self
+                .profile
+                .sovits_model
+                .as_deref()
+                .map(|path| resolve_model_path(models_dir, path)),
+            bigvgan: self
+                .profile
+                .bigvgan_model
+                .as_deref()
+                .map(|path| resolve_model_path(models_dir, path)),
+        }
+    }
+}
+
+pub fn validate_voice_name(name: &str) -> Result<(), String> {
+    let trimmed = name.trim();
+    let is_single_component = Path::new(trimmed)
+        .components()
+        .next()
+        .is_some_and(|component| matches!(component, std::path::Component::Normal(_)))
+        && Path::new(trimmed).components().count() == 1;
+    if name != trimmed
+        || trimmed.is_empty()
+        || trimmed.len() > 128
+        || trimmed == "."
+        || trimmed == ".."
+        || trimmed.contains(['/', '\\'])
+        || trimmed.chars().any(char::is_control)
+        || !is_single_component
+    {
+        return Err(format!(
+            "Invalid voice name '{trimmed}'; expected one directory name without path separators"
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_model_path(models_dir: &Path, path: &str) -> PathBuf {
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        path
+    } else {
+        models_dir.join(path)
     }
 }
 
@@ -303,6 +369,15 @@ mod tests {
     }
 
     #[test]
+    fn rejects_voice_name_path_traversal() {
+        for name in ["../secret", "a/b", "a\\b", ".", "..", "", " Carol "] {
+            assert!(validate_voice_name(name).is_err(), "accepted {name:?}");
+        }
+        assert!(validate_voice_name("Carol").is_ok());
+        assert!(validate_voice_name("中文音色").is_ok());
+    }
+
+    #[test]
     fn resolves_relative_reference_audio_from_voice_dir() {
         let loaded = LoadedVoiceProfile {
             name: "test".to_string(),
@@ -331,6 +406,35 @@ mod tests {
         assert_eq!(
             loaded.sv_embedding_path().unwrap(),
             PathBuf::from("/tmp/voices/test/ref_sv.safetensors")
+        );
+    }
+
+    #[test]
+    fn resolves_relative_model_paths_from_models_dir() {
+        let loaded = LoadedVoiceProfile {
+            name: "test".to_string(),
+            dir: PathBuf::from("/tmp/voices/test"),
+            profile: VoiceProfile {
+                gpt_model: Some("voices/test/gpt.safetensors".to_string()),
+                sovits_model: Some("voices/test/sovits.safetensors".to_string()),
+                bigvgan_model: Some("/opt/models/bigvgan.safetensors".to_string()),
+                ..Default::default()
+            },
+        };
+
+        let paths = loaded.model_paths(Path::new("/models"));
+
+        assert_eq!(
+            paths.gpt,
+            Some(PathBuf::from("/models/voices/test/gpt.safetensors"))
+        );
+        assert_eq!(
+            paths.sovits,
+            Some(PathBuf::from("/models/voices/test/sovits.safetensors"))
+        );
+        assert_eq!(
+            paths.bigvgan,
+            Some(PathBuf::from("/opt/models/bigvgan.safetensors"))
         );
     }
 

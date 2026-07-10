@@ -10,19 +10,21 @@ use axum::{
 };
 use base64::Engine as _;
 use gpt_sovits_rs::voice::list_voice_profiles;
-use gpt_sovits_rs::{AudioBuffer, Config, InferenceOptions, Language, Pipeline, SplitMethod};
+use gpt_sovits_rs::{AudioBuffer, Config, InferenceOptions, Language, SplitMethod};
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt as _};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, warn};
 
 mod audio;
+mod pipeline_registry;
 mod request;
 mod response;
 
 use audio::{samples_to_pcm, streaming_wav_header};
+use pipeline_registry::{PipelineLease, PipelineRegistry};
 use request::{
     resolve_synthesis, validate_text, BatchItemResult, OpenAiSpeechRequest, ResolvedSynthesis,
     SynthesisOverrides, TtsBatchRequest, TtsRequest,
@@ -31,12 +33,10 @@ use response::{add_synthesis_headers, json_error, language_code, SpeechOutputFor
 
 #[derive(Clone)]
 pub struct AppState {
-    /// tokio async mutex: concurrent requests await the lock without blocking OS threads.
-    /// The GPU is single-threaded; this enforces sequential inference with async queuing.
-    pipeline: Arc<Mutex<Pipeline>>,
+    pipelines: PipelineRegistry,
     voices_dir: Arc<PathBuf>,
-    #[allow(dead_code)]
-    config: Arc<Config>,
+    models_dir: Arc<PathBuf>,
+    path_policy: request::RequestPathPolicy,
 }
 
 async fn health_handler() -> &'static str {
@@ -92,12 +92,12 @@ fn into_buffered_job(
 }
 
 async fn run_buffered_inference(
-    pipeline: Arc<Mutex<Pipeline>>,
+    lease: PipelineLease,
     job: BufferedInferenceJob,
 ) -> Result<Result<AudioBuffer, String>, StatusCode> {
     tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Handle::current();
-        let mut pipeline = rt.block_on(pipeline.lock());
+        let mut pipeline = rt.block_on(lease.pipeline.lock());
         let result = if job.split_sentences {
             pipeline.inference_split_with_method(
                 &job.text,
@@ -154,14 +154,20 @@ async fn openai_speech_handler(
         None,
         SynthesisOverrides::from_openai(&req),
         &state.voices_dir,
+        &state.models_dir,
+        state.path_policy,
     ) {
         Ok(resolved) => resolved,
         Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
     };
+    let lease = match state.pipelines.acquire_pipeline(&resolved.models).await {
+        Ok(lease) => lease,
+        Err(e) => return Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
+    };
     let text = req.input;
     let text_chars = text.chars().count();
     let (job, voice, language) = into_buffered_job(text, resolved);
-    let result = run_buffered_inference(Arc::clone(&state.pipeline), job).await?;
+    let result = run_buffered_inference(lease, job).await?;
 
     match result {
         Ok(audio) => {
@@ -212,9 +218,15 @@ async fn tts_stream_handler(
         req.prompt_text,
         overrides,
         &state.voices_dir,
+        &state.models_dir,
+        state.path_policy,
     ) {
         Ok(resolved) => resolved,
         Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
+    };
+    let lease = match state.pipelines.acquire_pipeline(&resolved.models).await {
+        Ok(lease) => lease,
+        Err(e) => return Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
     };
     let text = req.text.clone();
     let text_chars = text.chars().count();
@@ -228,7 +240,6 @@ async fn tts_stream_handler(
     let min_sentence_chars = resolved.min_sentence_chars;
     let sentence_gap_ms = resolved.sentence_gap_ms;
     let sentence_fade_ms = resolved.sentence_fade_ms;
-    let pipeline = Arc::clone(&state.pipeline);
 
     // Channel: inference thread sends PCM chunks; HTTP task streams them out
     let (tx, rx) = mpsc::channel::<Result<Vec<u8>, String>>(8);
@@ -236,7 +247,7 @@ async fn tts_stream_handler(
     tokio::task::spawn_blocking(move || {
         // tokio::sync::Mutex must be locked via block_on inside spawn_blocking
         let rt = tokio::runtime::Handle::current();
-        let mut pipeline = rt.block_on(pipeline.lock());
+        let mut pipeline = rt.block_on(lease.pipeline.lock());
 
         // Preload speaker features (cached — free on 2nd+ call)
         if let Err(e) = pipeline.preload_speaker_with_options(&refer_path, &prompt_text, &options) {
@@ -316,14 +327,20 @@ async fn tts_handler(
         req.prompt_text,
         overrides,
         &state.voices_dir,
+        &state.models_dir,
+        state.path_policy,
     ) {
         Ok(resolved) => resolved,
         Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
     };
+    let lease = match state.pipelines.acquire_pipeline(&resolved.models).await {
+        Ok(lease) => lease,
+        Err(e) => return Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
+    };
     let text = req.text.clone();
     let text_chars = text.chars().count();
     let (job, voice, language) = into_buffered_job(text, resolved);
-    let result = run_buffered_inference(Arc::clone(&state.pipeline), job).await?;
+    let result = run_buffered_inference(lease, job).await?;
 
     match result {
         Ok(audio) => {
@@ -391,9 +408,15 @@ async fn tts_batch_handler(
         req.prompt_text,
         overrides,
         &state.voices_dir,
+        &state.models_dir,
+        state.path_policy,
     ) {
         Ok(resolved) => resolved,
         Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
+    };
+    let lease = match state.pipelines.acquire_pipeline(&resolved.models).await {
+        Ok(lease) => lease,
+        Err(e) => return Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
     };
 
     let refer_path = resolved.refer_path;
@@ -409,7 +432,6 @@ async fn tts_batch_handler(
     let sentence_gap_ms = resolved.sentence_gap_ms;
     let sentence_fade_ms = resolved.sentence_fade_ms;
     let texts = req.texts;
-    let pipeline = Arc::clone(&state.pipeline);
 
     // Channel: inference thread sends one NDJSON line per completed item.
     // Buffer=2 so inference stays one item ahead of the HTTP sender.
@@ -419,7 +441,7 @@ async fn tts_batch_handler(
         let rt = tokio::runtime::Handle::current();
         // Acquire the async mutex from this blocking context.
         // Other concurrent requests will await the lock without consuming OS threads.
-        let mut pipeline = rt.block_on(pipeline.lock());
+        let mut pipeline = rt.block_on(lease.pipeline.lock());
 
         // Preload speaker once — free on subsequent calls (cache hit)
         if let Err(e) = pipeline.preload_speaker_with_options(&refer_path, &prompt_text, &options) {
@@ -533,50 +555,32 @@ pub fn run(
     bigvgan_model: Option<&std::path::Path>,
     bert_model: Option<&std::path::Path>,
     hubert_model: Option<&std::path::Path>,
+    max_cached_pipelines: usize,
+    allow_external_reference_paths: bool,
+    models_dir: &std::path::Path,
     voices_dir: &std::path::Path,
 ) -> Result<(), String> {
     let config = Config::builder()
         .with_device(device)
         .with_half_precision(half_precision)
         .build();
-    let mut pipeline = Pipeline::new(config.clone())
-        .map_err(|e| format!("Failed to initialize pipeline: {}", e))?;
-
-    if let Some(path) = gpt_model {
-        info!("Loading GPT model from {:?}", path);
-        pipeline
-            .load_gpt(path)
-            .map_err(|e| format!("Failed to load GPT model: {}", e))?;
-    }
-    if let Some(path) = sovits_model {
-        info!("Loading SoVITS model from {:?}", path);
-        pipeline
-            .load_sovits(path)
-            .map_err(|e| format!("Failed to load SoVITS model: {}", e))?;
-    }
-    if let Some(path) = bigvgan_model {
-        info!("Loading BigVGAN model from {:?}", path);
-        pipeline
-            .load_bigvgan(path)
-            .map_err(|e| format!("Failed to load BigVGAN model: {}", e))?;
-    }
-    if let Some(path) = bert_model {
-        info!("Loading BERT model from {:?}", path);
-        if let Err(e) = pipeline.load_bert(path) {
-            error!("Failed to load BERT model (continuing without it): {}", e);
-        }
-    }
-    if let Some(path) = hubert_model {
-        info!("Loading Hubert model from {:?}", path);
-        if let Err(e) = pipeline.load_hubert(path) {
-            error!("Failed to load Hubert model (continuing without it): {}", e);
-        }
-    }
+    let pipelines = PipelineRegistry::load(
+        config,
+        gpt_model,
+        sovits_model,
+        bigvgan_model,
+        bert_model,
+        hubert_model,
+        max_cached_pipelines,
+    )?;
 
     let state = AppState {
-        pipeline: Arc::new(tokio::sync::Mutex::new(pipeline)),
+        pipelines,
         voices_dir: Arc::new(voices_dir.to_path_buf()),
-        config: Arc::new(config),
+        models_dir: Arc::new(models_dir.to_path_buf()),
+        path_policy: request::RequestPathPolicy {
+            allow_external_reference_paths,
+        },
     };
 
     // Build router
@@ -593,6 +597,15 @@ pub fn run(
     let addr = format!("0.0.0.0:{}", port);
     info!("Starting HTTP server on {}", addr);
     println!("HTTP server started at http://localhost:{}", port);
+    println!(
+        "Model pipeline cache: {} entr{}",
+        max_cached_pipelines.max(1),
+        if max_cached_pipelines.max(1) == 1 {
+            "y"
+        } else {
+            "ies"
+        }
+    );
     println!();
     println!("Endpoints:");
     println!("  GET  /health        - Health check");
@@ -603,9 +616,9 @@ pub fn run(
     println!("  POST /v1/audio/speech - OpenAI-compatible speech endpoint");
     println!();
     println!("Example:");
-    println!("  curl -X POST http://localhost:9880/tts \\");
+    println!("  curl -X POST http://localhost:{port}/tts \\");
     println!("    -H 'Content-Type: application/json' \\");
-    println!("    -d '{{\"text\": \"你好世界\", \"text_language\": \"zh\", \"refer_wav_path\": \"ref.wav\", \"prompt_text\": \"参考文本\"}}' \\");
+    println!("    -d '{{\"text\": \"你好世界\", \"text_language\": \"zh\", \"refer_wav_path\": \"voices/demo/ref.wav\", \"prompt_text\": \"参考文本\"}}' \\");
     println!("    --output tts_output.wav");
 
     // Run server

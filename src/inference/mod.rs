@@ -24,6 +24,15 @@ pub use split::{
     split_cut5_for_language, split_sentences, split_sentences_for_language, SplitMethod,
 };
 
+/// Device and feature extractors that can be shared by multiple model pipelines.
+/// Model clones are cheap because BERT and HuBERT keep their weights behind `Arc`.
+#[derive(Clone)]
+pub struct SharedPipelineResources {
+    device: Device,
+    bert_model: Option<BertModel>,
+    hubert_model: Option<HubertModel>,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum DecodeBackend {
     Plain,
@@ -149,18 +158,47 @@ impl Pipeline {
             );
         }
         let device = config.candle_device();
+        Self::new_with_parts(config, device, None, None)
+    }
+
+    pub fn new_with_shared_resources(
+        config: Config,
+        resources: &SharedPipelineResources,
+    ) -> Result<Self> {
+        Self::new_with_parts(
+            config,
+            resources.device.clone(),
+            resources.bert_model.clone(),
+            resources.hubert_model.clone(),
+        )
+    }
+
+    fn new_with_parts(
+        config: Config,
+        device: Device,
+        bert_model: Option<BertModel>,
+        hubert_model: Option<HubertModel>,
+    ) -> Result<Self> {
         Ok(Self {
             config,
             text_frontend: TextFrontend::new()?,
             device,
             gpt_model: None,
             sovits_model: None,
-            bert_model: None,
-            hubert_model: None,
+            bert_model,
+            hubert_model,
             bigvgan_model: None,
             semantic_tokenizer: None,
             ref_cache: HashMap::new(),
         })
+    }
+
+    pub fn shared_resources(&self) -> SharedPipelineResources {
+        SharedPipelineResources {
+            device: self.device.clone(),
+            bert_model: self.bert_model.clone(),
+            hubert_model: self.hubert_model.clone(),
+        }
     }
 
     pub fn load_gpt<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {

@@ -264,6 +264,28 @@ Then call it by name:
 
 Reference audio still matters. A 3-10 second clean clip with exactly matching text usually works best.
 
+For fine-tuned voices, bind model weights directly in the profile. Relative model paths are resolved
+from `--models-dir` / `/app/models`, while reference audio and SV paths remain relative to the voice
+directory:
+
+```json
+{
+  "reference_audio": "ref.wav",
+  "reference_text": "参考音频对应的文字",
+  "sv_embedding": "ref_sv.safetensors",
+  "gpt_model": "carol/gpt.safetensors",
+  "sovits_model": "carol/sovits.safetensors",
+  "language": "zh",
+  "split_sentences": true
+}
+```
+
+Both CLI and HTTP calls honor these model bindings; explicit model flags still take precedence. The
+HTTP server lazily loads model pairs and keeps a bounded LRU cache, so one container can serve voices
+such as `carol`, `sun`, and `diana` without keeping every model resident. BERT and HuBERT are shared,
+and GPU work remains sequential. The cache defaults to two model pairs and can be changed with
+`--max-cached-pipelines` or `MAX_CACHED_PIPELINES` in Compose.
+
 ## HTTP API
 
 Start the service:

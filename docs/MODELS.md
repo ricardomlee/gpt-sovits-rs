@@ -78,6 +78,37 @@ gpt-sovits-convert sovits \
   models/sovits-model.safetensors
 ```
 
+如果一个服务里要放多个微调音色，不需要为每个音色起一个容器。把权重放在 `models/`
+下，并在对应的 `voices/<name>/voice.json` 里绑定模型：
+
+```text
+models/
+  carol/
+    gpt.safetensors
+    sovits.safetensors
+  sun/
+    gpt.safetensors
+    sovits.safetensors
+```
+
+```json
+{
+  "reference_audio": "ref.wav",
+  "reference_text": "参考音频对应的文字",
+  "sv_embedding": "ref_sv.safetensors",
+  "gpt_model": "carol/gpt.safetensors",
+  "sovits_model": "carol/sovits.safetensors",
+  "language": "zh"
+}
+```
+
+`gpt_model`、`sovits_model` 和 `bigvgan_model` 的相对路径按 `--models-dir` 解析。没有配置
+这些字段的 voice 会继续使用服务启动时加载的默认模型。CLI 的 `--voice` 与 HTTP API
+都会使用绑定模型，显式的 `--gpt-model` / `--sovits-model` 参数优先。
+
+HTTP 服务共享 BERT 和 HuBERT，并默认用容量为 2 的 LRU 缓存 GPT/SoVITS pipeline。
+超过容量的音色仍然可用，但下次切回时会重新加载；用 `--max-cached-pipelines` 调整容量。
+
 GPT 与 SoVITS 必须来自兼容的 GPT-SoVITS v2 或 v2Pro 架构。v3、v4 和改过网络结构的
 checkpoint 不能仅靠改扩展名使用。
 

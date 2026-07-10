@@ -155,6 +155,14 @@ pub(crate) struct Args {
     #[arg(long, default_value = "9880")]
     pub(crate) port: u16,
 
+    /// Maximum number of GPT/SoVITS model pipelines kept in memory by the HTTP server
+    #[arg(long, default_value_t = 2, value_parser = parse_positive_usize)]
+    pub(crate) max_cached_pipelines: usize,
+
+    /// Allow HTTP requests to reference audio/SV files outside --voices-dir
+    #[arg(long)]
+    pub(crate) allow_external_reference_paths: bool,
+
     /// Verbose output
     #[arg(short, long)]
     pub(crate) verbose: bool,
@@ -230,11 +238,26 @@ pub(crate) fn run() {
         }
     }
 
+    let voice_model_paths = voice_profile
+        .as_ref()
+        .map(|voice| voice.model_paths(&args.models_dir))
+        .unwrap_or_default();
+    let bigvgan_model = args
+        .bigvgan_model
+        .clone()
+        .or(voice_model_paths.bigvgan.clone());
+    if let Some(path) = bigvgan_model.as_ref() {
+        if !path.is_file() {
+            error!("BigVGAN model file does not exist: {}", path.display());
+            std::process::exit(1);
+        }
+    }
+
     let model_paths = match ModelPaths::discover(
         &args.models_dir,
         ModelPathOverrides {
-            gpt: args.gpt_model.clone(),
-            sovits: args.sovits_model.clone(),
+            gpt: args.gpt_model.clone().or(voice_model_paths.gpt),
+            sovits: args.sovits_model.clone().or(voice_model_paths.sovits),
             bert: args.bert_model.clone(),
             hubert: args.hubert_model.clone(),
         },
@@ -262,9 +285,12 @@ pub(crate) fn run() {
                 args.half,
                 Some(&model_paths.gpt),
                 Some(&model_paths.sovits),
-                args.bigvgan_model.as_deref(),
+                bigvgan_model.as_deref(),
                 model_paths.bert.as_deref(),
                 model_paths.hubert.as_deref(),
+                args.max_cached_pipelines,
+                args.allow_external_reference_paths,
+                &args.models_dir,
                 &args.voices_dir,
             ) {
                 error!("HTTP server error: {}", e);
@@ -346,7 +372,7 @@ pub(crate) fn run() {
 
     // BigVGAN loading is experimental. The current SoVITS synthesis path still uses
     // the decoder embedded in the SoVITS weights.
-    if let Some(ref bigvgan_path) = args.bigvgan_model {
+    if let Some(ref bigvgan_path) = bigvgan_model {
         info!("Loading BigVGAN model (experimental; not used by main synthesis path yet)...");
         if let Err(e) = pipeline.load_bigvgan(bigvgan_path) {
             error!("Failed to load BigVGAN model: {}", e);
@@ -547,6 +573,17 @@ fn resolve_sv_embedding(args: &Args, voice: Option<&LoadedVoiceProfile>) -> Opti
     args.sv_embedding
         .clone()
         .or_else(|| voice.and_then(|v| v.sv_embedding_path()))
+}
+
+fn parse_positive_usize(value: &str) -> Result<usize, String> {
+    let value = value
+        .parse::<usize>()
+        .map_err(|_| format!("expected a positive integer, got '{value}'"))?;
+    if value == 0 {
+        Err("value must be at least 1".to_string())
+    } else {
+        Ok(value)
+    }
 }
 
 /// Inspect model file

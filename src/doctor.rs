@@ -98,11 +98,18 @@ fn check_models(report: &mut DoctorReport, args: &Args) {
         ));
     }
 
+    let voice_models = args
+        .voice
+        .as_deref()
+        .and_then(|name| LoadedVoiceProfile::load(name, &args.voices_dir).ok())
+        .map(|voice| voice.model_paths(&args.models_dir))
+        .unwrap_or_default();
+
     match ModelPaths::discover(
         &args.models_dir,
         ModelPathOverrides {
-            gpt: args.gpt_model.clone(),
-            sovits: args.sovits_model.clone(),
+            gpt: args.gpt_model.clone().or(voice_models.gpt),
+            sovits: args.sovits_model.clone().or(voice_models.sovits),
             bert: args.bert_model.clone(),
             hubert: args.hubert_model.clone(),
         },
@@ -213,23 +220,32 @@ fn check_bert_tokenizer(report: &mut DoctorReport, bert_path: &Path) {
 }
 
 fn check_voices(report: &mut DoctorReport, args: &Args) {
-    match list_voice_profiles(&args.voices_dir) {
-        Ok(voices) if voices.is_empty() => report.warn(format!(
+    let voices = match list_voice_profiles(&args.voices_dir) {
+        Ok(voices) if voices.is_empty() => {
+            report.warn(format!(
             "no voice profiles found in {}; create voices/<name>/voice.json or pass --reference-audio and --reference-text",
             args.voices_dir.display()
-        )),
-        Ok(voices) => report.ok(format!(
-            "found {} voice profile(s) in {}: {}",
-            voices.len(),
-            args.voices_dir.display(),
-            voices.join(", ")
-        )),
-        Err(e) => report.error(e),
-    }
+            ));
+            Vec::new()
+        }
+        Ok(voices) => {
+            report.ok(format!(
+                "found {} voice profile(s) in {}: {}",
+                voices.len(),
+                args.voices_dir.display(),
+                voices.join(", ")
+            ));
+            voices
+        }
+        Err(e) => {
+            report.error(e);
+            Vec::new()
+        }
+    };
 
     if let Some(name) = args.voice.as_deref() {
         match LoadedVoiceProfile::load(name, &args.voices_dir) {
-            Ok(profile) => check_loaded_voice(report, &profile),
+            Ok(profile) => check_loaded_voice(report, &profile, &args.models_dir),
             Err(e) => report.error(e),
         }
     } else {
@@ -242,10 +258,16 @@ fn check_voices(report: &mut DoctorReport, args: &Args) {
         if args.reference_audio.is_none() && args.reference_text.is_none() {
             report.warn("no --voice or inline reference audio/text selected for a test run");
         }
+        for name in voices {
+            match LoadedVoiceProfile::load(&name, &args.voices_dir) {
+                Ok(profile) => check_loaded_voice(report, &profile, &args.models_dir),
+                Err(e) => report.error(e),
+            }
+        }
     }
 }
 
-fn check_loaded_voice(report: &mut DoctorReport, voice: &LoadedVoiceProfile) {
+fn check_loaded_voice(report: &mut DoctorReport, voice: &LoadedVoiceProfile, models_dir: &Path) {
     report.ok(format!(
         "voice profile '{}' parsed: {}",
         voice.name,
@@ -265,6 +287,35 @@ fn check_loaded_voice(report: &mut DoctorReport, voice: &LoadedVoiceProfile) {
             "voice '{}' does not set reference_text",
             voice.name
         )),
+    }
+    if let Some(path) = voice.sv_embedding_path() {
+        check_safetensors(
+            report,
+            &format!("voice '{}' SV embedding", voice.name),
+            &path,
+            true,
+        );
+    }
+
+    let models = voice.model_paths(models_dir);
+    if let Some(path) = models.gpt.as_deref() {
+        check_safetensors(report, &format!("voice '{}' GPT", voice.name), path, true);
+    }
+    if let Some(path) = models.sovits.as_deref() {
+        check_safetensors(
+            report,
+            &format!("voice '{}' SoVITS", voice.name),
+            path,
+            true,
+        );
+    }
+    if let Some(path) = models.bigvgan.as_deref() {
+        check_safetensors(
+            report,
+            &format!("voice '{}' BigVGAN", voice.name),
+            path,
+            true,
+        );
     }
 }
 

@@ -26,6 +26,8 @@ services:
       - "/app/models"
       - "--voices-dir"
       - "/app/voices"
+      - "--max-cached-pipelines"
+      - "${MAX_CACHED_PIPELINES:-2}"
       - "--gpt-model"
       - "${GPT_MODEL:-/app/models/gpt-model.safetensors}"
       - "--sovits-model"

@@ -3,6 +3,7 @@
 use crate::Result;
 use candle_core::{Device, Tensor};
 use std::path::Path;
+use std::sync::Arc;
 
 fn device_str(dev: &Device) -> &'static str {
     match dev {
@@ -12,8 +13,9 @@ fn device_str(dev: &Device) -> &'static str {
     }
 }
 
+#[derive(Clone)]
 pub struct HubertModel {
-    model: super::wav2vec2::Wav2Vec2Model,
+    model: Arc<super::wav2vec2::Wav2Vec2Model>,
     device: &'static str,
     sampling_rate: u32,
     candle_device: Device,
@@ -39,7 +41,7 @@ impl HubertModel {
             dtype,
         )?;
         Ok(Self {
-            model,
+            model: Arc::new(model),
             device: device_str(device),
             sampling_rate: 16000,
             candle_device: device.clone(),

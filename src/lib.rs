@@ -39,7 +39,7 @@ pub mod voice;
 pub use config::Config;
 pub use inference::{
     split_cut5_for_language, split_sentences, split_sentences_for_language, InferenceOptions,
-    Pipeline, SplitMethod,
+    Pipeline, SharedPipelineResources, SplitMethod,
 };
 pub use utils::AudioBuffer;
 

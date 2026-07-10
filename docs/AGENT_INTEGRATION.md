@@ -103,6 +103,9 @@ POST /v1/audio/speech
 
 如果 OpenClaw 默认请求 `mp3` 或 `opus`，需要在配置里改成 `wav` 或 `pcm`。本服务暂时不假装支持 MP3/Opus，避免返回内容和声明不一致。
 
+`voice.json` 可以绑定微调模型，例如 `gpt_model` 和 `sovits_model`。agent 不需要知道这些
+内部路径；它只稳定传同一个 voice id，服务端负责选择并缓存对应模型。
+
 ### 文本读音标注
 
 agent 可以在回复文本里给中文多音字加拼音标注，服务会在文本前端解析并执行：
