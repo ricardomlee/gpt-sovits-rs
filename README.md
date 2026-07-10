@@ -286,6 +286,9 @@ such as `carol`, `sun`, and `diana` without keeping every model resident. BERT a
 and GPU work remains sequential. The cache defaults to two model pairs and can be changed with
 `--max-cached-pipelines` or `MAX_CACHED_PIPELINES` in Compose.
 
+HTTP request limits default to 10,000 characters per item and 64 batch items. Compose users can
+adjust them with `MAX_TEXT_CHARS` and `MAX_BATCH_ITEMS`.
+
 ## HTTP API
 
 Start the service:
@@ -300,6 +303,7 @@ Core endpoints:
 | Endpoint | Purpose |
 |---|---|
 | `GET /health` | health check |
+| `GET /status` | runtime and model-cache status |
 | `GET /voices` | list local voice profiles |
 | `POST /tts` | synthesize one WAV |
 | `POST /tts/stream` | stream sentence chunks |

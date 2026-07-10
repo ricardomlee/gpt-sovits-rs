@@ -163,6 +163,14 @@ pub(crate) struct Args {
     #[arg(long)]
     pub(crate) allow_external_reference_paths: bool,
 
+    /// Maximum Unicode characters accepted by one HTTP synthesis item
+    #[arg(long, default_value_t = 10_000, value_parser = parse_positive_usize)]
+    pub(crate) max_text_chars: usize,
+
+    /// Maximum number of items accepted by one HTTP batch request
+    #[arg(long, default_value_t = 64, value_parser = parse_positive_usize)]
+    pub(crate) max_batch_items: usize,
+
     /// Verbose output
     #[arg(short, long)]
     pub(crate) verbose: bool,
@@ -290,6 +298,8 @@ pub(crate) fn run() {
                 model_paths.hubert.as_deref(),
                 args.max_cached_pipelines,
                 args.allow_external_reference_paths,
+                args.max_text_chars,
+                args.max_batch_items,
                 &args.models_dir,
                 &args.voices_dir,
             ) {

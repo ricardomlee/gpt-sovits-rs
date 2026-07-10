@@ -62,6 +62,10 @@ impl PipelineCache {
         self.lru.retain(|candidate| candidate != key);
         self.lru.push_back(key.clone());
     }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
 }
 
 #[derive(Clone)]
@@ -187,6 +191,11 @@ impl PipelineRegistry {
             pipeline: loaded,
             _operation: operation,
         })
+    }
+
+    pub(super) async fn status(&self) -> (usize, usize) {
+        let cache = self.cache.lock().await;
+        (cache.len(), cache.capacity)
     }
 }
 

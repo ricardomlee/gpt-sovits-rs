@@ -116,6 +116,30 @@ Example response:
 {"voices":["demo","character_a"]}
 ```
 
+### `GET /status`
+
+Returns lightweight runtime status without loading another model:
+
+```json
+{"status":"ready","cached_pipelines":1,"pipeline_cache_capacity":2,"gpu_inference_serialized":true,"max_text_chars":10000,"max_batch_items":64}
+```
+
+### `POST /warmup`
+
+Loads one voice's model pair and reference features before the first synthesis request:
+
+```bash
+curl -X POST http://localhost:9880/warmup \
+  -H 'Content-Type: application/json' \
+  -d '{"voice":"diana"}'
+```
+
+Warming more voices than the configured cache capacity evicts the least recently used pipeline.
+
+HTTP requests accept at most 10,000 Unicode characters per synthesis item and 64 items per batch by
+default. Change these limits with `--max-text-chars` and `--max-batch-items`, or with
+`MAX_TEXT_CHARS` and `MAX_BATCH_ITEMS` in Compose.
+
 `voices/<name>/voice.json` may also bind fine-tuned model weights. The HTTP server keeps the same
 request shape (`voice` + `text`) and lazily loads the model pair for that voice:
 

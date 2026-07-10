@@ -37,10 +37,126 @@ pub struct AppState {
     voices_dir: Arc<PathBuf>,
     models_dir: Arc<PathBuf>,
     path_policy: request::RequestPathPolicy,
+    max_text_chars: usize,
+    max_batch_items: usize,
 }
 
 async fn health_handler() -> &'static str {
     "OK"
+}
+
+async fn status_handler(State(state): State<AppState>) -> Result<Response<Body>, StatusCode> {
+    let (cached_pipelines, pipeline_cache_capacity) = state.pipelines.status().await;
+    let body = serde_json::json!({
+        "status": "ready",
+        "cached_pipelines": cached_pipelines,
+        "pipeline_cache_capacity": pipeline_cache_capacity,
+        "gpu_inference_serialized": true,
+        "max_text_chars": state.max_text_chars,
+        "max_batch_items": state.max_batch_items,
+    });
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(body.to_string()))
+        .unwrap())
+}
+
+fn validate_request_text(text: &str, field: &str, max_chars: usize) -> Result<(), String> {
+    validate_text(text, field)?;
+    let chars = text.chars().count();
+    if chars > max_chars {
+        Err(format!(
+            "{field} exceeds the {max_chars} character limit ({chars} received)"
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod request_limit_tests {
+    use super::validate_request_text;
+
+    #[test]
+    fn text_limit_counts_unicode_characters() {
+        assert!(validate_request_text("你好", "text", 2).is_ok());
+        let error = validate_request_text("你好呀", "text", 2).unwrap_err();
+        assert!(error.contains("2 character limit"));
+        assert!(error.contains("3 received"));
+    }
+
+    #[test]
+    fn text_limit_still_rejects_empty_input() {
+        assert!(validate_request_text("  ", "text", 10).is_err());
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct WarmupRequest {
+    voice: String,
+}
+
+async fn warmup_handler(
+    State(state): State<AppState>,
+    Json(req): Json<WarmupRequest>,
+) -> Result<Response<Body>, StatusCode> {
+    let voice = req.voice.trim();
+    if voice.is_empty() {
+        return Ok(json_error(
+            StatusCode::BAD_REQUEST,
+            "voice must not be empty",
+        ));
+    }
+
+    let resolved = match resolve_synthesis(
+        Some(voice),
+        None,
+        None,
+        None,
+        SynthesisOverrides::default(),
+        &state.voices_dir,
+        &state.models_dir,
+        state.path_policy,
+    ) {
+        Ok(resolved) => resolved,
+        Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
+    };
+    let lease = match state.pipelines.acquire_pipeline(&resolved.models).await {
+        Ok(lease) => lease,
+        Err(e) => return Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
+    };
+    let result = tokio::task::spawn_blocking(move || {
+        let rt = tokio::runtime::Handle::current();
+        let mut pipeline = rt.block_on(lease.pipeline.lock());
+        pipeline
+            .preload_speaker_with_options(
+                &resolved.refer_path,
+                &resolved.prompt_text,
+                &resolved.options,
+            )
+            .map_err(|e| format!("Warmup failed: {e}"))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(())) => {
+            let body = serde_json::json!({ "status": "ready", "voice": voice });
+            Ok(Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap())
+        }
+        Ok(Err(e)) => Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
+        Err(e) => {
+            error!("Warmup task failed: {}", e);
+            Ok(json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Warmup task failed",
+            ))
+        }
+    }
 }
 
 async fn voices_handler(State(state): State<AppState>) -> Result<Response<Body>, StatusCode> {
@@ -132,7 +248,7 @@ async fn openai_speech_handler(
     State(state): State<AppState>,
     Json(req): Json<OpenAiSpeechRequest>,
 ) -> Result<Response<Body>, StatusCode> {
-    if let Err(e) = validate_text(&req.input, "input") {
+    if let Err(e) = validate_request_text(&req.input, "input", state.max_text_chars) {
         return Ok(json_error(StatusCode::BAD_REQUEST, e));
     }
     if req.voice.trim().is_empty() {
@@ -206,7 +322,7 @@ async fn tts_stream_handler(
     State(state): State<AppState>,
     Json(req): Json<TtsRequest>,
 ) -> Result<Response<Body>, StatusCode> {
-    if let Err(e) = validate_text(&req.text, "text") {
+    if let Err(e) = validate_request_text(&req.text, "text", state.max_text_chars) {
         return Ok(json_error(StatusCode::BAD_REQUEST, e));
     }
 
@@ -315,7 +431,7 @@ async fn tts_handler(
     State(state): State<AppState>,
     Json(req): Json<TtsRequest>,
 ) -> Result<Response<Body>, StatusCode> {
-    if let Err(e) = validate_text(&req.text, "text") {
+    if let Err(e) = validate_request_text(&req.text, "text", state.max_text_chars) {
         return Ok(json_error(StatusCode::BAD_REQUEST, e));
     }
 
@@ -388,16 +504,24 @@ async fn tts_batch_handler(
     if req.texts.is_empty() {
         return Ok(json_error(StatusCode::BAD_REQUEST, "texts array is empty"));
     }
-    if let Some((index, _)) = req
-        .texts
-        .iter()
-        .enumerate()
-        .find(|(_, text)| text.trim().is_empty())
-    {
+    if req.texts.len() > state.max_batch_items {
         return Ok(json_error(
             StatusCode::BAD_REQUEST,
-            format!("texts[{index}] must not be empty"),
+            format!(
+                "texts exceeds the {} item limit ({} received)",
+                state.max_batch_items,
+                req.texts.len()
+            ),
         ));
+    }
+    if let Some((index, text)) =
+        req.texts.iter().enumerate().find(|(_, text)| {
+            validate_request_text(text, "batch item", state.max_text_chars).is_err()
+        })
+    {
+        let error = validate_request_text(text, &format!("texts[{index}]"), state.max_text_chars)
+            .expect_err("invalid batch item was selected");
+        return Ok(json_error(StatusCode::BAD_REQUEST, error));
     }
 
     let overrides = SynthesisOverrides::from_batch(&req);
@@ -557,6 +681,8 @@ pub fn run(
     hubert_model: Option<&std::path::Path>,
     max_cached_pipelines: usize,
     allow_external_reference_paths: bool,
+    max_text_chars: usize,
+    max_batch_items: usize,
     models_dir: &std::path::Path,
     voices_dir: &std::path::Path,
 ) -> Result<(), String> {
@@ -581,6 +707,8 @@ pub fn run(
         path_policy: request::RequestPathPolicy {
             allow_external_reference_paths,
         },
+        max_text_chars,
+        max_batch_items,
     };
 
     // Build router
@@ -590,6 +718,8 @@ pub fn run(
         .route("/tts/batch", post(tts_batch_handler))
         .route("/v1/audio/speech", post(openai_speech_handler))
         .route("/health", get(health_handler))
+        .route("/status", get(status_handler))
+        .route("/warmup", post(warmup_handler))
         .route("/voices", get(voices_handler))
         .layer(TraceLayer::new_for_http())
         .with_state(state);
@@ -609,6 +739,8 @@ pub fn run(
     println!();
     println!("Endpoints:");
     println!("  GET  /health        - Health check");
+    println!("  GET  /status        - Runtime and model-cache status");
+    println!("  POST /warmup        - Load and warm one voice");
     println!("  GET  /voices        - List available voice profiles");
     println!("  POST /tts           - Single text → audio/wav");
     println!("  POST /tts/stream    - Single text → streaming audio/wav (sentence by sentence)");

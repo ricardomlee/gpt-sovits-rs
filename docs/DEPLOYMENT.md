@@ -196,6 +196,18 @@ docker compose -f compose.cpu.yml ps
 docker compose -f compose.cpu.yml logs --tail=100 gpt-sovits
 ```
 
+如果希望提前承担模型加载和参考特征计算，可以在启动后预热常用音色：
+
+```bash
+curl -X POST http://localhost:9880/warmup \
+  -H 'Content-Type: application/json' \
+  -d '{"voice":"diana"}'
+```
+
+HTTP 默认限制每条合成文本最多 10,000 个 Unicode 字符、每个 batch 最多 64 条。可以在
+`.env` 中通过 `MAX_TEXT_CHARS` 和 `MAX_BATCH_ITEMS` 调整；长期运行的个人服务建议保留
+上限，避免误发的大请求长时间占用 GPU 队列。
+
 常见问题：
 
 - `models/... not found`：模型目录没有挂载到容器，或 `.env` 里的模型路径和实际文件名不一致。

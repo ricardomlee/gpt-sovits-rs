@@ -8,7 +8,7 @@ use crate::text_frontend::TextFrontend;
 use crate::utils::AudioBuffer;
 use crate::{Error, Result};
 use candle_core::Device;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::time::Instant;
 
@@ -148,6 +148,8 @@ pub struct Pipeline {
     semantic_tokenizer: Option<SemanticTokenizer>,
     /// Cache keyed by (ref_audio_path, ref_text, sv_embedding_path)
     ref_cache: HashMap<(String, String, Option<String>), CachedSpeaker>,
+    ref_cache_order: VecDeque<(String, String, Option<String>)>,
+    ref_cache_capacity: usize,
 }
 
 impl Pipeline {
@@ -190,6 +192,8 @@ impl Pipeline {
             bigvgan_model: None,
             semantic_tokenizer: None,
             ref_cache: HashMap::new(),
+            ref_cache_order: VecDeque::new(),
+            ref_cache_capacity: 16,
         })
     }
 

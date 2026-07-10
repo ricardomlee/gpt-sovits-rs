@@ -35,6 +35,22 @@ pub(super) struct PreparedTarget {
 }
 
 impl Pipeline {
+    fn cache_speaker(&mut self, key: (String, String, Option<String>), cached: CachedSpeaker) {
+        self.ref_cache_order.retain(|candidate| candidate != &key);
+        self.ref_cache.insert(key.clone(), cached);
+        self.ref_cache_order.push_back(key);
+        while self.ref_cache_order.len() > self.ref_cache_capacity {
+            if let Some(oldest) = self.ref_cache_order.pop_front() {
+                self.ref_cache.remove(&oldest);
+            }
+        }
+    }
+
+    fn touch_speaker_cache(&mut self, key: &(String, String, Option<String>)) {
+        self.ref_cache_order.retain(|candidate| candidate != key);
+        self.ref_cache_order.push_back(key.clone());
+    }
+
     /// Pre-compute and cache reference speaker features.
     /// Call once per speaker before batch inference to avoid repeated HuBERT/BERT runs.
     pub fn preload_speaker<P: AsRef<Path>>(
@@ -88,7 +104,9 @@ impl Pipeline {
                 n_mels,
                 options.sv_embedding.as_deref(),
             )?;
-            self.ref_cache.insert(key, cached);
+            self.cache_speaker(key, cached);
+        } else {
+            self.touch_speaker_cache(&key);
         }
         Ok(())
     }
@@ -114,9 +132,10 @@ impl Pipeline {
             ref_text.to_owned(),
             sv_embedding_key,
         );
-        if let Some(cached) = self.ref_cache.get(&key) {
+        if let Some(cached) = self.ref_cache.get(&key).cloned() {
             tracing::debug!("Speaker cache hit: {:?}", key.0);
-            return Ok(cached.clone());
+            self.touch_speaker_cache(&key);
+            return Ok(cached);
         }
         tracing::debug!("Speaker cache miss: {:?}", key.0);
         let sovits = self
@@ -139,7 +158,7 @@ impl Pipeline {
             n_mels,
             options.sv_embedding.as_deref(),
         )?;
-        self.ref_cache.insert(key, cached.clone());
+        self.cache_speaker(key, cached.clone());
         Ok(cached)
     }
 
