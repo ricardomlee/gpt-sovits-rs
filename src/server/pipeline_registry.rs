@@ -4,6 +4,7 @@ use gpt_sovits_rs::voice::VoiceModelPaths;
 use gpt_sovits_rs::{Config, Pipeline, SharedPipelineResources};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::{error, info};
@@ -75,11 +76,46 @@ pub(super) struct PipelineRegistry {
     shared_resources: Arc<SharedPipelineResources>,
     cache: Arc<Mutex<PipelineCache>>,
     operation: Arc<Mutex<()>>,
+    metrics: Arc<PipelineMetrics>,
 }
 
 pub(super) struct PipelineLease {
     pub(super) pipeline: Arc<Mutex<Pipeline>>,
     _operation: OwnedMutexGuard<()>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PipelineStatus {
+    pub(super) cached: usize,
+    pub(super) capacity: usize,
+    pub(super) cache_hits: u64,
+    pub(super) cache_misses: u64,
+    pub(super) evictions: u64,
+    pub(super) queued_requests: usize,
+    pub(super) busy: bool,
+}
+
+#[derive(Default)]
+struct PipelineMetrics {
+    cache_hits: AtomicU64,
+    cache_misses: AtomicU64,
+    evictions: AtomicU64,
+    queued_requests: AtomicUsize,
+}
+
+struct QueueGuard(Arc<PipelineMetrics>);
+
+impl QueueGuard {
+    fn new(metrics: Arc<PipelineMetrics>) -> Self {
+        metrics.queued_requests.fetch_add(1, Ordering::Relaxed);
+        Self(metrics)
+    }
+}
+
+impl Drop for QueueGuard {
+    fn drop(&mut self) {
+        self.0.queued_requests.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl PipelineRegistry {
@@ -137,6 +173,7 @@ impl PipelineRegistry {
                 default_pipeline,
             ))),
             operation: Arc::new(Mutex::new(())),
+            metrics: Arc::new(PipelineMetrics::default()),
         }
     }
 
@@ -161,17 +198,22 @@ impl PipelineRegistry {
     ) -> Result<PipelineLease, String> {
         // Cover cold loading and inference with one lease so waiting requests cannot
         // retain extra pipelines or start duplicate loads.
+        let queued = QueueGuard::new(Arc::clone(&self.metrics));
         let operation = Arc::clone(&self.operation).lock_owned().await;
+        drop(queued);
         let key = self.key_for(models);
         if let Some(pipeline) = self.cache.lock().await.get(&key) {
+            self.metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
             return Ok(PipelineLease {
                 pipeline,
                 _operation: operation,
             });
         }
+        self.metrics.cache_misses.fetch_add(1, Ordering::Relaxed);
 
         let evicted = self.cache.lock().await.evict_before_insert(&key);
         if let Some((evicted_key, pipeline)) = evicted {
+            self.metrics.evictions.fetch_add(1, Ordering::Relaxed);
             info!(?evicted_key, "Evicting least recently used model pipeline");
             drop(pipeline);
         }
@@ -193,9 +235,17 @@ impl PipelineRegistry {
         })
     }
 
-    pub(super) async fn status(&self) -> (usize, usize) {
+    pub(super) async fn status(&self) -> PipelineStatus {
         let cache = self.cache.lock().await;
-        (cache.len(), cache.capacity)
+        PipelineStatus {
+            cached: cache.len(),
+            capacity: cache.capacity,
+            cache_hits: self.metrics.cache_hits.load(Ordering::Relaxed),
+            cache_misses: self.metrics.cache_misses.load(Ordering::Relaxed),
+            evictions: self.metrics.evictions.load(Ordering::Relaxed),
+            queued_requests: self.metrics.queued_requests.load(Ordering::Relaxed),
+            busy: self.operation.try_lock().is_err(),
+        }
     }
 }
 
@@ -298,6 +348,9 @@ mod tests {
             .acquire_pipeline(&VoiceModelPaths::default())
             .await
             .unwrap();
+        let active_status = registry.status().await;
+        assert!(active_status.busy);
+        assert_eq!(active_status.cache_hits, 1);
         let waiting_registry = registry.clone();
         let waiting = tokio::spawn(async move {
             let lease = waiting_registry
@@ -309,7 +362,12 @@ mod tests {
 
         tokio::task::yield_now().await;
         assert!(!waiting.is_finished());
+        assert_eq!(registry.status().await.queued_requests, 1);
         drop(first);
         waiting.await.unwrap();
+        let complete_status = registry.status().await;
+        assert!(!complete_status.busy);
+        assert_eq!(complete_status.cache_hits, 2);
+        assert_eq!(complete_status.queued_requests, 0);
     }
 }

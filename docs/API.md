@@ -121,8 +121,11 @@ Example response:
 Returns lightweight runtime status without loading another model:
 
 ```json
-{"status":"ready","cached_pipelines":1,"pipeline_cache_capacity":2,"gpu_inference_serialized":true,"max_text_chars":10000,"max_batch_items":64}
+{"status":"ready","cached_pipelines":1,"pipeline_cache_capacity":2,"pipeline_cache_hits":4,"pipeline_cache_misses":1,"pipeline_evictions":0,"queued_requests":0,"busy":false,"gpu_inference_serialized":true,"max_text_chars":10000,"max_batch_items":64}
 ```
+
+The counters are process-local and reset when the service restarts. `queued_requests` counts calls
+waiting for the serialized inference slot; `busy` includes model loading, warmup, and synthesis.
 
 ### `POST /warmup`
 

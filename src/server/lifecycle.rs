@@ -17,11 +17,16 @@ pub(super) async fn health_handler() -> &'static str {
 pub(super) async fn status_handler(
     State(state): State<AppState>,
 ) -> Result<Response<Body>, StatusCode> {
-    let (cached_pipelines, pipeline_cache_capacity) = state.pipelines.status().await;
+    let pipeline = state.pipelines.status().await;
     let body = serde_json::json!({
         "status": "ready",
-        "cached_pipelines": cached_pipelines,
-        "pipeline_cache_capacity": pipeline_cache_capacity,
+        "cached_pipelines": pipeline.cached,
+        "pipeline_cache_capacity": pipeline.capacity,
+        "pipeline_cache_hits": pipeline.cache_hits,
+        "pipeline_cache_misses": pipeline.cache_misses,
+        "pipeline_evictions": pipeline.evictions,
+        "queued_requests": pipeline.queued_requests,
+        "busy": pipeline.busy,
         "gpu_inference_serialized": true,
         "max_text_chars": state.max_text_chars,
         "max_batch_items": state.max_batch_items,
