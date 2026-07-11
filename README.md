@@ -288,6 +288,8 @@ and GPU work remains sequential. The cache defaults to two model pairs and can b
 
 HTTP request limits default to 10,000 characters per item and 64 batch items. Compose users can
 adjust them with `MAX_TEXT_CHARS` and `MAX_BATCH_ITEMS`.
+Queue waiting is capped at 120 seconds by default (`QUEUE_TIMEOUT_SECS`), preventing stale requests
+from accumulating behind a long synthesis job.
 
 Set `PRELOAD_VOICES=diana,carol` in `.env` to load frequently used voices before the HTTP service
 becomes ready. Keep the list within `MAX_CACHED_PIPELINES` to avoid immediate LRU eviction.

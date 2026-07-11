@@ -59,6 +59,7 @@ pub fn run(
     allow_external_reference_paths: bool,
     max_text_chars: usize,
     max_batch_items: usize,
+    queue_timeout_secs: usize,
     preload_voices: &[String],
     models_dir: &std::path::Path,
     voices_dir: &std::path::Path,
@@ -86,6 +87,7 @@ pub fn run(
         },
         max_text_chars,
         max_batch_items,
+        queue_timeout: std::time::Duration::from_secs(queue_timeout_secs as u64),
     };
     let startup_state = state.clone();
 

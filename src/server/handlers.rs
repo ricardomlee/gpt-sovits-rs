@@ -133,9 +133,13 @@ pub(super) async fn openai_speech_handler(
         Ok(resolved) => resolved,
         Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
     };
-    let lease = match state.pipelines.acquire_pipeline(&resolved.models).await {
+    let lease = match state
+        .pipelines
+        .acquire_pipeline(&resolved.models, state.queue_timeout)
+        .await
+    {
         Ok(lease) => lease,
-        Err(e) => return Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
+        Err(e) => return Ok(json_error(StatusCode::SERVICE_UNAVAILABLE, e)),
     };
     let text = req.input;
     let text_chars = text.chars().count();
@@ -194,9 +198,13 @@ pub(super) async fn tts_stream_handler(
         Ok(resolved) => resolved,
         Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
     };
-    let lease = match state.pipelines.acquire_pipeline(&resolved.models).await {
+    let lease = match state
+        .pipelines
+        .acquire_pipeline(&resolved.models, state.queue_timeout)
+        .await
+    {
         Ok(lease) => lease,
-        Err(e) => return Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
+        Err(e) => return Ok(json_error(StatusCode::SERVICE_UNAVAILABLE, e)),
     };
     let text = req.text;
     let text_chars = text.chars().count();
@@ -294,9 +302,13 @@ pub(super) async fn tts_handler(
         Ok(resolved) => resolved,
         Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
     };
-    let lease = match state.pipelines.acquire_pipeline(&resolved.models).await {
+    let lease = match state
+        .pipelines
+        .acquire_pipeline(&resolved.models, state.queue_timeout)
+        .await
+    {
         Ok(lease) => lease,
-        Err(e) => return Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
+        Err(e) => return Ok(json_error(StatusCode::SERVICE_UNAVAILABLE, e)),
     };
     let text = req.text;
     let text_chars = text.chars().count();
@@ -373,9 +385,13 @@ pub(super) async fn tts_batch_handler(
         Ok(resolved) => resolved,
         Err(e) => return Ok(json_error(StatusCode::BAD_REQUEST, e)),
     };
-    let lease = match state.pipelines.acquire_pipeline(&resolved.models).await {
+    let lease = match state
+        .pipelines
+        .acquire_pipeline(&resolved.models, state.queue_timeout)
+        .await
+    {
         Ok(lease) => lease,
-        Err(e) => return Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
+        Err(e) => return Ok(json_error(StatusCode::SERVICE_UNAVAILABLE, e)),
     };
 
     let refer_path = resolved.refer_path;

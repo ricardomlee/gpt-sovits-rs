@@ -6,6 +6,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 use tracing::{error, info};
 
@@ -195,11 +196,20 @@ impl PipelineRegistry {
     pub(super) async fn acquire_pipeline(
         &self,
         models: &VoiceModelPaths,
+        queue_timeout: Duration,
     ) -> Result<PipelineLease, String> {
         // Cover cold loading and inference with one lease so waiting requests cannot
         // retain extra pipelines or start duplicate loads.
         let queued = QueueGuard::new(Arc::clone(&self.metrics));
-        let operation = Arc::clone(&self.operation).lock_owned().await;
+        let operation =
+            tokio::time::timeout(queue_timeout, Arc::clone(&self.operation).lock_owned())
+                .await
+                .map_err(|_| {
+                    format!(
+                        "Inference queue timed out after {} second(s)",
+                        queue_timeout.as_secs()
+                    )
+                })?;
         drop(queued);
         let key = self.key_for(models);
         if let Some(pipeline) = self.cache.lock().await.get(&key) {
@@ -345,7 +355,7 @@ mod tests {
             2,
         );
         let first = registry
-            .acquire_pipeline(&VoiceModelPaths::default())
+            .acquire_pipeline(&VoiceModelPaths::default(), Duration::from_secs(1))
             .await
             .unwrap();
         let active_status = registry.status().await;
@@ -354,7 +364,7 @@ mod tests {
         let waiting_registry = registry.clone();
         let waiting = tokio::spawn(async move {
             let lease = waiting_registry
-                .acquire_pipeline(&VoiceModelPaths::default())
+                .acquire_pipeline(&VoiceModelPaths::default(), Duration::from_secs(1))
                 .await
                 .unwrap();
             drop(lease);
@@ -369,5 +379,32 @@ mod tests {
         assert!(!complete_status.busy);
         assert_eq!(complete_status.cache_hits, 2);
         assert_eq!(complete_status.queued_requests, 0);
+    }
+
+    #[tokio::test]
+    async fn queue_timeout_does_not_leave_a_waiter_count() {
+        let registry = PipelineRegistry::new(
+            Config::builder().with_device("cpu").build(),
+            PipelineKey {
+                gpt: None,
+                sovits: None,
+                bigvgan: None,
+            },
+            empty_pipeline(),
+            1,
+        );
+        let active = registry
+            .acquire_pipeline(&VoiceModelPaths::default(), Duration::from_secs(1))
+            .await
+            .unwrap();
+        let error = registry
+            .acquire_pipeline(&VoiceModelPaths::default(), Duration::from_millis(1))
+            .await
+            .err()
+            .expect("second request should time out");
+
+        assert!(error.contains("Inference queue timed out"));
+        assert_eq!(registry.status().await.queued_requests, 0);
+        drop(active);
     }
 }

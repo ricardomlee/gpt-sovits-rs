@@ -171,6 +171,10 @@ pub(crate) struct Args {
     #[arg(long, default_value_t = 64, value_parser = parse_positive_usize)]
     pub(crate) max_batch_items: usize,
 
+    /// Maximum seconds an HTTP request may wait for the serialized inference slot
+    #[arg(long, default_value_t = 120, value_parser = parse_positive_usize)]
+    pub(crate) queue_timeout_secs: usize,
+
     /// Comma-separated voice profiles to warm before the HTTP server becomes ready
     #[arg(long, value_delimiter = ',')]
     pub(crate) preload_voices: Vec<String>,
@@ -304,6 +308,7 @@ pub(crate) fn run() {
                 args.allow_external_reference_paths,
                 args.max_text_chars,
                 args.max_batch_items,
+                args.queue_timeout_secs,
                 &args.preload_voices,
                 &args.models_dir,
                 &args.voices_dir,

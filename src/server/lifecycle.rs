@@ -30,6 +30,7 @@ pub(super) async fn status_handler(
         "gpu_inference_serialized": true,
         "max_text_chars": state.max_text_chars,
         "max_batch_items": state.max_batch_items,
+        "queue_timeout_seconds": state.queue_timeout.as_secs(),
     });
     Ok(Response::builder()
         .status(StatusCode::OK)
@@ -59,7 +60,10 @@ pub(super) async fn warm_voice(state: &AppState, voice: &str) -> Result<(), Stri
         &state.models_dir,
         state.path_policy,
     )?;
-    let lease = state.pipelines.acquire_pipeline(&resolved.models).await?;
+    let lease = state
+        .pipelines
+        .acquire_pipeline(&resolved.models, state.queue_timeout)
+        .await?;
     tokio::task::spawn_blocking(move || {
         let rt = tokio::runtime::Handle::current();
         let mut pipeline = rt.block_on(lease.pipeline.lock());
