@@ -76,17 +76,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     std::fs::create_dir_all(&args.output_dir)?;
 
+    let voice = LoadedVoiceProfile::load(&args.voice, &args.voices_dir)?;
+    let voice_models = voice.model_paths(&args.models_dir);
     let model_paths = ModelPaths::discover(
         &args.models_dir,
         ModelPathOverrides {
-            gpt: args.gpt_model,
-            sovits: args.sovits_model,
-            bert: args.bert_model,
-            hubert: args.hubert_model,
+            gpt: args.gpt_model.clone().or(voice_models.gpt),
+            sovits: args.sovits_model.clone().or(voice_models.sovits),
+            bert: args.bert_model.clone(),
+            hubert: args.hubert_model.clone(),
         },
     )?;
 
-    let voice = LoadedVoiceProfile::load(&args.voice, &args.voices_dir)?;
     let defaults = VoiceDefaults::from_profile(Some(&voice.profile));
     let language = Language::parse(&defaults.language).unwrap_or(Language::Chinese);
     let reference_audio = voice
@@ -110,7 +111,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         pipeline.load_hubert(path)?;
     }
 
-    let options = defaults.to_inference_options(language, Default::default());
+    let mut options = defaults.to_inference_options(language, Default::default());
+    options.sv_embedding = voice.sv_embedding_path();
 
     let texts = if args.text.is_empty() {
         vec![
@@ -122,12 +124,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         args.text
     };
 
-    pipeline.preload_speaker(&reference_audio, reference_text, language)?;
+    pipeline.preload_speaker_with_options(&reference_audio, reference_text, &options)?;
 
     // Semantic tokens represent roughly 40 ms of audio. Reaching this duration means
     // generation exhausted max_tokens instead of producing EOS, which often leaves a noisy tail.
     let thresholds = AudioQualityThresholds {
-        max_duration_s: Some(options.max_tokens as f32 / 25.0 - 0.01),
+        // A split request may legitimately exceed one chunk's semantic-token budget.
+        max_duration_s: (!defaults.split_sentences)
+            .then_some(options.max_tokens as f32 / 25.0 - 0.01),
         ..AudioQualityThresholds::default()
     };
     let mut report = Vec::new();

@@ -4,6 +4,9 @@
 //!
 //! GPT_SOVITS_RUN_MODEL_SMOKE=1 cargo test --test model_smoke -- --nocapture
 
+use gpt_sovits_rs::audio_checks::{
+    validate_audio_quality, AudioQualityMetrics, AudioQualityThresholds,
+};
 use gpt_sovits_rs::model_paths::{ModelPathOverrides, ModelPaths};
 use gpt_sovits_rs::voice::{LoadedVoiceProfile, VoiceDefaults};
 use gpt_sovits_rs::{Config, Language, Pipeline};
@@ -29,19 +32,20 @@ fn real_model_inference_smoke_when_enabled() {
     let text = std::env::var("GPT_SOVITS_SMOKE_TEXT")
         .unwrap_or_else(|_| "你好，这是发布前的真实模型冒烟测试。".into());
 
+    let voice = LoadedVoiceProfile::load(&voice_name, &voices_dir)
+        .expect("voice profile should load when smoke test is enabled");
+    let voice_models = voice.model_paths(&models_dir);
     let paths = ModelPaths::discover(
         &models_dir,
         ModelPathOverrides {
-            gpt: optional_path("GPT_SOVITS_GPT_MODEL"),
-            sovits: optional_path("GPT_SOVITS_SOVITS_MODEL"),
+            gpt: optional_path("GPT_SOVITS_GPT_MODEL").or(voice_models.gpt),
+            sovits: optional_path("GPT_SOVITS_SOVITS_MODEL").or(voice_models.sovits),
             bert: optional_path("GPT_SOVITS_BERT_MODEL"),
             hubert: optional_path("GPT_SOVITS_HUBERT_MODEL"),
         },
     )
     .expect("model discovery should succeed when smoke test is enabled");
 
-    let voice = LoadedVoiceProfile::load(&voice_name, &voices_dir)
-        .expect("voice profile should load when smoke test is enabled");
     let defaults = VoiceDefaults::from_profile(Some(&voice.profile));
     let language = Language::parse(&defaults.language).unwrap_or(Language::Chinese);
     let reference_audio = voice
@@ -69,27 +73,39 @@ fn real_model_inference_smoke_when_enabled() {
     }
 
     let mut options = defaults.to_inference_options(language, Default::default());
+    options.sv_embedding = voice.sv_embedding_path();
     options.max_tokens = std::env::var("GPT_SOVITS_SMOKE_MAX_TOKENS")
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(80);
 
-    let audio = pipeline
-        .inference_with_mode(
+    pipeline
+        .preload_speaker_with_options(&reference_audio, reference_text, &options)
+        .expect("speaker features should preload");
+    let audio = if defaults.split_sentences {
+        pipeline.inference_split_with_method(
+            &text,
+            &reference_audio,
+            reference_text,
+            &options,
+            &defaults.mode,
+            defaults.min_sentence_chars,
+            defaults.sentence_gap_ms,
+            defaults.sentence_fade_ms,
+            defaults.split_method,
+        )
+    } else {
+        pipeline.inference_with_mode(
             &defaults.mode,
             &text,
             &reference_audio,
             reference_text,
             &options,
         )
-        .expect("real model smoke inference should succeed");
+    }
+    .expect("real model smoke inference should succeed");
 
-    assert!(
-        audio.duration() > 0.1,
-        "smoke output should contain audible duration"
-    );
-    assert!(
-        audio.samples.iter().all(|sample| sample.is_finite()),
-        "smoke output should not contain non-finite samples"
-    );
+    let metrics = AudioQualityMetrics::from_audio(&audio);
+    let issues = validate_audio_quality(&metrics, &AudioQualityThresholds::default());
+    assert!(issues.is_empty(), "smoke audio quality issues: {issues:?}");
 }

@@ -75,9 +75,9 @@ GPT_SOVITS_SMOKE_TEXT="你好，这是发布前的真实模型冒烟测试。"
 GPT_SOVITS_SMOKE_MAX_TOKENS=80
 ```
 
-The smoke test verifies that the real pipeline can load models, synthesize a short clip, and produce
-finite audio samples with non-trivial duration. It is intentionally skipped unless
-`GPT_SOVITS_RUN_MODEL_SMOKE=1`.
+The smoke test honors GPT/SoVITS and SV bindings from the selected voice profile, applies its text
+splitting policy, and validates the generated waveform with the shared audio-quality thresholds. It
+is intentionally skipped unless `GPT_SOVITS_RUN_MODEL_SMOKE=1`.
 
 ## End-to-End Smoke Tests
 
