@@ -32,6 +32,8 @@ services:
       - "${MAX_TEXT_CHARS:-10000}"
       - "--max-batch-items"
       - "${MAX_BATCH_ITEMS:-64}"
+      - "--preload-voices"
+      - "${PRELOAD_VOICES:-}"
       - "--gpt-model"
       - "${GPT_MODEL:-/app/models/gpt-model.safetensors}"
       - "--sovits-model"

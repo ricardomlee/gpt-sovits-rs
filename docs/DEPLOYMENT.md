@@ -204,6 +204,15 @@ curl -X POST http://localhost:9880/warmup \
   -d '{"voice":"diana"}'
 ```
 
+常用音色也可以在 `.env` 里自动预热：
+
+```env
+PRELOAD_VOICES=diana,carol
+```
+
+预热列表最好不要超过 `MAX_CACHED_PIPELINES`，否则前面的音色会在服务开放前就被 LRU
+淘汰。任一预热音色配置错误时服务会启动失败，Docker healthcheck 不会错误地显示 ready。
+
 HTTP 默认限制每条合成文本最多 10,000 个 Unicode 字符、每个 batch 最多 64 条。可以在
 `.env` 中通过 `MAX_TEXT_CHARS` 和 `MAX_BATCH_ITEMS` 调整；长期运行的个人服务建议保留
 上限，避免误发的大请求长时间占用 GPU 队列。

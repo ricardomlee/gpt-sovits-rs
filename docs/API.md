@@ -135,6 +135,9 @@ curl -X POST http://localhost:9880/warmup \
 ```
 
 Warming more voices than the configured cache capacity evicts the least recently used pipeline.
+For automatic startup warmup, pass `--preload-voices diana,carol` or set
+`PRELOAD_VOICES=diana,carol` in Compose. The server fails startup when a configured voice cannot be
+loaded, so health checks never report ready with a broken preload configuration.
 
 HTTP requests accept at most 10,000 Unicode characters per synthesis item and 64 items per batch by
 default. Change these limits with `--max-text-chars` and `--max-batch-items`, or with

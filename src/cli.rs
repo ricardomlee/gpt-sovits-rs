@@ -171,6 +171,10 @@ pub(crate) struct Args {
     #[arg(long, default_value_t = 64, value_parser = parse_positive_usize)]
     pub(crate) max_batch_items: usize,
 
+    /// Comma-separated voice profiles to warm before the HTTP server becomes ready
+    #[arg(long, value_delimiter = ',')]
+    pub(crate) preload_voices: Vec<String>,
+
     /// Verbose output
     #[arg(short, long)]
     pub(crate) verbose: bool,
@@ -300,6 +304,7 @@ pub(crate) fn run() {
                 args.allow_external_reference_paths,
                 args.max_text_chars,
                 args.max_batch_items,
+                &args.preload_voices,
                 &args.models_dir,
                 &args.voices_dir,
             ) {
