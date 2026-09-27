@@ -303,6 +303,13 @@ cargo run --release --features "cuda,http-api" --bin gpt-sovits -- \
   --http --port 9880
 ```
 
+Source builds listen on `127.0.0.1` by default. Use `--host 0.0.0.0` or
+`GPT_SOVITS_HOST=0.0.0.0` for network access; IPv6 addresses such as `--host ::1`
+are also accepted. The flag takes precedence over the environment variable.
+Docker/Compose sets `GPT_SOVITS_HOST=0.0.0.0` for port forwarding. Published
+v1.2.0 binaries already listen on all interfaces and do not accept `--host`.
+See [deployment](docs/DEPLOYMENT.md#监听地址与版本兼容) for version and bind settings.
+
 Core endpoints:
 
 | Endpoint | Purpose |

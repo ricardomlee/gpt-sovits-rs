@@ -129,6 +129,31 @@ cd gpt-sovits-1.2.0-linux-x86_64
 macOS 包同时携带对应的 `libsoxr.0.dylib`。首次运行若被 Gatekeeper 阻止，需要在
 系统设置中确认允许该二进制。
 
+## 监听地址与版本兼容
+
+当前源码构建的二进制默认监听 `127.0.0.1`。可以用 `--host 0.0.0.0` 或
+`GPT_SOVITS_HOST=0.0.0.0` 指定监听地址；命令行优先于环境变量。IPv6 使用
+`--host ::1` 或 `--host ::`，不带方括号和端口，端口单独通过 `--port` 设置。
+
+Dockerfile 和 Compose 都设置 `GPT_SOVITS_HOST=0.0.0.0`，保证 Docker 的端口转发可用。
+已发布的 `1.2.0` 镜像会忽略该变量，本身就监听所有接口，因此同一份 Compose 也能运行
+固定版本 `1.2.0`。不要给 `1.2.0` 添加 `--host`，该版本尚不支持这个参数。
+
+长期运行请使用仓库中的 Compose 文件和 `.env`，不要依赖 `/tmp` 中的临时配置。
+升级时先在 `.env` 中设置确切的镜像标签，再拉取并等待服务就绪：
+
+```bash
+docker compose -f compose.cuda.yml pull
+docker compose -f compose.cuda.yml up -d --wait --wait-timeout 180
+curl --fail http://localhost:9880/status
+```
+
+CPU 部署改用 `compose.cpu.yml`。回滚时把 `.env` 的镜像标签改回之前的固定版本，
+再运行相同命令。模型、音色和输出均为宿主机目录挂载，重建容器不会覆盖它们。
+
+容器内监听地址与宿主机端口绑定是两回事。需要只允许本机访问时，可在 `.env` 中设置
+`GPT_SOVITS_PORT=127.0.0.1:9880`；默认 `9880` 保持现有的所有宿主机接口映射。
+
 ## 音色目录
 
 每个音色放在 `voices/<name>/voice.json`。参考音频和 SV embedding 的相对路径按该 voice
