@@ -8,6 +8,7 @@ pub struct ModelPathOverrides {
     pub sovits: Option<PathBuf>,
     pub bert: Option<PathBuf>,
     pub hubert: Option<PathBuf>,
+    pub sv: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,6 +17,7 @@ pub struct ModelPaths {
     pub sovits: PathBuf,
     pub bert: Option<PathBuf>,
     pub hubert: Option<PathBuf>,
+    pub sv: Option<PathBuf>,
 }
 
 impl ModelPaths {
@@ -46,6 +48,12 @@ impl ModelPaths {
                 models_dir,
                 overrides.hubert,
                 &["hubert/hubert.safetensors", "hubert.safetensors"],
+            )?,
+            sv: resolve_optional(
+                "SV encoder",
+                models_dir,
+                overrides.sv,
+                &["sv/sv.safetensors", "sv.safetensors"],
             )?,
         })
     }
@@ -109,12 +117,14 @@ mod tests {
         touch(&temp.path().join("sovits-model.safetensors"));
         touch(&temp.path().join("bert/bert.safetensors"));
         touch(&temp.path().join("hubert/hubert.safetensors"));
+        touch(&temp.path().join("sv/sv.safetensors"));
 
         let paths = ModelPaths::discover(temp.path(), ModelPathOverrides::default()).unwrap();
 
         assert_eq!(paths.gpt, temp.path().join("gpt-model.safetensors"));
         assert_eq!(paths.sovits, temp.path().join("sovits-model.safetensors"));
         assert_eq!(paths.bert, Some(temp.path().join("bert/bert.safetensors")));
+        assert_eq!(paths.sv, Some(temp.path().join("sv/sv.safetensors")));
         assert_eq!(
             paths.hubert,
             Some(temp.path().join("hubert/hubert.safetensors"))
@@ -128,11 +138,13 @@ mod tests {
         touch(&temp.path().join("sovits-model.safetensors"));
         touch(&temp.path().join("bert.safetensors"));
         touch(&temp.path().join("hubert.safetensors"));
+        touch(&temp.path().join("sv.safetensors"));
 
         let paths = ModelPaths::discover(temp.path(), ModelPathOverrides::default()).unwrap();
 
         assert_eq!(paths.bert, Some(temp.path().join("bert.safetensors")));
         assert_eq!(paths.hubert, Some(temp.path().join("hubert.safetensors")));
+        assert_eq!(paths.sv, Some(temp.path().join("sv.safetensors")));
     }
 
     #[test]

@@ -11,6 +11,7 @@ __pycache__/
 
 # Debug intermediates
 *.txt
+!licenses/*.txt
 check_*.py
 compare_*.py
 debug_*.py
@@ -36,6 +37,7 @@ test_outputs/
 *.pth
 *.pt
 *.safetensors
+!tests/fixtures/sv/synthetic_fbank.safetensors
 *.npy
 *.npz
 

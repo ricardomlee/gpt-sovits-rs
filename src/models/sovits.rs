@@ -317,8 +317,8 @@ impl SoVITSModel {
     /// Synthesize audio with an optional v2Pro speaker-verification embedding.
     ///
     /// `sv_embedding` must be `[1, 20480]` or `[20480]` and is only used by v2Pro/v2ProPlus
-    /// checkpoints that contain `sv_emb.*` weights. When omitted, a zero embedding is used so
-    /// v2Pro checkpoints can still run from the reference mel alone.
+    /// checkpoints that contain `sv_emb.*` weights. Pipeline computes it from the reference
+    /// audio when an SV encoder is loaded; direct callers must supply the embedding.
     pub fn synthesize_with_speed_and_sv(
         &self,
         semantic_tokens: &[usize],
@@ -437,7 +437,10 @@ impl SoVITSModel {
             let sv = match sv_embedding {
                 Some(tensor) if tensor.dims() == [20480] => tensor.unsqueeze(0)?,
                 Some(tensor) => tensor.clone(),
-                None => Tensor::zeros((1, 20480), self.dtype, &self.device)?,
+                None => return Err(crate::Error::InferenceError(
+                    "v2Pro requires an SV embedding; load the SV encoder or supply sv_embedding"
+                        .into(),
+                )),
             }
             .to_device(&self.device)?
             .to_dtype(self.dtype)?;
@@ -548,6 +551,10 @@ impl SoVITSModel {
     /// Get sampling rate
     pub fn sampling_rate(&self) -> u32 {
         self.sampling_rate
+    }
+
+    pub fn requires_sv(&self) -> bool {
+        self.sv_emb.is_some()
     }
 
     /// Get ref_enc

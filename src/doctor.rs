@@ -98,10 +98,12 @@ fn check_models(report: &mut DoctorReport, args: &Args) {
         ));
     }
 
-    let voice_models = args
+    let voice = args
         .voice
         .as_deref()
-        .and_then(|name| LoadedVoiceProfile::load(name, &args.voices_dir).ok())
+        .and_then(|name| LoadedVoiceProfile::load(name, &args.voices_dir).ok());
+    let voice_models = voice
+        .as_ref()
         .map(|voice| voice.model_paths(&args.models_dir))
         .unwrap_or_default();
 
@@ -112,6 +114,10 @@ fn check_models(report: &mut DoctorReport, args: &Args) {
             sovits: args.sovits_model.clone().or(voice_models.sovits),
             bert: args.bert_model.clone(),
             hubert: args.hubert_model.clone(),
+            sv: args
+                .sv_model
+                .clone()
+                .filter(|path| !path.as_os_str().is_empty()),
         },
     ) {
         Ok(paths) => {
@@ -127,6 +133,23 @@ fn check_models(report: &mut DoctorReport, args: &Args) {
             match paths.hubert.as_ref() {
                 Some(path) => check_safetensors(report, "HuBERT", path, false),
                 None => report.warn("HuBERT model not found; voice similarity will be reduced"),
+            }
+            if let Some(path) = paths.sv.as_ref() {
+                check_safetensors(report, "SV encoder", path, true);
+            }
+            let explicit_sv = args
+                .sv_embedding
+                .clone()
+                .or_else(|| voice.as_ref().and_then(|v| v.sv_embedding_path()));
+            if let Some(path) = explicit_sv.as_ref() {
+                check_safetensors(report, "Selected SV embedding", path, true);
+            }
+            if read_safetensors_header(&paths.sovits)
+                .is_ok_and(|header| header.contains_key("sv_emb.weight"))
+                && explicit_sv.is_none()
+                && paths.sv.is_none()
+            {
+                report.error("v2Pro needs an SV encoder at models/sv/sv.safetensors (or --sv-model), or an explicit sv_embedding; convert the encoder with gpt-sovits-convert sv-model");
             }
         }
         Err(e) => report.error(e),
@@ -178,6 +201,15 @@ fn check_safetensors(report: &mut DoctorReport, label: &str, path: &Path, requir
 }
 
 fn read_safetensors_header_count(path: &Path) -> Result<usize, String> {
+    Ok(read_safetensors_header(path)?
+        .keys()
+        .filter(|key| key.as_str() != "__metadata__")
+        .count())
+}
+
+fn read_safetensors_header(
+    path: &Path,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
     use std::io::Read;
 
     let mut file = std::fs::File::open(path).map_err(|e| e.to_string())?;
@@ -194,10 +226,7 @@ fn read_safetensors_header_count(path: &Path) -> Result<usize, String> {
     let object = value
         .as_object()
         .ok_or_else(|| "safetensors header is not a JSON object".to_string())?;
-    Ok(object
-        .keys()
-        .filter(|key| key.as_str() != "__metadata__")
-        .count())
+    Ok(object.clone())
 }
 
 fn check_bert_tokenizer(report: &mut DoctorReport, bert_path: &Path) {

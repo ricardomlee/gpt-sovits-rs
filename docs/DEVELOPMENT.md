@@ -53,6 +53,9 @@ gated by environment variables so CI and casual contributors can run the suite q
 
 ## Real Model Smoke Test
 
+Native v2Pro SV frontend and encoder parity checks are documented in [SV.md](SV.md).
+The regular test suite includes a small synthetic upstream fbank fixture, not model weights.
+
 Run this before publishing a release when local models and at least one voice profile are available:
 
 ```bash

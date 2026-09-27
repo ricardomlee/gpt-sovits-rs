@@ -3,7 +3,9 @@
 //! Main pipeline for TTS inference
 
 use crate::config::Config;
-use crate::models::{BertModel, BigVGAN, GPTModel, HubertModel, SemanticTokenizer, SoVITSModel};
+use crate::models::{
+    BertModel, BigVGAN, GPTModel, HubertModel, SemanticTokenizer, SoVITSModel, SvModel,
+};
 use crate::text_frontend::TextFrontend;
 use crate::utils::AudioBuffer;
 use crate::{Error, Result};
@@ -31,6 +33,7 @@ pub struct SharedPipelineResources {
     device: Device,
     bert_model: Option<BertModel>,
     hubert_model: Option<HubertModel>,
+    sv_model: Option<SvModel>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -142,6 +145,7 @@ pub struct Pipeline {
     device: Device,
     gpt_model: Option<GPTModel>,
     sovits_model: Option<SoVITSModel>,
+    sv_model: Option<SvModel>,
     bert_model: Option<BertModel>,
     hubert_model: Option<HubertModel>,
     bigvgan_model: Option<BigVGAN>,
@@ -160,7 +164,7 @@ impl Pipeline {
             );
         }
         let device = config.candle_device();
-        Self::new_with_parts(config, device, None, None)
+        Self::new_with_parts(config, device, None, None, None)
     }
 
     pub fn new_with_shared_resources(
@@ -172,6 +176,7 @@ impl Pipeline {
             resources.device.clone(),
             resources.bert_model.clone(),
             resources.hubert_model.clone(),
+            resources.sv_model.clone(),
         )
     }
 
@@ -180,6 +185,7 @@ impl Pipeline {
         device: Device,
         bert_model: Option<BertModel>,
         hubert_model: Option<HubertModel>,
+        sv_model: Option<SvModel>,
     ) -> Result<Self> {
         Ok(Self {
             config,
@@ -187,6 +193,7 @@ impl Pipeline {
             device,
             gpt_model: None,
             sovits_model: None,
+            sv_model,
             bert_model,
             hubert_model,
             bigvgan_model: None,
@@ -202,6 +209,7 @@ impl Pipeline {
             device: self.device.clone(),
             bert_model: self.bert_model.clone(),
             hubert_model: self.hubert_model.clone(),
+            sv_model: self.sv_model.clone(),
         }
     }
 
@@ -217,9 +225,17 @@ impl Pipeline {
         let path_str = path.as_ref().to_str().unwrap();
         let dtype = self.config.candle_dtype();
         let model = SoVITSModel::load_with_device(path_str, &self.device, dtype)?;
-        self.sovits_model = Some(model);
         let tokenizer = SemanticTokenizer::load_with_device(path_str, &self.device)?;
+        self.sovits_model = Some(model);
         self.semantic_tokenizer = Some(tokenizer);
+        self.clear_speaker_cache();
+        Ok(())
+    }
+
+    /// Load the shared v2Pro SV encoder. Explicit per-voice embeddings still take precedence.
+    pub fn load_sv<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
+        self.sv_model = Some(SvModel::load(path, &self.device)?);
+        self.clear_speaker_cache();
         Ok(())
     }
 
