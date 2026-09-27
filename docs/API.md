@@ -28,6 +28,7 @@ Useful options:
 | `--split-sentences` | Split long text and concatenate chunks. |
 | `--split-method sentence|cut5` | Use smooth sentence splitting or Python-compatible punctuation splitting. |
 | `--max-tokens <n>` | Raise this for long sentences. |
+| `--sv-model <path>` | ERes2NetV2 encoder for native v2Pro SV extraction (also `GPT_SOVITS_SV_MODEL`). |
 | `--sv-embedding <path>` | Optional v2Pro speaker-verification embedding safetensors. |
 | `--list-voices` | List voice profiles without loading models. |
 | `--inspect <model.safetensors>` | Print model tensor names and shapes. |
@@ -100,6 +101,11 @@ the environment variable to `0.0.0.0` for port forwarding. Published v1.2.0
 binaries always bind to `0.0.0.0` and do not accept `--host`. The built-in server
 does not provide authentication.
 
+For v2Pro voices without `sv_embedding`, current source builds extract SV features from the
+reference WAV using the shared encoder (`--sv-model` or automatic model discovery).
+Explicit embeddings retain precedence. Missing both is a configuration error, not a zero-vector
+fallback. API request shapes are unchanged; see [SV setup](SV.md).
+
 ### `GET /health`
 
 Health check.
@@ -168,7 +174,8 @@ request shape (`voice` + `text`) and lazily loads the model pair for that voice:
 
 Model paths are relative to `--models-dir`; reference audio and SV embedding paths are relative to
 the voice directory. Model pairs use a bounded LRU cache (two entries by default), while BERT and
-HuBERT are shared between pipelines. Change the limit with `--max-cached-pipelines`.
+HuBERT and the optional SV encoder are shared between pipelines. Change the limit with
+`--max-cached-pipelines`.
 
 ### `POST /tts`
 

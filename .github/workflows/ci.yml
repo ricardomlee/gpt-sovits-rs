@@ -85,6 +85,7 @@ jobs:
           mkdir -p "dist/${package}/lib"
           cp target/release/gpt-sovits "dist/${package}/"
           cp target/release/gpt-sovits-convert "dist/${package}/"
+          cp -R licenses "dist/${package}/"
           soxr="$(ldconfig -p | awk '$1 == "libsoxr.so.0" { print $NF; exit }')"
           cp -L "${soxr}" "dist/${package}/lib/libsoxr.so.0"
           rpath="\$ORIGIN/lib"

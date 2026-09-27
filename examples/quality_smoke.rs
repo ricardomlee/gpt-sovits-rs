@@ -35,6 +35,9 @@ struct Args {
     #[arg(long)]
     hubert_model: Option<PathBuf>,
 
+    #[arg(long)]
+    sv_model: Option<PathBuf>,
+
     #[arg(long, default_value = "auto", value_parser = ["auto", "cuda", "cpu", "mps"])]
     device: String,
 
@@ -85,6 +88,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             sovits: args.sovits_model.clone().or(voice_models.sovits),
             bert: args.bert_model.clone(),
             hubert: args.hubert_model.clone(),
+            sv: args.sv_model.clone(),
         },
     )?;
 
@@ -112,6 +116,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let mut options = defaults.to_inference_options(language, Default::default());
+    if let Some(path) = model_paths.sv.as_ref() {
+        pipeline.load_sv(path)?;
+    }
     options.sv_embedding = voice.sv_embedding_path();
 
     let texts = if args.text.is_empty() {

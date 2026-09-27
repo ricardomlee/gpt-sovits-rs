@@ -68,6 +68,7 @@ pub fn run(
     bigvgan_model: Option<&std::path::Path>,
     bert_model: Option<&std::path::Path>,
     hubert_model: Option<&std::path::Path>,
+    sv_model: Option<&std::path::Path>,
     max_cached_pipelines: usize,
     allow_external_reference_paths: bool,
     max_text_chars: usize,
@@ -93,6 +94,7 @@ pub fn run(
         bigvgan_model,
         bert_model,
         hubert_model,
+        sv_model,
         max_cached_pipelines,
     )?;
 
@@ -204,6 +206,7 @@ mod tests {
             false,
             Some(missing),
             Some(missing),
+            None,
             None,
             None,
             None,

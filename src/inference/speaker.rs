@@ -2,11 +2,11 @@
 
 use super::ref_audio;
 use super::Pipeline;
-use crate::models::{BertModel, GPTModel, HubertModel, SemanticTokenizer};
+use crate::models::{BertModel, GPTModel, HubertModel, SemanticTokenizer, SvModel};
 use crate::text_frontend::TextFrontend;
 use crate::utils::load_safetensors;
 use crate::{Error, InferenceOptions, Language, Result};
-use candle_core::{Device, Tensor};
+use candle_core::{DType, Device, Tensor};
 use std::path::Path;
 use std::time::Instant;
 
@@ -74,46 +74,14 @@ impl Pipeline {
         ref_text: &str,
         options: &InferenceOptions,
     ) -> Result<()> {
-        let sv_embedding_key = options
-            .sv_embedding
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned());
-        let key = (
-            ref_audio.as_ref().to_string_lossy().into_owned(),
-            ref_text.to_owned(),
-            sv_embedding_key,
-        );
-        if !self.ref_cache.contains_key(&key) {
-            let sovits = self
-                .sovits_model
-                .as_ref()
-                .ok_or_else(|| Error::ModelLoadError("SoVITS model not loaded".to_string()))?;
-            let sr = sovits.sampling_rate();
-            let n_mels = sovits.n_mels();
-            let cached = Self::compute_ref_features(
-                &mut self.hubert_model,
-                &mut self.bert_model,
-                &mut self.text_frontend,
-                &self.semantic_tokenizer,
-                self.gpt_model.as_ref(),
-                ref_audio.as_ref(),
-                ref_text,
-                options.language,
-                &self.device,
-                sr,
-                n_mels,
-                options.sv_embedding.as_deref(),
-            )?;
-            self.cache_speaker(key, cached);
-        } else {
-            self.touch_speaker_cache(&key);
-        }
-        Ok(())
+        self.get_ref_features(ref_audio, ref_text, options)
+            .map(|_| ())
     }
 
     /// Drop all cached speaker features.
     pub fn clear_speaker_cache(&mut self) {
         self.ref_cache.clear();
+        self.ref_cache_order.clear();
     }
 
     /// Get cached ref features (compute and cache on miss).
@@ -144,6 +112,14 @@ impl Pipeline {
             .ok_or_else(|| Error::ModelLoadError("SoVITS model not loaded".to_string()))?;
         let sr = sovits.sampling_rate();
         let n_mels = sovits.n_mels();
+        let sv_embedding = resolve_sv_embedding(
+            self.sv_model.as_ref(),
+            options.sv_embedding.as_deref(),
+            sovits.requires_sv(),
+            ref_audio.as_ref(),
+            sr,
+            &self.device,
+        )?;
         let cached = Self::compute_ref_features(
             &mut self.hubert_model,
             &mut self.bert_model,
@@ -156,7 +132,7 @@ impl Pipeline {
             &self.device,
             sr,
             n_mels,
-            options.sv_embedding.as_deref(),
+            sv_embedding,
         )?;
         self.cache_speaker(key, cached.clone());
         Ok(cached)
@@ -229,7 +205,7 @@ impl Pipeline {
         device: &Device,
         sovits_sr: u32,
         sovits_n_mels: usize,
-        sv_embedding_path: Option<&Path>,
+        sv_embedding: Option<Tensor>,
     ) -> Result<CachedSpeaker> {
         let (ref_phoneme_ids, ref_word2ph, normalized_ref_text) = if !ref_text.is_empty() {
             text_frontend.process_with_word2ph_and_text(ref_text, language)?
@@ -277,10 +253,6 @@ impl Pipeline {
         };
 
         let ref_mel = ref_audio::extract_ref_mel(ref_audio, device, sovits_sr, sovits_n_mels)?;
-        let sv_embedding = sv_embedding_path
-            .map(|path| load_sv_embedding(path, device))
-            .transpose()?;
-
         Ok(CachedSpeaker {
             prompt_tokens,
             ref_mel,
@@ -291,20 +263,57 @@ impl Pipeline {
     }
 }
 
+fn resolve_sv_embedding(
+    model: Option<&SvModel>,
+    explicit: Option<&Path>,
+    required: bool,
+    audio: &Path,
+    sample_rate: u32,
+    device: &Device,
+) -> Result<Option<Tensor>> {
+    if let Some(path) = explicit {
+        return load_sv_embedding(path, device).map(Some);
+    }
+    if !required {
+        return Ok(None);
+    }
+    let model = model.ok_or_else(|| Error::ModelLoadError(
+        "v2Pro requires SV features: provide sv_embedding, or convert the ERes2NetV2 checkpoint with `gpt-sovits-convert sv-model` and place it at models/sv/sv.safetensors (or use --sv-model)".into(),
+    ))?;
+    let started = Instant::now();
+    let embedding = model.extract(audio, sample_rate)?;
+    tracing::info!(
+        elapsed_ms = started.elapsed().as_millis(),
+        "Extracted native SV features"
+    );
+    Ok(Some(embedding))
+}
+
 fn load_sv_embedding(path: &Path, device: &Device) -> Result<Tensor> {
     let weights = load_safetensors(path)?;
     let tensor = weights
         .get("sv_embedding")
         .or_else(|| weights.get("embedding"))
-        .or_else(|| weights.values().next())
+        .or_else(|| (weights.len() == 1).then(|| weights.values().next()).flatten())
         .ok_or_else(|| {
             Error::ModelLoadError(format!(
-                "SV embedding safetensors contains no tensors: {}",
+                "SV embedding safetensors must contain sv_embedding, embedding, or exactly one tensor: {}",
                 path.display()
             ))
         })?
         .clone()
-        .to_device(device)?;
+        .to_device(device)?
+        .to_dtype(DType::F32)?;
+    if tensor
+        .flatten_all()?
+        .to_vec1::<f32>()?
+        .iter()
+        .any(|v| !v.is_finite())
+    {
+        return Err(Error::ModelLoadError(
+            "SV embedding contains non-finite values".into(),
+        ));
+    }
     match tensor.dims() {
         [20480] => Ok(tensor.unsqueeze(0)?),
         [1, 20480] => Ok(tensor),
@@ -313,5 +322,62 @@ fn load_sv_embedding(path: &Path, device: &Device) -> Result<Tensor> {
             other,
             path.display()
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn v2_needs_no_encoder_but_v2pro_fails_without_one() {
+        let missing = Path::new("no-reference.wav");
+        assert!(
+            resolve_sv_embedding(None, None, false, missing, 32000, &Device::Cpu)
+                .unwrap()
+                .is_none()
+        );
+        let error = resolve_sv_embedding(None, None, true, missing, 32000, &Device::Cpu)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("sv-model"));
+        assert!(error.contains("sv_embedding"));
+    }
+
+    #[test]
+    fn explicit_embedding_works_without_encoder_or_reference_audio() -> Result<()> {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let embedding = Tensor::ones(20480, DType::F32, &Device::Cpu)?;
+        candle_core::safetensors::save(
+            &std::collections::HashMap::from([("sv_embedding", embedding)]),
+            file.path(),
+        )?;
+        let result = resolve_sv_embedding(
+            None,
+            Some(file.path()),
+            true,
+            Path::new("missing.wav"),
+            32000,
+            &Device::Cpu,
+        )?
+        .unwrap();
+        assert_eq!(result.dims(), &[1, 20480]);
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_wrong_shape_and_non_finite_explicit_embeddings() -> Result<()> {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        for embedding in [
+            Tensor::zeros(192, DType::F32, &Device::Cpu)?,
+            Tensor::full(f32::NAN, 20480, &Device::Cpu)?,
+        ] {
+            candle_core::safetensors::save(
+                &std::collections::HashMap::from([("sv_embedding", embedding)]),
+                file.path(),
+            )?;
+            assert!(load_sv_embedding(file.path(), &Device::Cpu).is_err());
+        }
+        Ok(())
     }
 }

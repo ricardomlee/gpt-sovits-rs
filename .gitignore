@@ -11,6 +11,7 @@
 *.pt
 *.bin
 *.safetensors
+!tests/fixtures/sv/synthetic_fbank.safetensors
 
 # Build
 /**/*.so

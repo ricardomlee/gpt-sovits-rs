@@ -1,6 +1,6 @@
 //! GPT-SoVITS CLI - Command line interface for TTS inference
 
-use clap::Parser;
+use clap::{builder::TypedValueParser, Parser};
 use gpt_sovits_rs::model_paths::{ModelPathOverrides, ModelPaths};
 use gpt_sovits_rs::voice::{
     list_voice_profiles, load_optional_voice_profile, InferenceOptionOverrides, LoadedVoiceProfile,
@@ -66,6 +66,10 @@ pub(crate) struct Args {
     /// Path to HuBERT/Wav2Vec2 safetensors model file (optional, improves quality)
     #[arg(long)]
     pub(crate) hubert_model: Option<PathBuf>,
+
+    /// ERes2NetV2 SV encoder safetensors for automatic v2Pro reference features
+    #[arg(long, env = "GPT_SOVITS_SV_MODEL", value_parser = clap::builder::OsStringValueParser::new().map(PathBuf::from))]
+    pub(crate) sv_model: Option<PathBuf>,
 
     /// Reference audio path
     #[arg(long)]
@@ -280,6 +284,10 @@ pub(crate) fn run() {
             sovits: args.sovits_model.clone().or(voice_model_paths.sovits),
             bert: args.bert_model.clone(),
             hubert: args.hubert_model.clone(),
+            sv: args
+                .sv_model
+                .clone()
+                .filter(|path| !path.as_os_str().is_empty()),
         },
     ) {
         Ok(paths) => paths,
@@ -309,6 +317,7 @@ pub(crate) fn run() {
                 bigvgan_model.as_deref(),
                 model_paths.bert.as_deref(),
                 model_paths.hubert.as_deref(),
+                model_paths.sv.as_deref(),
                 args.max_cached_pipelines,
                 args.allow_external_reference_paths,
                 args.max_text_chars,
@@ -425,6 +434,14 @@ pub(crate) fn run() {
         }
     } else {
         info!("Hubert model not specified, skipping (quality may be reduced)");
+    }
+
+    if let Some(path) = model_paths.sv.as_ref() {
+        info!("Loading SV encoder...");
+        if let Err(e) = pipeline.load_sv(path) {
+            error!("Failed to load SV encoder: {}", e);
+            std::process::exit(1);
+        }
     }
 
     // Parse language

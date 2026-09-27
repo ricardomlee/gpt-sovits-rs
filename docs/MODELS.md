@@ -9,6 +9,7 @@
 | SoVITS v2 | `lj1995/GPT-SoVITS` | `models/sovits-model.safetensors` |
 | Chinese RoBERTa large | GPT-SoVITS 模型仓库内副本 | `models/bert/bert.safetensors` |
 | Chinese HuBERT base | GPT-SoVITS 模型仓库内副本 | `models/hubert/hubert.safetensors` |
+| ERes2NetV2 SV encoder（v2Pro 自动提取） | GPT-SoVITS 模型仓库 `sv/` | `models/sv/sv.safetensors` |
 
 模型源文件和转换结果合计需要约 3 GiB。转换时建议至少保留 6 GiB 可用磁盘空间和
 4 GiB 可用内存。
@@ -113,6 +114,18 @@ GPT 与 SoVITS 必须来自兼容的 GPT-SoVITS v2 或 v2Pro 架构。v3、v4 �
 checkpoint 不能仅靠改扩展名使用。
 
 v2Pro 的 SoVITS `.pth` 使用官方 `05`/`06` 版本头，`gpt-sovits-convert sovits` 会自动处理。
+当前源码版本可以直接从参考 WAV 提取 SV 特征，只需准备一次编码器：
+
+```bash
+gpt-sovits-convert sv-model \
+  /path/to/pretrained_eres2netv2w24s4ep4.ckpt \
+  models/sv/sv.safetensors
+```
+
+源权重从[官方模型仓库的 sv 目录](https://huggingface.co/lj1995/GPT-SoVITS/tree/main/sv)自行下载。
+服务会自动发现并共享编码器；也可通过 `--sv-model` 指定路径。音色配置可以不写
+`sv_embedding`。完整准备、原理和验证方法见 [SV 文档](SV.md)。
+
 如果训练预处理目录里有 `logs/<voice>_v2pro/7-sv_cn/<ref>.wav.pt`，可以把它转换成 Rust
 runtime 可读的 speaker-verification embedding：
 
@@ -133,7 +146,9 @@ gpt-sovits-convert sv \
 }
 ```
 
-不提供 `sv_embedding` 时，v2Pro 仍可运行，但会使用零 SV embedding，音色相似度通常不如官方完整路径。
+显式 `sv_embedding` 优先于自动提取，不需要加载编码器。当前源码版本在二者都缺失时
+会明确报错，不再静默使用零向量。已发布的 v1.2.0 尚不支持自动提取，仍需使用上面的
+预计算 embedding 方案来获得完整的 v2Pro 音色条件。
 
 自训练音色仍然需要一段与文本严格对应的参考音频。可以用 ASR 先转写，再人工修正成 3 到
 10 秒的短参考文本。

@@ -32,8 +32,13 @@ cat > voices/demo/voice.json <<'JSON'
 JSON
 ```
 
-v2Pro 音色还应把 SV embedding 放进同一个 voice 目录，并在 `voice.json` 里引用。compose
-只挂载整个 `VOICES_DIR`，不需要给每个音色单独加环境变量：
+当前源码构建的 v2Pro 服务支持从参考 WAV 自动提取 SV：将编码器转换到
+`models/sv/sv.safetensors` 即可，见 [SV 设置](SV.md)。Compose 已挂载模型目录，不需要
+新增挂载；自定义路径可在 `.env` 中设置 `SV_MODEL=/app/models/custom-sv.safetensors`。
+该能力尚未进入已发布的 v1.2.0 镜像。
+
+继续使用预计算 embedding 时，把文件放进 voice 目录并在 `voice.json` 里引用。这个方案
+兼容旧镜像，也优先于自动提取。Compose 不需要给每个音色单独加环境变量：
 
 ```bash
 gpt-sovits-convert sv \

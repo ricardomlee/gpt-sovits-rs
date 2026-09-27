@@ -15,6 +15,7 @@ pub mod sovits_encp;
 pub mod sovits_encq;
 pub mod sovits_flow;
 pub mod sovits_ref_enc;
+pub mod sv;
 pub mod transformer;
 pub mod wav2vec2;
 
@@ -27,6 +28,7 @@ pub use mrte::MRTE;
 pub use semantic_tokenizer::SemanticTokenizer;
 pub use sovits::SoVITSModel;
 pub use sovits_encq::EncQ;
+pub use sv::SvModel;
 pub use transformer::{MultiHeadAttention, Transformer, TransformerBlock, TransformerConfig};
 pub use wav2vec2::Wav2Vec2Model;
 

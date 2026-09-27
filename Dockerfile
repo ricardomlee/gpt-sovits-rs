@@ -49,6 +49,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY --from=builder /app/gpt-sovits /usr/local/bin/gpt-sovits
 COPY --from=builder /app/gpt-sovits-convert /usr/local/bin/gpt-sovits-convert
+COPY --from=builder /app/licenses /usr/share/doc/gpt-sovits-rs/licenses
 
 RUN mkdir -p /app/models
 

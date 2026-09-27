@@ -42,6 +42,7 @@ fn real_model_inference_smoke_when_enabled() {
             sovits: optional_path("GPT_SOVITS_SOVITS_MODEL").or(voice_models.sovits),
             bert: optional_path("GPT_SOVITS_BERT_MODEL"),
             hubert: optional_path("GPT_SOVITS_HUBERT_MODEL"),
+            sv: optional_path("GPT_SOVITS_SV_MODEL"),
         },
     )
     .expect("model discovery should succeed when smoke test is enabled");
@@ -73,6 +74,9 @@ fn real_model_inference_smoke_when_enabled() {
     }
 
     let mut options = defaults.to_inference_options(language, Default::default());
+    if let Some(path) = paths.sv.as_ref() {
+        pipeline.load_sv(path).expect("SV encoder should load");
+    }
     options.sv_embedding = voice.sv_embedding_path();
     options.max_tokens = std::env::var("GPT_SOVITS_SMOKE_MAX_TOKENS")
         .ok()

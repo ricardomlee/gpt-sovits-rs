@@ -41,6 +41,11 @@ enum Command {
     },
     /// Convert a v2Pro speaker-verification embedding .pt to safetensors.
     Sv { embedding: PathBuf, output: PathBuf },
+    /// Convert the upstream ERes2NetV2 w24s4ep4 SV encoder checkpoint.
+    SvModel {
+        checkpoint: PathBuf,
+        output: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -55,6 +60,7 @@ fn main() -> Result<()> {
         Command::Bert { checkpoint, output } => convert_bert(&checkpoint, &output),
         Command::Hubert { checkpoint, output } => convert_hubert(&checkpoint, &output),
         Command::Sv { embedding, output } => convert_sv_embedding(&embedding, &output),
+        Command::SvModel { checkpoint, output } => convert_sv_model(&checkpoint, &output),
     }
 }
 
@@ -117,6 +123,23 @@ fn convert_sv_embedding(input: &Path, output: &Path) -> Result<()> {
         vec![("sv_embedding".to_string(), tensor)],
         Some(metadata),
     )
+}
+
+fn convert_sv_model(input: &Path, output: &Path) -> Result<()> {
+    let prepared = PreparedCheckpoint::open(input)?;
+    let tensors = read_state_dict(prepared.path(), &["", "state_dict", "model"])?;
+    // forward3 stops before statistics pooling and the speaker classifier.
+    let tensors: HashMap<_, _> = tensors
+        .into_iter()
+        .filter(|(name, _)| !name.ends_with("num_batches_tracked") && !name.starts_with("seg_"))
+        .collect();
+    gpt_sovits_rs::models::sv::validate_weights(tensors.clone())
+        .context("expected ERes2NetV2 w24s4ep4 SV encoder weights")?;
+    let metadata = HashMap::from([
+        ("model_type".into(), "sv_model".into()),
+        ("architecture".into(), "eres2netv2_w24s4ep4_forward3".into()),
+    ]);
+    write_safetensors(output, tensors.into_iter().collect(), Some(metadata))
 }
 
 fn convert_bert(input: &Path, output: &Path) -> Result<()> {

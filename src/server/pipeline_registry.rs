@@ -128,6 +128,7 @@ impl PipelineRegistry {
         bigvgan_model: Option<&Path>,
         bert_model: Option<&Path>,
         hubert_model: Option<&Path>,
+        sv_model: Option<&Path>,
         cache_capacity: usize,
     ) -> Result<Self, String> {
         let defaults = PipelineKey {
@@ -148,6 +149,12 @@ impl PipelineRegistry {
             if let Err(e) = default_pipeline.load_hubert(path) {
                 error!("Failed to load HuBERT model (continuing without it): {}", e);
             }
+        }
+        if let Some(path) = sv_model {
+            info!("Loading shared SV encoder from {:?}", path);
+            default_pipeline
+                .load_sv(path)
+                .map_err(|e| format!("Failed to load SV encoder: {e}"))?;
         }
         Ok(Self::new(
             config,

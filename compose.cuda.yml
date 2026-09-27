@@ -8,6 +8,7 @@ services:
     environment:
       # v1.2.0 ignores this variable and already listens on all interfaces.
       GPT_SOVITS_HOST: 0.0.0.0
+      GPT_SOVITS_SV_MODEL: "${SV_MODEL:-}"
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     ports:
