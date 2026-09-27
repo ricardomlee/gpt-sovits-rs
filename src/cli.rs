@@ -10,7 +10,7 @@ use gpt_sovits_rs::{
     split_cut5_for_language, split_sentences_for_language, AudioBuffer, Config, InferenceOptions,
     Language, Pipeline, SplitMethod,
 };
-use std::path::PathBuf;
+use std::{net::IpAddr, path::PathBuf};
 use tracing::{error, info};
 
 #[derive(Parser, Debug)]
@@ -155,6 +155,10 @@ pub(crate) struct Args {
     #[arg(long, default_value = "9880")]
     pub(crate) port: u16,
 
+    /// IPv4 or IPv6 address on which the HTTP server listens
+    #[arg(long, env = "GPT_SOVITS_HOST", default_value = "127.0.0.1")]
+    pub(crate) host: IpAddr,
+
     /// Maximum number of GPT/SoVITS model pipelines kept in memory by the HTTP server
     #[arg(long, default_value_t = 2, value_parser = parse_positive_usize)]
     pub(crate) max_cached_pipelines: usize,
@@ -296,6 +300,7 @@ pub(crate) fn run() {
         #[cfg(feature = "http-api")]
         {
             if let Err(e) = crate::server::run(
+                args.host,
                 args.port,
                 &args.device,
                 args.half,

@@ -5,7 +5,10 @@ use axum::{
     Router,
 };
 use gpt_sovits_rs::Config;
-use std::sync::Arc;
+use std::{
+    net::{IpAddr, SocketAddr, TcpListener},
+    sync::Arc,
+};
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
@@ -22,8 +25,8 @@ use lifecycle::{health_handler, status_handler, voices_handler, warm_voice, warm
 use pipeline_registry::PipelineRegistry;
 use state::AppState;
 
-fn print_server_ready(port: u16, max_cached_pipelines: usize) {
-    println!("HTTP server started at http://localhost:{port}");
+fn print_server_ready(addr: SocketAddr, max_cached_pipelines: usize) {
+    println!("HTTP server started at http://{addr}");
     println!(
         "Model pipeline cache: {} entr{}",
         max_cached_pipelines.max(1),
@@ -45,8 +48,18 @@ fn print_server_ready(port: u16, max_cached_pipelines: usize) {
     println!("  POST /v1/audio/speech - OpenAI-compatible speech endpoint");
 }
 
+fn bind_listener(host: IpAddr, port: u16) -> Result<TcpListener, String> {
+    let addr = SocketAddr::new(host, port);
+    let listener = TcpListener::bind(addr).map_err(|e| format!("Failed to bind to {addr}: {e}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("Failed to configure listener at {addr}: {e}"))?;
+    Ok(listener)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn run(
+    host: IpAddr,
     port: u16,
     device: &str,
     half_precision: bool,
@@ -64,6 +77,11 @@ pub fn run(
     models_dir: &std::path::Path,
     voices_dir: &std::path::Path,
 ) -> Result<(), String> {
+    // Reserve the address before loading models so a bind failure is cheap.
+    let listener = bind_listener(host, port)?;
+    let addr = listener
+        .local_addr()
+        .map_err(|e| format!("Failed to read HTTP listener address: {e}"))?;
     let config = Config::builder()
         .with_device(device)
         .with_half_precision(half_precision)
@@ -103,13 +121,11 @@ pub fn run(
         .layer(TraceLayer::new_for_http())
         .with_state(state);
 
-    let addr = format!("0.0.0.0:{port}");
     tokio::runtime::Runtime::new()
         .map_err(|e| format!("Failed to create Tokio runtime: {e}"))?
         .block_on(async {
-            let listener = tokio::net::TcpListener::bind(&addr)
-                .await
-                .map_err(|e| format!("Failed to bind to {addr}: {e}"))?;
+            let listener = tokio::net::TcpListener::from_std(listener)
+                .map_err(|e| format!("Failed to register listener at {addr}: {e}"))?;
             for voice in preload_voices.iter().map(|voice| voice.trim()) {
                 if voice.is_empty() {
                     continue;
@@ -120,10 +136,90 @@ pub fn run(
                     .map_err(|e| format!("Failed to preload voice '{voice}': {e}"))?;
             }
             info!("Starting HTTP server on {addr}");
-            print_server_ready(port, max_cached_pipelines);
+            print_server_ready(addr, max_cached_pipelines);
             axum::serve(listener, app)
                 .await
                 .map_err(|e| format!("Server error: {e}"))?;
             Ok::<(), String>(())
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    async fn check_health_on(host: IpAddr) {
+        let listener = bind_listener(host, 0).unwrap();
+        let addr = listener.local_addr().unwrap();
+        assert_eq!(addr.ip(), host);
+        assert_ne!(addr.port(), 0);
+        let listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                Router::new().route("/health", get(health_handler)),
+            )
+            .await
+            .unwrap();
+        });
+        let result = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+            stream
+                .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = String::new();
+            stream.read_to_string(&mut response).await.unwrap();
+            response
+        })
+        .await;
+        task.abort();
+        let response = result.expect("health request should complete");
+        assert!(response.starts_with("HTTP/1.1 200 OK\r\n"), "{response}");
+        assert!(response.ends_with("OK"), "{response}");
+    }
+
+    #[tokio::test]
+    async fn health_is_reachable_on_ipv4_loopback() {
+        check_health_on(Ipv4Addr::LOCALHOST.into()).await;
+    }
+
+    #[tokio::test]
+    async fn health_is_reachable_on_ipv6_loopback() {
+        check_health_on(Ipv6Addr::LOCALHOST.into()).await;
+    }
+
+    #[test]
+    fn occupied_port_fails_before_loading_models() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let missing = std::path::Path::new("missing-model.safetensors");
+        let error = run(
+            addr.ip(),
+            addr.port(),
+            "cpu",
+            false,
+            Some(missing),
+            Some(missing),
+            None,
+            None,
+            None,
+            1,
+            false,
+            100,
+            1,
+            1,
+            &[],
+            missing,
+            missing,
+        )
+        .unwrap_err();
+        assert!(
+            error.starts_with(&format!("Failed to bind to {addr}:")),
+            "{error}"
+        );
+    }
 }

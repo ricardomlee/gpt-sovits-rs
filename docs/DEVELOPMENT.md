@@ -102,6 +102,19 @@ Build the CPU image locally:
 docker build -t gpt-sovits-rs:dev .
 ```
 
+Check both Compose command lists against that image without loading models:
+
+```bash
+GPT_SOVITS_SMOKE_IMAGE=gpt-sovits-rs:dev \
+  cargo test --locked --features http-api --test deployment_smoke -- --ignored --nocapture
+```
+
+This check uses an empty env file and no model mounts. It requires startup to reach the expected
+missing-model diagnostic, catching unsupported Compose arguments and missing shared libraries.
+It does not claim HTTP readiness or audio quality. For a CUDA image, also set
+`GPT_SOVITS_SMOKE_GPUS=all` on a GPU host. CI checks the built CPU image and pinned v1.2.0 image.
+Real-model acceptance still requires `/health`, `/status`, and a successful WAV synthesis request.
+
 For CUDA image work, use the architecture-specific Dockerfile arguments already used by CI/release
 workflows. Prefer testing the published CUDA image with `compose.cuda.yml` after release builds:
 

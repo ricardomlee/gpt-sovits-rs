@@ -65,8 +65,10 @@ mod tests {
         let pcm = samples_to_pcm(&[-2.0, -0.5, 0.0, 0.5, 2.0]);
 
         let samples: Vec<i16> = pcm
-            .chunks_exact(2)
-            .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|bytes| i16::from_le_bytes(*bytes))
             .collect();
         assert_eq!(samples, vec![-32767, -16383, 0, 16383, 32767]);
     }

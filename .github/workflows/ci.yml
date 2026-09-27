@@ -104,13 +104,28 @@ jobs:
           if-no-files-found: error
 
   docker:
-    name: Build CPU container
+    name: Build and smoke test CPU container
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsoxr-dev
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Validate Compose templates
+        run: |
+          docker compose --env-file .env.example -f compose.cpu.yml config --quiet
+          docker compose --env-file .env.example -f compose.cuda.yml config --quiet
 
       - name: Build container
         uses: docker/build-push-action@v7
@@ -119,5 +134,19 @@ jobs:
           file: Dockerfile
           platforms: linux/amd64
           push: false
+          load: true
+          tags: gpt-sovits-rs:ci
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Check Compose startup with the built image
+        env:
+          GPT_SOVITS_SMOKE_IMAGE: gpt-sovits-rs:ci
+        run: cargo test --locked --features http-api --test deployment_smoke -- --ignored --nocapture
+
+      - name: Check compatibility with the pinned v1.2.0 image
+        env:
+          GPT_SOVITS_SMOKE_IMAGE: ghcr.io/ricardomlee/gpt-sovits-rs:1.2.0
+        run: |
+          docker pull "$GPT_SOVITS_SMOKE_IMAGE"
+          cargo test --locked --features http-api --test deployment_smoke -- --ignored --nocapture

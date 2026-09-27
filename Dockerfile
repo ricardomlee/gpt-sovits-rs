@@ -54,5 +54,6 @@ RUN mkdir -p /app/models
 
 WORKDIR /app
 
+ENV GPT_SOVITS_HOST=0.0.0.0
 ENTRYPOINT ["gpt-sovits"]
 CMD ["--help"]
