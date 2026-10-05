@@ -46,6 +46,7 @@ cargo test --quiet
 cargo test --quiet --features http-api
 cargo clippy --all-targets --features http-api -- -D warnings
 cargo check --bin gpt-sovits-convert
+cargo test --example speech_regression
 ```
 
 The default Rust test suite must not require model files. Tests that load real models should be
@@ -192,6 +193,11 @@ has not improved speed on the current benchmark; F16 changes generation behavior
 | `tokenizers` | Hugging Face tokenizer for BERT. |
 
 ## Release Checklist
+
+The reproducible candidate-image, speech comparison, and upgrade/rollback procedure
+is in [release acceptance](RELEASE_ACCEPTANCE.md). Waveform checks alone cannot
+detect missing sentences; ASR comparison is offline maintainer tooling, not a
+dependency of the TTS service.
 
 Before tagging:
 

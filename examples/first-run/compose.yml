@@ -1,7 +1,8 @@
 name: gpt-sovits-demo
 services:
   tts:
-    image: ghcr.io/ricardomlee/gpt-sovits-rs:1.2.0
+    image: ${DEMO_IMAGE:-ghcr.io/ricardomlee/gpt-sovits-rs:1.2.0}
+    pull_policy: ${DEMO_PULL_POLICY:-missing}
     environment:
       GPT_SOVITS_HOST: 0.0.0.0
     ports:
