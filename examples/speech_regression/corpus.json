@@ -1,0 +1,10 @@
+[
+  {"id":"greeting","endpoint":"tts","language":"zh","text":"你好，欢迎回来。今天有什么想和我聊聊的吗？","reference":"你好，欢迎回来。今天有什么想和我聊聊的吗？"},
+  {"id":"service","endpoint":"tts","language":"zh","text":"你的本地语音服务已经准备好了。接下来的语音会在这台电脑上生成。","reference":"你的本地语音服务已经准备好了。接下来的语音会在这台电脑上生成。"},
+  {"id":"numbers","endpoint":"tts","language":"zh","text":"请把音量调到50%，10分钟后再提醒我。","reference":"请把音量调到百分之五十，十分钟后再提醒我。"},
+  {"id":"polyphonic","endpoint":"tts","language":"zh","text":"他很好[hao4]学，准备去银行[hang2]办理业务。","reference":"他很好学，准备去银行办理业务。"},
+  {"id":"mixed","endpoint":"tts","language":"zh","text":"HTTP API 已经就绪，可以开始生成语音了。","reference":"HTTP API 已经就绪，可以开始生成语音了。"},
+  {"id":"paragraph","endpoint":"tts","language":"zh","text":"今天的工作已经完成了。请先保存手上的文件，然后检查一下明天的安排。如果还有没有处理完的事情，就把它记下来。我们明天再继续。","reference":"今天的工作已经完成了。请先保存手上的文件，然后检查一下明天的安排。如果还有没有处理完的事情，就把它记下来。我们明天再继续。"},
+  {"id":"stream","endpoint":"stream","language":"zh","text":"第一句话已经说完了。现在开始播放第二句话。最后请确认声音是否完整。","reference":"第一句话已经说完了。现在开始播放第二句话。最后请确认声音是否完整。"},
+  {"id":"speech","endpoint":"speech","language":"zh","text":"你的请求已经处理完成。现在可以继续下一步了。","reference":"你的请求已经处理完成。现在可以继续下一步了。"}
+]

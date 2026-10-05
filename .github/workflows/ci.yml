@@ -49,7 +49,9 @@ jobs:
         run: cargo clippy --all-targets --features http-api -- -D warnings
 
       - name: Run tests
-        run: cargo test --locked --features http-api
+        run: |
+          cargo test --locked --features http-api
+          cargo test --locked --example speech_regression
 
   release-binary:
     name: Compile release binary
@@ -106,6 +108,7 @@ jobs:
   docker:
     name: Build and smoke test CPU container
     runs-on: ubuntu-24.04
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
 
@@ -150,3 +153,21 @@ jobs:
         run: |
           docker pull "$GPT_SOVITS_SMOKE_IMAGE"
           cargo test --locked --features http-api --test deployment_smoke -- --ignored --nocapture
+
+      - name: Verify the candidate from download through real HTTP synthesis
+        env:
+          DEMO_IMAGE: gpt-sovits-rs:ci
+          DEMO_PULL_POLICY: never
+        run: |
+          export DEMO_EXPECTED_VERSION
+          DEMO_EXPECTED_VERSION=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "gpt-sovits-rs") | .version')
+          bash examples/first-run/verify.sh "$RUNNER_TEMP/candidate-demo" "$RUNNER_TEMP/candidate-evidence"
+
+      - name: Upload candidate acceptance evidence, never models
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: candidate-acceptance
+          path: ${{ runner.temp }}/candidate-evidence/
+          retention-days: 7
+          if-no-files-found: ignore
