@@ -36,6 +36,7 @@ pub(super) struct Comparison {
 #[derive(Serialize)]
 struct CaseComparison {
     id: String,
+    metric: String,
     baseline_error_rate: f64,
     candidate_error_rate: f64,
     increase: f64,
@@ -73,8 +74,12 @@ fn validate<'a>(
     let mut asr = BTreeMap::new();
     for sample in &report.samples {
         ensure!(
-            sample.metric == "character_error_rate" || sample.metric == "word_error_rate",
-            "unsupported ASR metric"
+            matches!(
+                sample.metric.as_str(),
+                "character_error_rate" | "word_error_rate" | "mixed_error_rate"
+            ),
+            "unsupported ASR metric: {}",
+            sample.metric
         );
         ensure!(sample.reference_units > 0, "empty ASR reference");
         ensure!(
@@ -138,6 +143,7 @@ fn compare(
     for case in &baseline.cases {
         let mut row = CaseComparison {
             id: case.id.clone(),
+            metric: old[&format!("{}-r01", case.id)].metric.clone(),
             baseline_error_rate: 0.0,
             candidate_error_rate: 0.0,
             increase: 0.0,
@@ -149,7 +155,9 @@ fn compare(
             let a = old[&id];
             let b = new[&id];
             ensure!(
-                a.metric == b.metric && a.reference_units == b.reference_units,
+                a.metric == row.metric
+                    && a.metric == b.metric
+                    && a.reference_units == b.reference_units,
                 "ASR normalization differs for {id}"
             );
             row.baseline_error_rate += a.edits as f64 / a.reference_units as f64;
@@ -223,6 +231,29 @@ mod tests {
                 .unwrap()
                 .passed
         );
+    }
+
+    #[test]
+    fn accepts_character_word_and_mixed_metrics_without_hiding_metric_changes() {
+        for metric in [
+            "character_error_rate",
+            "word_error_rate",
+            "mixed_error_rate",
+        ] {
+            let mut baseline = asr(1);
+            baseline.samples[0].metric = metric.into();
+            let mut candidate = asr(1);
+            candidate.samples[0].metric = metric.into();
+            let report = compare(capture(), capture(), baseline, candidate, 0.05, 0.2).unwrap();
+            assert!(report.passed);
+            assert_eq!(report.cases[0].metric, metric);
+        }
+        let mut different = asr(0);
+        different.samples[0].metric = "mixed_error_rate".into();
+        assert!(compare(capture(), capture(), asr(0), different, 0.05, 0.2).is_err());
+        let mut unsupported = asr(0);
+        unsupported.samples[0].metric = "accuracy".into();
+        assert!(validate(&capture(), &unsupported).is_err());
     }
 
     #[test]

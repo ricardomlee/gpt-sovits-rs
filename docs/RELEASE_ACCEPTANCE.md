@@ -78,9 +78,12 @@ target/debug/examples/speech_regression compare \
 
 Comparison accepts Audire schema version 1 and checks exact sample coverage,
 references, requests, backend, metric, and normalization counts. Missing or failed
-captures never count as passes. It compares the mean error rate over repetitions
+captures never count as passes. Character, word, and mixed-language error rates
+(CER, WER, MER) are supported and identified per case in the comparison report.
+It compares the mean error rate over repetitions
 per case, then the mean across cases: defaults allow at most +0.05 overall and
 +0.20 for any case. These are absolute error-rate differences, not relative percentages.
+The overall mean is an equal-weight regression indicator, not a corpus-wide CER.
 Choose tolerances **before** running with `--max-mean-increase` and `--max-case-increase`.
 A measured regression returns a nonzero status and retains the comparison JSON.
 
