@@ -1,0 +1,58 @@
+name: Audio showcase
+
+on:
+  push:
+    branches: [master]
+    paths: [site/**, examples/samples/**, assets/**, .github/workflows/pages.yml]
+  pull_request:
+    paths: [site/**, examples/samples/**, assets/**, .github/workflows/pages.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build only public assets
+        run: bash site/build.sh _site
+      - name: Install browser test tools
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pages-test" --no-save --ignore-scripts playwright@1.59.1
+          "$RUNNER_TEMP/pages-test/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Test desktop and mobile playback
+        env:
+          NODE_PATH: ${{ runner.temp }}/pages-test/node_modules
+        run: node site/check.cjs _site "$RUNNER_TEMP/screenshots"
+      - name: Upload screenshots
+        uses: actions/upload-artifact@v7
+        with:
+          name: audio-showcase-screenshots
+          path: ${{ runner.temp }}/screenshots
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: _site
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - uses: actions/deploy-pages@v4
+        id: deployment

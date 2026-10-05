@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="GPT-SoVITS-RS：无需 Python 的本地语音推理服务。试听真实合成音频，使用 Docker 跑出第一段语音。">
+  <meta name="color-scheme" content="light">
+  <title>GPT-SoVITS-RS | 本地语音试听</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip" href="#samples">跳到试听</a>
+  <header class="masthead">
+    <nav aria-label="主导航">
+      <span>GPT-SoVITS-RS</span>
+      <div>
+        <a href="https://github.com/ricardomlee/gpt-sovits-rs">GitHub</a>
+        <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/API.md">API</a>
+        <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/README.md" lang="en">English</a>
+      </div>
+    </nav>
+  </header>
+  <main>
+    <section class="intro" aria-labelledby="title">
+      <img class="brand" src="assets/gpt-sovits-rs-banner.png" width="1983" height="793" alt="" fetchpriority="high">
+      <h1 id="title">GPT-SoVITS-RS</h1>
+      <p class="lead">无需 Python 的本地语音推理服务。</p>
+      <p>把已有的 GPT-SoVITS 音色接入你的助手。Rust 转换与推理，Docker 或独立二进制部署。</p>
+    </section>
+
+    <section id="samples" aria-labelledby="samples-title">
+      <div class="section-heading">
+        <h2 id="samples-title">真实合成试听</h2>
+        <span class="metadata">Sun / v2Pro + SV / CPU</span>
+      </div>
+      <article class="sample" aria-labelledby="greeting-title">
+        <div class="sample-label"><h3 id="greeting-title">Sun · 日常问候</h3><span>32 kHz WAV</span></div>
+        <p class="transcript">你好，欢迎回来。今天有什么想和我聊聊的吗？</p>
+        <audio controls preload="metadata" aria-label="播放 Sun 日常问候" src="audio/sun-greeting.wav"></audio>
+        <a class="download" href="audio/sun-greeting.wav" download>下载 WAV</a>
+      </article>
+      <article class="sample" aria-labelledby="zh-title">
+        <div class="sample-label"><h3 id="zh-title">Sun · 服务确认</h3><span>32 kHz WAV</span></div>
+        <p class="transcript">你的本地语音服务已经准备好了。接下来的语音会在这台电脑上生成。</p>
+        <audio controls preload="metadata" aria-label="播放 Sun 中文合成音频" src="audio/sun-zh.wav"></audio>
+        <a class="download" href="audio/sun-zh.wav" download>下载 WAV</a>
+      </article>
+      <p class="note">两段均由本地 Sun 音色合成，无后期编辑；这里只提供生成结果，不提供模型、SV 文件或参考录音。
+        Docker 首次体验使用可自行下载的通用模型，并不包含 Sun 音色。
+        样例只展示本次输出，不代表长文不会漏字，也不是与 Python 的速度对比。
+        <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/examples/samples/README.md">来源、参数与复现</a></p>
+    </section>
+
+    <section class="start" aria-labelledby="start-title">
+      <h2 id="start-title">在自己的电脑上运行</h2>
+      <p>首次体验：Linux x86_64、Docker Compose v2、Bash 和 curl。至少 6 GiB 磁盘、4 GiB 可用内存。</p>
+      <a class="primary" href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/FIRST_RUN.zh-CN.md">开始 Docker 试用</a>
+      <div class="links">
+        <a href="https://github.com/ricardomlee/gpt-sovits-rs/releases/latest">下载独立二进制</a>
+        <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/MODELS.md">使用自己的模型</a>
+        <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/AGENT_INTEGRATION.md">接入 Agent</a>
+      </div>
+    </section>
+
+    <section class="boundaries" aria-labelledby="limits-title">
+      <h2 id="limits-title">适合你的场景吗？</h2>
+      <dl>
+        <div><dt>适合</dt><dd>已有 v2 / v2Pro 模型，希望在本机长期运行一个 HTTP 语音服务。</dd></div>
+        <div><dt>仍需准备</dt><dd>清晰参考录音和准确转写。v2Pro 完整音色条件还需要 SV embedding。</dd></div>
+        <div><dt>已知边界</dt><dd>不负责训练，不兼容所有新版模型；长文仍可能漏字，建议按短句生成和播放。</dd></div>
+      </dl>
+    </section>
+  </main>
+  <footer>
+    <p>没有遥测、登录或云端推理。本页只提供静态试听。</p>
+    <a href="https://github.com/ricardomlee/gpt-sovits-rs/issues/new?template=first-run.yml">反馈首次试用结果</a>
+    <p class="credits">Code: MIT. 模型许可独立。感谢 GPT-SoVITS、Candle 和 LJ Speech。</p>
+  </footer>
+</body>
+</html>
