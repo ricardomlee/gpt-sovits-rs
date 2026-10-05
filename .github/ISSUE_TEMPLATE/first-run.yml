@@ -1,0 +1,51 @@
+name: First-run feedback / 首次试用反馈
+description: Tell us where you got stuck, or what worked.
+title: "[First run] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Chinese or English is welcome. Success reports are useful too.
+        Do not upload private recordings, model weights, tokens, or unredacted personal paths.
+  - type: input
+    id: environment
+    attributes:
+      label: System and hardware
+      placeholder: Ubuntu 24.04, x86_64, CPU, 16 GB RAM
+    validations:
+      required: true
+  - type: dropdown
+    id: route
+    attributes:
+      label: Installation route
+      options:
+        - Public Docker demo
+        - Docker with my own models
+        - Release binary
+        - Source build
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Image tag or binary version
+      placeholder: "1.2.0"
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: How far did you get?
+      options:
+        - Download or conversion failed
+        - Service did not become ready
+        - Request failed
+        - Got audio, but words or voice were wrong
+        - Got usable audio
+    validations:
+      required: true
+  - type: textarea
+    id: experience
+    attributes:
+      label: What happened, and what did you expect?
+      description: Include the failed command and sanitized error, or tell us what you connected it to. Models and recordings are not required.
+    validations:
+      required: true

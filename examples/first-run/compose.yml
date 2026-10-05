@@ -1,0 +1,29 @@
+name: gpt-sovits-demo
+services:
+  tts:
+    image: ghcr.io/ricardomlee/gpt-sovits-rs:1.2.0
+    environment:
+      GPT_SOVITS_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:${DEMO_PORT:-9881}:9880"
+    volumes:
+      - ./models:/app/models:ro
+      - ./voices:/app/voices:ro
+    command:
+      - --http
+      - --port
+      - "9880"
+      - --device
+      - cpu
+      - --models-dir
+      - /app/models
+      - --voices-dir
+      - /app/voices
+      - --preload-voices
+      - demo
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:9880/health]
+      interval: 10s
+      timeout: 5s
+      start_period: 600s
+      retries: 6

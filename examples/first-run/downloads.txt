@@ -1,0 +1,7 @@
+# SHA256 relative-path URL; weights remain upstream, not in this repository.
+732f94e63b148066e24c7f9d2637f3374083e637635f07fbdb695dee20ddbe1f gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt https://huggingface.co/lj1995/GPT-SoVITS/resolve/1cdb10a4f2b13b3e8103b873c4c70c9d54d92c85/gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt
+924fdccaa3c574bf139c25c9759aa1ed3b3f99e19a7c529ee996c2bc17663695 gsv-v2final-pretrained/s2G2333k.pth https://huggingface.co/lj1995/GPT-SoVITS/resolve/1cdb10a4f2b13b3e8103b873c4c70c9d54d92c85/gsv-v2final-pretrained/s2G2333k.pth
+e53a693acc59ace251d143d068096ae0d7b79e4b1b503fa84c9dcf576448c1d8 chinese-roberta-wwm-ext-large/pytorch_model.bin https://huggingface.co/lj1995/GPT-SoVITS/resolve/1cdb10a4f2b13b3e8103b873c4c70c9d54d92c85/chinese-roberta-wwm-ext-large/pytorch_model.bin
+173796956820ea27bd14f76bf28162607ff4254807e2948253eb5b46f5bb643b chinese-roberta-wwm-ext-large/tokenizer.json https://huggingface.co/lj1995/GPT-SoVITS/resolve/1cdb10a4f2b13b3e8103b873c4c70c9d54d92c85/chinese-roberta-wwm-ext-large/tokenizer.json
+24164f129c66499d1346e2aa55f183250c223161ec2770c0da3d3b08cf432d3c chinese-hubert-base/pytorch_model.bin https://huggingface.co/lj1995/GPT-SoVITS/resolve/1cdb10a4f2b13b3e8103b873c4c70c9d54d92c85/chinese-hubert-base/pytorch_model.bin
+4d2bd83ff0f7fe33491b03193abdf623f1b4cc2d8103972b33638d3607d86dc5 reference.wav https://raw.githubusercontent.com/coqui-ai/TTS/dbf1a08a0d4e47fdad6172e433eeb34bc6b13b4e/tests/data/ljspeech/wavs/LJ001-0001.wav

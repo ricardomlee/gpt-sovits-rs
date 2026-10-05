@@ -1,0 +1,73 @@
+name: First-run acceptance
+
+on:
+  pull_request:
+    paths:
+      - examples/first-run/**
+      - tests/first_run.rs
+      - .github/workflows/first-run.yml
+  push:
+    branches: [master]
+    paths:
+      - examples/first-run/**
+      - tests/first_run.rs
+      - .github/workflows/first-run.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  published-image:
+    name: Download, convert, serve, and synthesize (v1.2.0 CPU)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set isolated demo paths
+        run: |
+          printf 'DEMO_DIR=%s/gpt-sovits-demo\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+          printf 'FIRST_RUN_WAV=%s/first-run-artifacts/first.wav\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+
+      - name: Install test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsoxr-dev shellcheck
+          shellcheck examples/first-run/prepare.sh
+          docker compose -f examples/first-run/compose.yml config --quiet
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Prepare using the documented script
+        run: bash examples/first-run/prepare.sh "$DEMO_DIR"
+
+      - name: Start the published image and wait for the voice
+        run: docker compose -f "$DEMO_DIR/compose.yml" up -d --wait --wait-timeout 900
+
+      - name: Make the documented HTTP request
+        run: |
+          mkdir -p "$(dirname "$FIRST_RUN_WAV")"
+          curl --fail-with-body --max-time 300 http://127.0.0.1:9881/tts \
+            -H 'Content-Type: application/json' --data-binary "@$DEMO_DIR/request.json" \
+            --dump-header "$(dirname "$FIRST_RUN_WAV")/headers.txt" --output "$FIRST_RUN_WAV"
+          cargo test --locked --test first_run generated_http_audio_is_valid -- --ignored --nocapture
+
+      - name: Capture diagnostics and stop the demo
+        if: always()
+        run: |
+          mkdir -p "$(dirname "$FIRST_RUN_WAV")"
+          if [ -f "$DEMO_DIR/compose.yml" ]; then
+            docker compose -f "$DEMO_DIR/compose.yml" logs --no-color > "$(dirname "$FIRST_RUN_WAV")/service.log" 2>&1
+            docker compose -f "$DEMO_DIR/compose.yml" down
+          fi
+
+      - name: Upload audio and diagnostics, never models
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: first-run-v1.2.0-cpu
+          path: ${{ runner.temp }}/first-run-artifacts/
+          retention-days: 7
+          if-no-files-found: ignore

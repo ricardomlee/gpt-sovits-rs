@@ -4,376 +4,105 @@
   <img src="assets/gpt-sovits-rs-logo.svg" alt="GPT-SoVITS-RS" width="880">
 </p>
 
-<p align="center">
-  <b>Run GPT-SoVITS inference as a small Rust binary, CLI, or HTTP service.</b><br>
-  No Python runtime or conversion scripts, simpler Docker deployment, and a stable API for agents and local tools.
-</p>
+**Turn GPT-SoVITS voices into a local HTTP service, without a Python runtime.**
 
-<p align="center">
-  <a href="#quick-start">Quick Start</a> ·
-  <a href="#samples">Samples</a> ·
-  <a href="#models">Models</a> ·
-  <a href="#http-api">HTTP API</a> ·
-  <a href="docs/DEPLOYMENT.md">Deployment</a>
-</p>
+For people who already use GPT-SoVITS and want their assistant or application to
+speak with a configured voice. Conversion and inference run in Rust. Training stays
+in [upstream GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS).
 
-## What Is This?
+[Try it](#quick-start) | [Listen](#samples) | [中文上手](docs/FIRST_RUN.zh-CN.md) |
+[Use your models](docs/MODELS.md) | [API](docs/API.md)
 
-GPT-SoVITS-RS is a Rust inference implementation for trained GPT-SoVITS voices. It is meant for local assistants, scripts, NAS boxes, and Docker services where installing and operating a full Python/PyTorch stack is inconvenient.
+## Samples
 
-Use the original [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) for training, fine-tuning, dataset preparation, and advanced experiments. Use this project when you already have compatible weights and want a deployable inference service.
+[Listen to Sun / download the generated WAV](examples/samples/sun-greeting.wav):
 
-Inference and checkpoint conversion run without Python. Use `gpt-sovits-convert` to convert raw PyTorch `.ckpt` / `.pth` / `.bin` / `.pt` files into runtime `safetensors`.
+> 你好，欢迎回来。今天有什么想和我聊聊的吗？
 
-## Why Use It?
-
-- **Deployable runtime:** release binary, Docker Compose, CLI, Rust API, and HTTP API.
-- **Model conversion included:** GPT, SoVITS, Chinese RoBERTa, and Chinese HuBERT are converted to `safetensors`.
-- **Voice profiles:** package reference audio, reference text, language, split settings, and sampling defaults into `voices/<name>/voice.json`.
-- **Long-text friendly:** sentence splitting, reference feature caching, sentence gap/fade, streaming endpoint.
-- **Agent friendly:** OpenAI-compatible `/v1/audio/speech` adapter.
-- **GPU path:** Candle CUDA with KV cache and CUDA Graph for the GPT decode loop.
+Actual CPU inference with the maintainer's local **Sun v2Pro + SV** voice. Only generated
+audio is shared, not the model, SV embedding, or reference. [Settings and provenance](examples/samples/README.md).
+This short example is not a quality or speed benchmark; long text can still lose words.
+There is also a [service confirmation sample](examples/samples/sun-zh.wav) and a
+[browser listening page](site/README.md).
+The downloadable first-run demo below uses standard v2 weights, not Sun.
 
 ## Quick Start
 
-### Docker
+**Linux x86_64, Docker Engine + Compose v2, Bash, curl, and SHA-256 tools.**
+Allow at least 6 GiB free disk and 4 GiB available memory. Downloads are about
+1.1 GB plus the container; conversion and the first model load take time.
+No Rust, Python, API key, or GPU is needed for this CPU demo.
 
-Docker Compose pulls prebuilt images from GHCR. Models, voices, and outputs stay in mounted folders.
-The images do not contain model weights, but they do include both `gpt-sovits` and
-`gpt-sovits-convert`.
+The script downloads weights directly from their publisher, verifies checksums,
+converts all four models inside the published **1.2.0** image, and checks the setup.
+Read [what it downloads](examples/first-run/downloads.txt) and
+[the script](examples/first-run/prepare.sh) before running it. Model licenses remain
+separate from this project's MIT license.
 
 ```bash
 git clone https://github.com/ricardomlee/gpt-sovits-rs.git
 cd gpt-sovits-rs
-
-mkdir -p models/bert models/hubert voices outputs
-gpt-sovits-convert gpt /path/to/s1bert25hz.ckpt models/gpt-model.safetensors
-gpt-sovits-convert sovits /path/to/s2G2333k.pth models/sovits-model.safetensors
-gpt-sovits-convert bert /path/to/chinese-roberta-wwm-ext-large/pytorch_model.bin models/bert/bert.safetensors
-cp /path/to/chinese-roberta-wwm-ext-large/tokenizer.json models/bert/tokenizer.json
-gpt-sovits-convert hubert /path/to/chinese-hubert-base/pytorch_model.bin models/hubert/hubert.safetensors
-
-cp .env.example .env
+bash examples/first-run/prepare.sh "$HOME/gpt-sovits-demo"
+cd "$HOME/gpt-sovits-demo"
+docker compose up -d --wait --wait-timeout 900
+curl --fail-with-body --max-time 300 http://127.0.0.1:9881/tts \
+  -H 'Content-Type: application/json' --data-binary @request.json \
+  --output first.wav
 ```
 
-If you want a Docker-only conversion flow, run the converter from the image and mount your own
-source-model directory plus a writable output directory:
+Play `first.wav` with your usual audio player. The demo uses its own directory,
+Compose project, and **localhost-only port 9881**, without changing a service on 9880.
+Stop it with `docker compose down` in the demo directory; downloaded files stay there.
+If preparation is interrupted, rerun the same command: verified downloads are reused.
+Use a new directory, not an existing models or deployment directory.
 
-```bash
-docker run --rm \
-  -v "$PWD/models:/models" \
-  -v "/path/to/source-models:/source:ro" \
-  --entrypoint gpt-sovits-convert \
-  ghcr.io/ricardomlee/gpt-sovits-rs:latest \
-  gpt /source/s1bert25hz.ckpt /models/gpt-model.safetensors
-```
+Already have weights or use another platform?
 
-Create a voice profile from your own 3-10 second reference clip:
-
-```bash
-mkdir -p voices/demo
-cp /path/to/reference.wav voices/demo/ref.wav
-cat > voices/demo/voice.json <<'JSON'
-{
-  "reference_audio": "ref.wav",
-  "reference_text": "参考音频里逐字对应的文字",
-  "language": "zh",
-  "mode": "auto",
-  "split_sentences": true
-}
-JSON
-```
-
-For v2Pro voices, put the converted speaker-verification embedding in the same voice directory and
-add `sv_embedding` to `voice.json`:
-
-```bash
-gpt-sovits-convert sv /path/to/logs/demo_v2pro/7-sv_cn/ref.wav.pt voices/demo/ref_sv.safetensors
-```
-
-```json
-{
-  "reference_audio": "ref.wav",
-  "reference_text": "参考音频里逐字对应的文字",
-  "sv_embedding": "ref_sv.safetensors",
-  "language": "zh",
-  "mode": "auto",
-  "split_sentences": true
-}
-```
-
-CPU / NAS:
-
-```bash
-docker compose -f compose.cpu.yml up -d
-```
-
-CUDA:
-
-```bash
-docker compose -f compose.cuda.yml up -d
-```
-
-Check the server:
-
-```bash
-docker compose -f compose.cpu.yml ps   # or compose.cuda.yml
-curl http://localhost:9880/health
-curl http://localhost:9880/voices
-```
-
-Synthesize with a voice profile:
-
-```bash
-curl -X POST http://localhost:9880/tts \
-  -H 'Content-Type: application/json' \
-  -d '{"voice":"demo","text":"你好，这是 GPT-SoVITS-RS 的本地语音服务。"}' \
-  --output output.wav
-```
-
-See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for CUDA image tags, `.env` options, volumes, and production notes.
-
-Check a local setup before running inference:
-
-```bash
-./gpt-sovits --doctor --voice demo
-```
-
-### Release Binary
-
-Download a release package. It contains both the inference server and the Rust model converter:
-
-```bash
-./gpt-sovits --version
-./gpt-sovits-convert --version
-./gpt-sovits \
-  --text "你好，这是一次语音合成测试。" \
-  --reference-audio ref.wav \
-  --reference-text "参考音频对应的文字" \
-  --output output.wav
-```
-
-Linux CUDA users should prefer the CUDA Docker image, or build from source for the local compute capability.
-
-### From Source
-
-```bash
-# x86_64 CPU, with MKL
-cargo build --release --features mkl
-
-# generic CPU, useful for ARM/NAS
-cargo build --release
-
-# CUDA
-cargo build --release --features cuda
-
-# HTTP API
-cargo build --release --features http-api,mkl
-cargo build --release --features http-api,cuda
-```
-
-Requirements: stable Rust, `libsoxr-dev`, and CUDA Toolkit 13.x for CUDA builds.
-
-## Samples
-
-GitHub README does not reliably render standalone WAV players inline. Keep sample audio under `examples/samples/` and link to it from the table below when the voice/audio is safe to publish.
-
-| Voice | Text | Output | Notes |
-|---|---|---|---|
-| demo | 你好，这是 GPT-SoVITS-RS 的本地语音服务。 | pending | Add a small public-safe WAV sample before publishing a release showcase. |
-
-Recommended sample format:
-
-```text
-examples/samples/
-├── README.md
-├── demo_zh.wav
-└── demo_long_text.wav
-```
-
-If you want browser playback directly on GitHub, use a GitHub Pages demo page with HTML `<audio controls>`, or publish a short `.mp4` sample with waveform plus audio.
-
-## Models
-
-Models are not bundled with the binary or Docker images. Download official GPT-SoVITS v2
-checkpoints, or use your own trained checkpoints, then convert them with the Rust converter:
-
-```bash
-mkdir -p models/bert models/hubert
-gpt-sovits-convert gpt /path/to/s1bert25hz.ckpt models/gpt-model.safetensors
-gpt-sovits-convert sovits /path/to/s2G2333k.pth models/sovits-model.safetensors
-gpt-sovits-convert bert /path/to/chinese-roberta-wwm-ext-large/pytorch_model.bin models/bert/bert.safetensors
-cp /path/to/chinese-roberta-wwm-ext-large/tokenizer.json models/bert/tokenizer.json
-gpt-sovits-convert hubert /path/to/chinese-hubert-base/pytorch_model.bin models/hubert/hubert.safetensors
-```
-
-Expected layout:
-
-```text
-models/
-├── gpt-model.safetensors
-├── sovits-model.safetensors
-├── bert/
-│   ├── bert.safetensors
-│   └── tokenizer.json
-└── hubert/
-    └── hubert.safetensors
-```
-
-Custom GPT-SoVITS v2 or v2Pro weights:
-
-```bash
-gpt-sovits-convert gpt /path/to/custom-gpt.ckpt models/gpt-model.safetensors
-gpt-sovits-convert sovits /path/to/custom-sovits.pth models/sovits-model.safetensors
-```
-
-For v2Pro voices, convert the optional speaker-verification embedding generated by GPT-SoVITS preprocessing and pass it with the voice:
-
-```bash
-gpt-sovits-convert sv /path/to/logs/voice_v2pro/7-sv_cn/ref.wav.pt voices/demo/ref_sv.safetensors
-```
-
-Read [docs/MODELS.md](docs/MODELS.md) for the full model layout and v2Pro notes.
-
-## Voice Profiles
-
-Create `voices/<name>/voice.json`:
-
-```json
-{
-  "reference_audio": "ref.wav",
-  "reference_text": "参考音频对应的文字",
-  "sv_embedding": "ref_sv.safetensors",
-  "language": "zh",
-  "mode": "auto",
-  "split_sentences": true,
-  "split_method": "sentence",
-  "top_k": 15,
-  "top_p": 0.95,
-  "temperature": 0.8,
-  "max_tokens": 500,
-  "repetition_penalty": 1.35
-}
-```
-
-Then call it by name:
-
-```bash
-./gpt-sovits --voice demo --text "这句话会使用 demo 音色。"
-```
-
-Reference audio still matters. A 3-10 second clean clip with exactly matching text usually works best.
-
-For fine-tuned voices, bind model weights directly in the profile. Relative model paths are resolved
-from `--models-dir` / `/app/models`, while reference audio and SV paths remain relative to the voice
-directory:
-
-```json
-{
-  "reference_audio": "ref.wav",
-  "reference_text": "参考音频对应的文字",
-  "sv_embedding": "ref_sv.safetensors",
-  "gpt_model": "carol/gpt.safetensors",
-  "sovits_model": "carol/sovits.safetensors",
-  "language": "zh",
-  "split_sentences": true
-}
-```
-
-Both CLI and HTTP calls honor these model bindings; explicit model flags still take precedence. The
-HTTP server lazily loads model pairs and keeps a bounded LRU cache, so one container can serve voices
-such as `carol`, `sun`, and `diana` without keeping every model resident. BERT and HuBERT are shared,
-and GPU work remains sequential. The cache defaults to two model pairs and can be changed with
-`--max-cached-pipelines` or `MAX_CACHED_PIPELINES` in Compose.
-
-HTTP request limits default to 10,000 characters per item and 64 batch items. Compose users can
-adjust them with `MAX_TEXT_CHARS` and `MAX_BATCH_ITEMS`.
-Queue waiting is capped at 120 seconds by default (`QUEUE_TIMEOUT_SECS`), preventing stale requests
-from accumulating behind a long synthesis job.
-
-Set `PRELOAD_VOICES=diana,carol` in `.env` to load frequently used voices before the HTTP service
-becomes ready. Keep the list within `MAX_CACHED_PIPELINES` to avoid immediate LRU eviction.
-
-## HTTP API
-
-Start the service:
-
-```bash
-cargo run --release --features "cuda,http-api" --bin gpt-sovits -- \
-  --http --port 9880
-```
-
-Source builds listen on `127.0.0.1` by default. Use `--host 0.0.0.0` or
-`GPT_SOVITS_HOST=0.0.0.0` for network access; IPv6 addresses such as `--host ::1`
-are also accepted. The flag takes precedence over the environment variable.
-Docker/Compose sets `GPT_SOVITS_HOST=0.0.0.0` for port forwarding. Published
-v1.2.0 binaries already listen on all interfaces and do not accept `--host`.
-See [deployment](docs/DEPLOYMENT.md#监听地址与版本兼容) for version and bind settings.
-
-Core endpoints:
-
-| Endpoint | Purpose |
+| Your setup | Start here |
 |---|---|
-| `GET /health` | health check |
-| `GET /status` | runtime and model-cache status |
-| `GET /voices` | list local voice profiles |
-| `POST /tts` | synthesize one WAV |
-| `POST /tts/stream` | stream sentence chunks |
-| `POST /tts/batch` | synthesize multiple texts as NDJSON |
-| `POST /v1/audio/speech` | OpenAI-compatible speech adapter |
+| Your own v2 / v2Pro voice | [Conversion and SV requirements](docs/MODELS.md), then [deployment](docs/DEPLOYMENT.md) |
+| NVIDIA GPU | [CUDA images and architecture tags](docs/DEPLOYMENT.md#cuda) |
+| Linux / macOS without Docker | [Download binaries](https://github.com/ricardomlee/gpt-sovits-rs/releases/latest), then [binary setup](docs/DEPLOYMENT.md#binary) |
+| ARM Linux / NAS | [Build from source](docs/DEVELOPMENT.md); Docker images are currently amd64 |
 
-Minimal request:
+## Connect Your App
+
+Once a voice is configured, send only its name and the text:
 
 ```bash
-curl -X POST http://localhost:9880/tts \
+curl --fail-with-body http://127.0.0.1:9881/tts \
   -H 'Content-Type: application/json' \
-  -d '{"voice":"demo","text":"你好世界。"}' \
-  --output output.wav
+  -d '{"voice":"demo","text":"The backup is complete."}' --output reply.wav
 ```
 
-Full API examples live in [docs/API.md](docs/API.md).
+An [OpenAI-compatible speech endpoint](docs/API.md), sentence streaming, and multiple
+voice profiles are also available. For an LLM assistant, submit completed short
+sentences in order; [agent integration](docs/AGENT_INTEGRATION.md) covers playback
+and errors. The service is not an authenticated public API.
 
-For real-time assistants, send short completed speech chunks to `/tts` as the LLM produces sentences; use `/tts/stream` when the full text is already known. See [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md).
+## Before You Choose It
 
-## Troubleshooting
+- Supports compatible **v2 and v2Pro** weights, not arbitrary newer GPT-SoVITS checkpoints.
+- A clean 3-10 second reference clip and matching transcript are still required.
+- v2Pro needs an SV embedding for the full voice-conditioning path. The released converter
+  can convert an existing training embedding; it does not extract one from audio.
+- Sentence splitting helps, but does **not** guarantee that every word will be spoken.
+- No claim of being faster than Python. See [measured performance](docs/PERFORMANCE.md).
+- Models are not bundled or rehosted. Only use voices and recordings you have permission to use.
 
-Run doctor first:
+## Help and Contribute
 
-```bash
-./gpt-sovits --doctor --voice demo
-```
+If the first request fails, check `docker compose logs --tail 100` in the demo directory.
+[First-run troubleshooting](docs/FIRST_RUN.zh-CN.md) covers downloads, memory, ports,
+and readiness. [Tell us where you got stuck, or what worked](https://github.com/ricardomlee/gpt-sovits-rs/issues/new?template=first-run.yml).
+Do not attach private models, recordings, or credentials.
 
-It checks the model layout, safetensors headers, BERT tokenizer, requested device, voice profile, reference audio, and reference text without loading the full model stack.
+[Deployment](docs/DEPLOYMENT.md) | [API](docs/API.md) |
+[Development](docs/DEVELOPMENT.md) | [Product goal](docs/PRODUCT_GOAL.md)
 
-## Performance
+## License and Credits
 
-The project is optimized for practical local inference and deployment simplicity, not for matching every Python fast-path benchmark. Current highlights:
-
-- CPU x86_64 builds can use MKL and a faster Conv1d path.
-- CUDA builds use KV cache and CUDA Graph for GPT decode.
-- Speaker/reference features are cached across repeated calls.
-- Long text is split and concatenated for stability; batch-parallel long-text synthesis is not the current product focus.
-
-See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for measured numbers and profiling commands.
-
-## Documentation
-
-| Topic | Link |
-|---|---|
-| Model download and conversion | [docs/MODELS.md](docs/MODELS.md) |
-| Docker, binary, and server deployment | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) |
-| HTTP and Rust API details | [docs/API.md](docs/API.md) |
-| Performance baseline | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) |
-| Agent integration | [docs/AGENT_INTEGRATION.md](docs/AGENT_INTEGRATION.md) |
-| Development and debugging | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
-| Prosody and speed | [docs/PROSODY.md](docs/PROSODY.md) |
-| Product goal | [docs/PRODUCT_GOAL.md](docs/PRODUCT_GOAL.md) |
-
-## License
-
-MIT License. Model weights come from their respective publishers and keep their own licenses and usage restrictions.
-
-## Credits
-
-- [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) by RVC-Boss
-- [Candle](https://github.com/huggingface/candle) by Hugging Face
+Code: [MIT](LICENSE). Models keep their publishers' licenses.
+The public sample has [separate provenance](examples/samples/README.md).
+Built on [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) and
+[Hugging Face Candle](https://github.com/huggingface/candle).

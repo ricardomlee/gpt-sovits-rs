@@ -1,5 +1,9 @@
 # 模型下载与转换
 
+只想先试一次？[首次运行](FIRST_RUN.zh-CN.md)提供固定版本的 Docker-only 路径，
+直接从上游下载并校验全部所需文件，不需要先安装宿主机转换器。
+已有模型的用户继续阅读下面的转换说明。
+
 `gpt-sovits-rs` 不在源码仓库、release binary 或 Docker 镜像中分发模型权重。用户应自行
 从官方渠道下载、从已有 GPT-SoVITS 安装目录复制，或使用自己训练好的模型。默认推理需要四部分：
 
@@ -15,7 +19,8 @@
 
 ## 准备官方 v2 模型
 
-先从 GPT-SoVITS 官方模型仓库或 Hugging Face 缓存中取得这些源文件：
+先从 [GPT-SoVITS 官方模型仓库](https://huggingface.co/lj1995/GPT-SoVITS/tree/main)
+或 Hugging Face 缓存中取得这些源文件：
 
 ```text
 gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt
