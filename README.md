@@ -34,7 +34,7 @@ Allow at least 6 GiB free disk and 4 GiB available memory. Downloads are about
 No Rust, Python, API key, or GPU is needed for this CPU demo.
 
 The script downloads weights directly from their publisher, verifies checksums,
-converts all four models inside the published **1.2.0** image, and checks the setup.
+converts all four models inside the published **1.2.1** image, and checks the setup.
 Read [what it downloads](examples/first-run/downloads.txt) and
 [the script](examples/first-run/prepare.sh) before running it. Model licenses remain
 separate from this project's MIT license.

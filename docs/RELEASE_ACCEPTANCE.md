@@ -24,7 +24,8 @@ container/network, including on failures. Downloaded models stay in the demo dir
 Do not rerun preparation on a production voice directory.
 
 The main CI's CPU-container job runs this against its newly built image. The
-separate first-run workflow keeps verifying published 1.2.0. Neither substitutes
+separate first-run workflow verifies published 1.2.1 and keeps 1.2.0 as a
+compatibility baseline. Neither substitutes
 for GPU testing or proves semantic completeness from a WAV's shape alone.
 
 ## Speech Regression
@@ -114,5 +115,6 @@ host port exposure is separate. The server still has no built-in authentication.
 3. Watch all Linux/macOS and CPU/CUDA release jobs; verify packaged binaries and hashes.
 4. After the versioned image exists, run the same verifier against it with pulling
    enabled. Then update the first-run defaults in `prepare.sh` and `compose.yml`,
-   and the README/first-run guide. Keep the 1.2.0 compatibility workflow pinned.
+   and the README/first-run guide. Include the new published version in the
+   first-run matrix and keep the 1.2.0 compatibility baseline pinned.
 5. Only then update a running personal deployment, retaining its old image tag for rollback.
