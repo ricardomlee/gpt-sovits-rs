@@ -19,9 +19,13 @@ permissions:
 
 jobs:
   published-image:
-    name: Download, convert, serve, and synthesize (v1.2.0 CPU)
+    name: Download, convert, serve, and synthesize (v${{ matrix.version }} CPU)
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["1.2.0", "1.2.1"]
     steps:
       - uses: actions/checkout@v7
 
@@ -40,17 +44,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: Verify the published baseline from an empty directory
+      - name: Verify the published image from an empty directory
         env:
-          DEMO_IMAGE: ghcr.io/ricardomlee/gpt-sovits-rs:1.2.0
-          DEMO_EXPECTED_VERSION: 1.2.0
+          DEMO_IMAGE: ghcr.io/ricardomlee/gpt-sovits-rs:${{ matrix.version }}
+          DEMO_EXPECTED_VERSION: ${{ matrix.version }}
         run: bash examples/first-run/verify.sh "$DEMO_DIR" "$ARTIFACT_DIR"
 
       - name: Upload audio and diagnostics, never models
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: first-run-v1.2.0-cpu
+          name: first-run-v${{ matrix.version }}-cpu
           path: ${{ runner.temp }}/first-run-artifacts/
           retention-days: 7
           if-no-files-found: ignore

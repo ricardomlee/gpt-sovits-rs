@@ -32,7 +32,7 @@ curl --fail-with-body --max-time 300 http://127.0.0.1:9881/tts \
 > Your local voice service is ready. All speech is generated on your own computer.
 
 准备脚本完成四个模型的校验与转换、tokenizer 复制、音色配置和 doctor 检查。
-转换与推理都在固定版本 `1.2.0` 容器中运行，不需要安装宿主机转换器。
+转换与推理都在固定版本 `1.2.1` 容器中运行，不需要安装宿主机转换器。
 默认版本只在新镜像正式发布并验证后更新，不会提前指向不存在的候选版本。
 服务会预加载 demo 音色再就绪；首次启动慢不等于每次请求都要重载模型。
 只有下载阶段需要外网，推理不调用云端服务。
