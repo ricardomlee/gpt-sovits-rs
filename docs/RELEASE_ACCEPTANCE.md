@@ -112,9 +112,14 @@ host port exposure is separate. The server still has no built-in authentication.
 1. Require candidate CI and local CUDA/SV/regression/rollback evidence before tagging.
 2. Match `Cargo.toml`, the package entry in `Cargo.lock`, the tag, and release notes.
    Release preflight checks metadata before any binary/image publishing job starts.
-3. Watch all Linux/macOS and CPU/CUDA release jobs; verify packaged binaries and hashes.
-4. After the versioned image exists, run the same verifier against it with pulling
+3. Use absolute HTTPS links in release notes. Pin repository documentation links to
+   the release tag, for example `https://github.com/ricardomlee/gpt-sovits-rs/blob/v1.2.1/docs/RELEASE_ACCEPTANCE.md`.
+   The workflow copies the Markdown body verbatim; relative paths lose the source
+   file's directory context on a Release page. After publication, open each link
+   from the actual Release page, not just from the repository Markdown preview.
+4. Watch all Linux/macOS and CPU/CUDA release jobs; verify packaged binaries and hashes.
+5. After the versioned image exists, run the same verifier against it with pulling
    enabled. Then update the first-run defaults in `prepare.sh` and `compose.yml`,
    and the README/first-run guide. Include the new published version in the
    first-run matrix and keep the 1.2.0 compatibility baseline pinned.
-5. Only then update a running personal deployment, retaining its old image tag for rollback.
+6. Only then update a running personal deployment, retaining its old image tag for rollback.
