@@ -112,6 +112,7 @@ mod preparation {
 set -eu
 printf '%s\n' "$*" >> "$TEST_LOG"
 if [[ "$1" == info ]]; then printf '%s\n' "${TEST_PLATFORM:-linux/x86_64}"; exit 0; fi
+if [[ "$1" == image && ${MISSING_IMAGE:-0} == 1 ]]; then exit 1; fi
 [[ "$1" != run ]] && exit 0
 models=''
 previous=''
@@ -152,6 +153,9 @@ exit 2
                 .env_remove("FAIL_CONVERSION")
                 .env_remove("DOWNLOAD_CONTENT")
                 .env_remove("TEST_PLATFORM")
+                .env_remove("DEMO_IMAGE")
+                .env_remove("DEMO_PULL_POLICY")
+                .env_remove("MISSING_IMAGE")
                 .env(
                     "PATH",
                     format!(
@@ -166,6 +170,67 @@ exit 2
         fn log(&self) -> String {
             fs::read_to_string(self.root.path().join("commands.log")).unwrap()
         }
+    }
+
+    #[test]
+    fn candidate_image_is_used_for_conversion_doctor_and_saved_compose_config() {
+        let f = Fixture::new();
+        let result = f
+            .command()
+            .env("DEMO_IMAGE", "gpt-sovits:candidate")
+            .env("DEMO_PULL_POLICY", "never")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let log = f.log();
+        assert!(log.contains("image inspect gpt-sovits:candidate"));
+        assert!(!log.lines().any(|line| line.starts_with("pull ")));
+        for line in log.lines().filter(|line| line.starts_with("run ")) {
+            assert!(line.contains("gpt-sovits:candidate"), "{line}");
+        }
+        assert_eq!(
+            fs::read_to_string(f.destination.join(".env")).unwrap(),
+            "DEMO_IMAGE=gpt-sovits:candidate\nDEMO_PULL_POLICY=never\n"
+        );
+    }
+
+    #[test]
+    fn invalid_candidate_configuration_fails_before_downloads() {
+        for (key, value) in [
+            ("DEMO_IMAGE", "image\nINJECT=value"),
+            ("DEMO_IMAGE", "$(command)"),
+            ("DEMO_PULL_POLICY", "sometimes"),
+        ] {
+            let f = Fixture::new();
+            assert!(!f
+                .command()
+                .env(key, value)
+                .output()
+                .unwrap()
+                .status
+                .success());
+            assert!(!f.destination.exists());
+        }
+    }
+
+    #[test]
+    fn unavailable_local_candidate_fails_before_downloads() {
+        let f = Fixture::new();
+        assert!(!f
+            .command()
+            .env("DEMO_IMAGE", "missing:candidate")
+            .env("DEMO_PULL_POLICY", "never")
+            .env("MISSING_IMAGE", "1")
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(!f.destination.exists());
+        assert!(!f.log().contains("download"));
     }
 
     #[test]
@@ -186,6 +251,10 @@ exit 2
             8
         );
         assert_eq!(f.log().matches("--doctor").count(), 2);
+        assert_eq!(
+            fs::read_to_string(f.destination.join(".env")).unwrap(),
+            "DEMO_IMAGE=ghcr.io/ricardomlee/gpt-sovits-rs:1.2.0\nDEMO_PULL_POLICY=missing\n"
+        );
         for path in [
             "models/gpt-model.safetensors",
             "models/sovits-model.safetensors",

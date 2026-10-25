@@ -94,7 +94,9 @@ cargo run --release --features "cuda,http-api" --bin gpt-sovits -- \
   --http --port 9880
 ```
 
-Source builds default to `127.0.0.1`. `--host <IP>` overrides `GPT_SOVITS_HOST`;
+Starting with 1.2.1, standalone binaries default to `127.0.0.1`.
+For LAN access, explicitly set `--host 0.0.0.0`; the server has no authentication.
+`--host <IP>` overrides `GPT_SOVITS_HOST`;
 both accept IPv4 or unbracketed IPv6 literals (`::1`, `::`). Docker/Compose sets
 the environment variable to `0.0.0.0` for port forwarding. Published v1.2.0
 binaries always bind to `0.0.0.0` and do not accept `--host`. The built-in server

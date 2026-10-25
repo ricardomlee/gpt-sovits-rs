@@ -5,9 +5,20 @@ set -euo pipefail
 if [[ $# != 1 || ${1:-} == --help ]]; then
   printf 'Usage: bash examples/first-run/prepare.sh NEW_DIRECTORY\n'
   printf 'Downloads upstream models, verifies SHA-256, and converts with Docker (no Python).\n'
+  printf 'Maintainers: DEMO_IMAGE selects a candidate; DEMO_PULL_POLICY=never uses a local image.\n'
   [[ $# == 1 && $1 == --help ]] && exit 0
   exit 2
 fi
+image=${DEMO_IMAGE:-ghcr.io/ricardomlee/gpt-sovits-rs:1.2.0}
+pull_policy=${DEMO_PULL_POLICY:-always}
+if [[ ! $image =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]]; then
+  printf 'Invalid DEMO_IMAGE. Use a Docker image reference without whitespace or shell syntax.\n' >&2
+  exit 2
+fi
+case "$pull_policy" in
+  always|never) ;;
+  *) printf 'DEMO_PULL_POLICY must be always or never.\n' >&2; exit 2 ;;
+esac
 for command in docker curl; do
   command -v "$command" >/dev/null || { printf 'Missing command: %s\n' "$command" >&2; exit 1; }
 done
@@ -25,6 +36,9 @@ case "$platform" in
   *) printf 'This demo requires a Linux amd64 Docker engine (found %s). See docs/DEPLOYMENT.md for other platforms.\n' "$platform" >&2; exit 1 ;;
 esac
 docker compose version >/dev/null
+if [[ $pull_policy == never ]]; then
+  docker image inspect "$image" >/dev/null || { printf 'Candidate image is not available locally: %s\n' "$image" >&2; exit 1; }
+fi
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 destination=$1
@@ -69,8 +83,7 @@ while read -r expected relative url; do
   mv -- "$file.part" "$file"
 done < "$here/downloads.txt"
 
-image=ghcr.io/ricardomlee/gpt-sovits-rs:1.2.0
-docker pull "$image"
+if [[ $pull_policy == always ]]; then docker pull "$image"; fi
 convert() {
   docker run --rm --network none --user "$(id -u):$(id -g)" \
     --volume "$destination/source:/source:ro" --volume "$destination/models:/models" \
@@ -86,6 +99,9 @@ cp "$destination/source/reference.wav" "$destination/voices/demo/ref.wav"
 cp "$here/voice.json" "$destination/voices/demo/voice.json"
 cp "$here/compose.yml" "$destination/compose.yml"
 cp "$here/request.json" "$destination/request.json"
+compose_pull_policy=missing
+if [[ $pull_policy == never ]]; then compose_pull_policy=never; fi
+printf 'DEMO_IMAGE=%s\nDEMO_PULL_POLICY=%s\n' "$image" "$compose_pull_policy" > "$destination/.env"
 
 docker run --rm --network none \
   --volume "$destination/models:/app/models:ro" --volume "$destination/voices:/app/voices:ro" \

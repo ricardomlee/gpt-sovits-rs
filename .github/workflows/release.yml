@@ -15,7 +15,20 @@ env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}
 
 jobs:
+  preflight:
+    name: Verify release metadata
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Require matching package version and release notes
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "gpt-sovits-rs") | .version')
+          test "v$version" = "$GITHUB_REF_NAME"
+          test -s "docs/releases/$GITHUB_REF_NAME.md"
+
   linux-binary:
+    needs: preflight
     name: Linux x86_64 binary
     runs-on: ubuntu-22.04
     steps:
@@ -63,6 +76,7 @@ jobs:
           if-no-files-found: error
 
   macos-binary:
+    needs: preflight
     name: macOS ${{ matrix.arch }} binary
     strategy:
       fail-fast: false
@@ -116,6 +130,7 @@ jobs:
           if-no-files-found: error
 
   cpu-image:
+    needs: preflight
     name: CPU container
     runs-on: ubuntu-24.04
     steps:
@@ -153,6 +168,7 @@ jobs:
           cache-to: type=gha,mode=max
 
   cuda-image:
+    needs: preflight
     name: CUDA sm${{ matrix.compute_cap }} container
     strategy:
       fail-fast: false
