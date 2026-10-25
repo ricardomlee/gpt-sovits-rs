@@ -126,18 +126,24 @@ impl TextFrontend {
         language: Language,
     ) -> Result<(String, Language, Vec<Option<PinyinOverride>>)> {
         let (clean_text, raw_overrides) = parse_pinyin_overrides(text)?;
-        let normalized = self.normalizer.normalize(&clean_text)?;
         let lang = if language == Language::Auto {
-            self.language_detector.detect(&normalized)?
+            // Numeric literals and punctuation do not identify a language. Detect
+            // the source script before expansion; number-only input defaults to Chinese.
+            let script: String = clean_text.chars().filter(|ch| ch.is_alphabetic()).collect();
+            self.language_detector.detect(&script)?
         } else {
             language
         };
+        let mut normalized = self
+            .normalizer
+            .normalize_mapped(&clean_text, lang == Language::Chinese);
         let (normalized, pinyin_overrides) = if lang == Language::Chinese {
-            let normalized = self.normalizer.normalize_chinese_model_text(&normalized);
-            let overrides = remap_pinyin_overrides(&clean_text, &normalized, &raw_overrides)?;
+            normalized.normalize_chinese_model_text();
+            let (normalized, source_indices) = normalized.into_parts();
+            let overrides = remap_pinyin_overrides(&source_indices, &raw_overrides)?;
             (normalized, overrides)
         } else {
-            (normalized, Vec::new())
+            (normalized.into_parts().0, Vec::new())
         };
         Ok((normalized, lang, pinyin_overrides))
     }
@@ -193,54 +199,29 @@ fn is_cjk(ch: char) -> bool {
 }
 
 fn remap_pinyin_overrides(
-    clean_text: &str,
-    normalized_text: &str,
+    source_indices: &[Option<usize>],
     raw_overrides: &[RawPinyinOverride],
 ) -> Result<Vec<Option<PinyinOverride>>> {
     if raw_overrides.is_empty() {
         return Ok(Vec::new());
     }
 
-    let clean_chars: Vec<char> = clean_text.chars().collect();
-    let normalized_chars: Vec<char> = normalized_text.chars().collect();
-    let mut overrides = vec![None; normalized_chars.len()];
+    let mut overrides = vec![None; source_indices.len()];
 
     for raw in raw_overrides {
-        let normalized_index = if clean_chars.len() == normalized_chars.len()
-            && normalized_chars.get(raw.clean_index) == Some(&raw.ch)
-        {
-            raw.clean_index
-        } else {
-            find_matching_occurrence(&clean_chars, &normalized_chars, raw)?
-        };
+        let normalized_index = source_indices
+            .iter()
+            .position(|source| *source == Some(raw.clean_index))
+            .ok_or_else(|| {
+                crate::Error::TextError(format!(
+                    "could not map pinyin annotation for '{}' after text normalization",
+                    raw.ch
+                ))
+            })?;
         overrides[normalized_index] = Some(raw.pinyin.clone());
     }
 
     Ok(overrides)
-}
-
-fn find_matching_occurrence(
-    clean_chars: &[char],
-    normalized_chars: &[char],
-    raw: &RawPinyinOverride,
-) -> Result<usize> {
-    let occurrence = clean_chars
-        .iter()
-        .take(raw.clean_index + 1)
-        .filter(|ch| **ch == raw.ch)
-        .count();
-    normalized_chars
-        .iter()
-        .enumerate()
-        .filter(|(_, ch)| **ch == raw.ch)
-        .nth(occurrence.saturating_sub(1))
-        .map(|(index, _)| index)
-        .ok_or_else(|| {
-            crate::Error::TextError(format!(
-                "could not map pinyin annotation for '{}' after text normalization",
-                raw.ch
-            ))
-        })
 }
 
 impl Default for TextFrontend {
@@ -307,5 +288,101 @@ mod tests {
             .to_string();
 
         assert!(err.contains("unsupported tone"));
+    }
+
+    #[test]
+    fn numeric_expansion_keeps_annotations_on_original_characters() {
+        let frontend = TextFrontend::new().unwrap();
+        for (input, expected, annotated_index, tone) in [
+            ("1一[yi1]", "一一", 1, 1),
+            ("50%分[fen4]成", "百分之五十分成", 5, 4),
+            ("0.5点[dian3]", "零点五点", 3, 3),
+            ("100百[bai2]", "一百百", 2, 2),
+        ] {
+            let (normalized, _, overrides) = frontend
+                .normalize_for_model(input, Language::Chinese)
+                .unwrap();
+            assert_eq!(normalized, expected, "{input}");
+            assert_eq!(overrides.iter().flatten().count(), 1, "{input}");
+            assert_eq!(overrides[annotated_index].as_ref().unwrap().tone, tone);
+        }
+    }
+
+    #[test]
+    fn numeric_expansion_preserves_bert_phone_alignment() {
+        let frontend = TextFrontend::new().unwrap();
+        let (ids, word2ph, normalized) = frontend
+            .process_with_word2ph_and_text("50%分[fen4]成，数值3.14。", Language::Chinese)
+            .unwrap();
+        assert_eq!(normalized, "百分之五十分成,数值三点一四.");
+        assert_eq!(word2ph.len(), normalized.chars().count());
+        assert_eq!(word2ph.iter().sum::<usize>(), ids.len());
+        assert!(word2ph.iter().all(|count| *count > 0));
+    }
+
+    #[test]
+    fn annotation_positions_survive_whitespace_abbreviations_and_replacements() {
+        let frontend = TextFrontend::new().unwrap();
+        let (normalized, _, overrides) = frontend
+            .normalize_for_model(
+                "  嗯[en2]... Mr. 好[hao4]  50%分[fen4] 等[deng3]. 等[deng4]。",
+                Language::Chinese,
+            )
+            .unwrap();
+        assert_eq!(normalized, "恩… Mister  好 百分之五十分 等等 等.");
+        let annotated: Vec<_> = normalized
+            .chars()
+            .zip(overrides)
+            .filter_map(|(ch, pinyin)| pinyin.map(|p| (ch, p.base, p.tone)))
+            .collect();
+        assert_eq!(
+            annotated,
+            vec![
+                ('恩', "en".into(), 2),
+                ('好', "hao".into(), 4),
+                ('分', "fen".into(), 4),
+                ('等', "deng".into(), 3),
+                ('等', "deng".into(), 4),
+            ]
+        );
+    }
+
+    #[test]
+    fn numeric_annotations_reach_the_intended_phoneme_span() {
+        let frontend = TextFrontend::new().unwrap();
+        let (ids, word2ph, _) = frontend
+            .process_with_word2ph_and_text("50%分[fen4]成", Language::Chinese)
+            .unwrap();
+        let start = word2ph[..5].iter().sum::<usize>();
+        let expected = frontend.process("分[fen4]", Language::Chinese).unwrap();
+        assert_eq!(&ids[start..start + word2ph[5]], &expected);
+        let end_of_first_fen = word2ph[..2].iter().sum::<usize>();
+        let expected = frontend.process("分[fen1]", Language::Chinese).unwrap();
+        assert_eq!(&ids[word2ph[0]..end_of_first_fen], &expected);
+    }
+
+    #[test]
+    fn language_is_resolved_before_chinese_number_expansion() {
+        let frontend = TextFrontend::new().unwrap();
+        for (input, requested, expected_lang, expected) in [
+            ("50%", Language::English, Language::English, "50%"),
+            (
+                "value 3.14",
+                Language::Auto,
+                Language::English,
+                "value 3.14",
+            ),
+            (
+                "音量50%",
+                Language::Auto,
+                Language::Chinese,
+                "音量百分之五十",
+            ),
+            ("50%", Language::Auto, Language::Chinese, "百分之五十"),
+        ] {
+            let (normalized, lang, _) = frontend.normalize_for_model(input, requested).unwrap();
+            assert_eq!(lang, expected_lang, "{input}");
+            assert_eq!(normalized, expected, "{input}");
+        }
     }
 }
