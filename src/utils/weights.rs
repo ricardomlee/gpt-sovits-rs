@@ -763,7 +763,8 @@ mod tests {
         let cuda_norm = LayerNorm::new(weight.to_device(&cuda)?, bias.to_device(&cuda)?);
         for time in [190, 192, 194] {
             let input = Tensor::arange(0f32, (2 * channels * time) as f32, &cpu)?
-                .affine(0.001, -0.5)?
+                .affine(0.17, -1.0)?
+                .sin()?
                 .reshape((2, time, channels))?
                 .transpose(1, 2)?;
             let expected = cpu_norm.forward_channels_first(&input)?;
@@ -776,7 +777,7 @@ mod tests {
                 .flatten_all()?
                 .max(0)?
                 .to_scalar::<f32>()?;
-            assert!(max_error < 1e-3, "time={time}, max_error={max_error}");
+            assert!(max_error < 1e-5, "time={time}, max_error={max_error}");
         }
         Ok(())
     }
