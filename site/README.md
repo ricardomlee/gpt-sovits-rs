@@ -21,7 +21,9 @@ Browser checks (Playwright 1.59.1, Chromium) cover desktop and narrow mobile lay
 both audio players actually advancing, loaded images, and download targets:
 
 ```bash
-node site/check.cjs /tmp/gpt-sovits-site
+npm install --prefix /tmp/pages-test --no-save --ignore-scripts playwright@1.59.1
+/tmp/pages-test/node_modules/.bin/playwright install --with-deps chromium
+NODE_PATH=/tmp/pages-test/node_modules node site/check.cjs /tmp/gpt-sovits-site
 ```
 
 Playwright is a development-only dependency. The Pages workflow installs it outside
@@ -30,12 +32,10 @@ the repository and uploads screenshots; the published site needs no JavaScript.
 ## Publish
 
 In repository **Settings > Pages > Build and deployment**, select **GitHub Actions**
-once. Merge this PR to `master`; the **Audio showcase** workflow validates and deploys.
+once. The **Audio showcase** workflow validates and deploys relevant changes on `master`.
 Pull requests only build and test, never deploy. Later changes to public samples or
-the site redeploy automatically. The expected URL is:
+the site redeploy automatically. The live URL (verified 2026-11-06) is:
 
 `https://ricardomlee.github.io/gpt-sovits-rs/`
 
-Do not advertise that URL as live until the first deploy succeeds. Once it is live,
-set the repository website field to it and link it beside the README's WAV download.
 Forks need to adjust repository links in `index.html` and enable their own Pages site.

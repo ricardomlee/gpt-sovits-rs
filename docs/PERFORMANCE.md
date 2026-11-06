@@ -1,103 +1,92 @@
 # 推理性能
 
-## 当前基线
+对应主线 `ee4d719`（2026-11-06）。源码与已发布版本的差异见 [文档入口](README.md)。
 
-测试设备为 RTX 4060 Ti，输入“你好世界。”，参考音频为 `mao.wav`，KV cache、F32、贪心采样。开启逐阶段同步分析后，热路径约 286 ms，生成 20 个 semantic token 和 0.8 秒音频。
+## 当前推理路径
 
-| 阶段 | 时间 | 占比 |
-| --- | ---: | ---: |
-| GPT | 227 ms | 79% |
-| SoVITS | 53 ms | 19% |
-| 目标文本 BERT | 5 ms | 2% |
-| 文本前端、参考缓存 | <1 ms | <1% |
+- GPT 和 SoVITS 使用 F32。`--half` 目前不会启用完整半精度推理。
+- `--mode auto` 在 CUDA F32 上选择 `cuda-graph`，其他设备选择 `kv`。
+  `GPT_SOVITS_DISABLE_CUDA_GRAPH=1` 可让 auto 选择 KV；不存在旧文档中的实验启用开关。
+- Graph 的前 32 个生成步骤走 eager/static KV；较短生成可能不触发 capture。
+  首次 replay 有校验和回退保护，Graph 在每次生成中创建。
+- 服务复用常驻模型和参考特征缓存。多音色缓存容量、队列及预加载见 [HTTP API](API.md)。
 
-SoVITS 内部：
+## 发布前本地 GPU 报告
 
-| 阶段 | 时间 |
-| --- | ---: |
-| decoder | 34 ms |
-| EncP | 9 ms |
-| flow | 3 ms |
-| 参考编码 | 2 ms |
-| 采样及准备 | 2 ms |
-
-decoder 的 34 ms 中，resblocks 约 24 ms，转置卷积上采样约 8 ms。
-
-首次使用一个音色还要处理参考音频：HuBERT、semantic tokenizer、频谱和参考 BERT 合计约 60-80 ms。`preload_speaker()` 会缓存结果，后续每句不再重复计算。
-
-## 优化顺序
-
-1. GPT decode：继续减少每 token 的同步和 Graph 外开销，并扩大 CUDA Graph 在不同显卡、精度和模型上的回归覆盖。
-2. SoVITS decoder：验证融合 LeakyReLU；继续分析 resblock Conv1d 和转置卷积。cuDNN 可作为可选后端，但不能成为轻量部署的硬依赖。
-3. EncP 和 flow：当前合计约 12 ms，只有 profiler 证明可融合时再改。
-4. 参考音频：保持预加载，优化冷启动和音色切换，不占用热路径预算。
-5. BERT 和文本前端：当前收益空间很小，优先保证文本与韵律质量。
-
-静态 KV 已做过无 CUDA Graph 对照，没有收益：短文本动态/静态为 0.31/0.33 秒，中等文本为 2.05/2.09 秒，长文本为 3.59/3.62 秒。改成只计算有效长度后，中长文本可快约 2-5%，但短文本仍变慢；生成 32 token 后再切换的自适应方案也没有稳定收益。因此默认继续使用动态 KV。
-
-## 分析命令
-
-普通日志只适合看整段时间。CUDA 异步执行时，使用下面的分析模式才能得到可信的 SoVITS 子阶段时间：
+每次打 tag 前，对候选提交运行一次。需要 CUDA 工具链、模型和可用的本地音色；
+模型转换与 SV 配置见 [模型指南](MODELS.md)。基准在独立进程中运行，现有容器保持原样。
+尽量避开其他 GPU 工作；同时运行的服务即使空闲也会占显存，需在验收记录中说明。
 
 ```bash
-GPT_SOVITS_SYNC_PROFILE=1 RUST_LOG=gpt_sovits_rs=debug \
-  target/release/gpt-sovits --device cuda --mode kv \
-  --split-sentences --text "你好世界。" \
-  --reference-audio mao.wav \
-  --reference-text "会战兵力是八十万对六十万，优势在我。" \
-  --output /tmp/profile.wav
+cargo build --locked --release --features cuda --example gpu_benchmark
+mkdir -p outputs/gpu-benchmark
+target/release/examples/gpu_benchmark \
+  --voice sun --voices-dir voices --models-dir models \
+  --build-label 'release; cuda' \
+  --output-dir "outputs/gpu-benchmark/$(date -u +%Y%m%dT%H%M%SZ)"
 ```
 
-`GPT_SOVITS_SYNC_PROFILE` 会在各阶段插入同步，只用于分析，不用于生产运行。kernel 汇总方法见 [cuda-oxide 实验记录](CUDA_OXIDE_EXPERIMENT.md)。
+`sun` 是本机音色示例，不随仓库提供。换成自己的 voice ID，并为历次发布固定同一组模型、
+参考音频、文本和 SV。目录必须是新的，父目录需存在。构建后立即运行，保留提交与工作区状态；
+报告中的 Git、Rust 和 nvcc 信息来自运行时环境，`build-label` 由调用者填写实际构建配置。
+可执行文件、Cargo.lock、输入文件和语料均记录 SHA-256。
 
-只采集模型已加载后的 KV 热路径：
+默认使用 [语音回归语料](../examples/speech_regression/corpus.json)，每项预热 2 次、测量 5 次。
+基准读取语料文本，在进程内按音色的分句、语言和采样设置合成，每次尝试均保留。
+语料中的 HTTP endpoint/stream 设置由 [发布验收](RELEASE_ACCEPTANCE.md) 工具使用。
+`--corpus` 可指定同格式语料，`--mode kv` 可单独测 KV；对照时其他设置必须相同。
+缺少 BERT、HuBERT、v2Pro 的 SV、CUDA，或波形检查失败时返回非零状态。
+
+输出包括：
+
+- `report.json`：元数据、模型加载/参考预加载耗时、所有尝试及逐项 min/median/max、RTF。
+- `report.md`：可直接阅读的汇总；失败或测量次数不全的项不产生性能摘要。
+- `inference.log`：模型加载、生成和 Graph 回退等诊断日志。
+- WAV 和 `asr.jsonl`：保留预热及正式样本，ASR 清单只包括正式测量样本。
+
+`signal_checks_passed` 记录静音、削波、非有限值等波形检查结果。语音完整性通过固定 ASR
+模型和试听检查，步骤见 [语音回归流程](RELEASE_ACCEPTANCE.md#speech-regression)。
+模型、参考音频和私人生成内容留在本地；对外发布报告前审查文本、音色名和元数据。
+
+## 指标定义
+
+| 指标 | 测量边界 |
+| --- | --- |
+| 热推理耗时 | 模型/参考已加载，从调用 Pipeline 到拿到主机内存中的完整 AudioBuffer；含文本前端、分段和拼接，不含保存 WAV、质量检查、HTTP 排队 |
+| 加载/预加载 | 单独记录对应函数的墙钟耗时，保留操作系统文件缓存 |
+| RTF | 每次推理秒数 / 该次生成音频秒数，再对重复测量汇总；越低越快 |
+| HTTP 总耗时 | 包括传输、排队以及可能的模型切换 |
+| HTTP TTFB | curl 收到首字节（可能只有响应头）的时间；首段 PCM 到达时间需在客户端另行测量 |
+| 阶段日志 | 默认记录 CUDA 异步调用的主机耗时；同步分析方法见下文 |
+
+比较版本时固定 profile、模型、SV、语料、采样和设备。随机采样会改变 token 数及音频长度，
+应结合输出完整性、音频时长和多次测量的时延、RTF 判断变化。
+
+## 已记录的测量
+
+[2026-11-06 Sun v2Pro + SV / RTX 4060 Ti](benchmarks/2026-11-06-sun-cuda.md)：
+release、12 项、每项预热 2 次和测量 5 次。84 次波形检查通过，ASR 异常待试听确认。
+报告包含逐项耗时、输入哈希和识别结果。
+
+## 定位瓶颈
+
+逐阶段分析会插入同步，不应混入正式耗时报告。CLI 会设置日志过滤器，调试日志需要 `--verbose`：
 
 ```bash
-GPT_SOVITS_CUDA_PROFILE=1 nsys profile \
-  --capture-range=cudaProfilerApi --capture-range-end=stop \
-  --trace=cuda --sample=none --cpuctxsw=none \
-  --output=/tmp/gpt-sovits-hot \
-  target/release/examples/e2e_quick
+GPT_SOVITS_SYNC_PROFILE=1 target/release/gpt-sovits \
+  --verbose --device cuda --mode kv --voice sun --voices-dir voices \
+  --models-dir models --text '你好，这是一次推理分析。' --output /tmp/profile.wav
 ```
 
-一次 21 token 的热路径采集包含约 23,500 次 kernel launch、37,000 次异步显存分配和 9,100 次 H2D。H2D 总量不到 1 MB，说明主要瓶颈是大量小操作的调度和临时 Tensor，不是传输带宽。
+旧工具仍可用于局部实验，但有不同测量边界：
 
-CUDA Graph 曾在第一次 replay 后产生错误 logits。Compute Sanitizer 定位到普通 softmax 和自定义 LayerNorm 的广播减法：kernel 参数引用了 capture 期间创建、随后失效的 stride 元数据。改用 Candle 的融合 softmax 和 LayerNorm 后，34-token memcheck 为 0 error；短、中、长文本以及重复调用的 token 都与动态 KV 一致。首步 eager 校验仍保留，遇到未覆盖的设备或模型时会从已校验的 KV 状态继续。
+| 工具 | 用途与限制 |
+| --- | --- |
+| `kv_cache_bench` | 解码路径对照，使用自有贪心参数和参考音频配置，未加载 voice 的 SV |
+| `gpt_dtype_bench` | GPT 阶段的精度实验，依赖本地固定模型和参考素材 |
+| `inference_bench` | 合成张量微基准，记录主机调用耗时；CUDA 操作异步执行 |
+| `profile_kv_cache` / `e2e_quick` | 开发调试例子，依赖各自硬编码素材 |
+| `conv1d_cpu_bench` | CPU Conv1d 微基准 |
 
-RTX 4060 Ti、F32、贪心采样、同一段 300-token 长文本的端到端结果：
-
-| 模式 | GPT | 全链路 | 输出音频 |
-| --- | ---: | ---: | --- |
-| KV cache | 1.71 s | 2.25 s | 12.0 s |
-| CUDA Graph | 0.87 s | 1.42 s | 12.0 s |
-
-两条路径生成的 WAV 逐字节一致。CUDA Graph 将 GPT 阶段缩短约 49%，全链路缩短约 37%。
-
-## GPT 半精度实验
-
-RTX 4060 Ti 上使用动态 KV、300 token 和贪心采样测试。矩阵与 KV 使用半精度，LayerNorm 和采样保留 F32；每种精度预热一次，再取三次平均值。
-
-| 精度 | token 数 | GPT 时间 | 结果 |
-| --- | ---: | ---: | --- |
-| F32 | 300 | 1.681 s | 基准 |
-| BF16 | 300 | 1.788 s | 慢约 6%，第一个 token 已不同 |
-| F16 | 11 | 0.074 s | 提前生成 EOS，不可用 |
-
-这个模型的单 token decode 规模较小，半精度矩阵吞吐抵不过 LayerNorm 类型转换和小算子调度。BF16 能节省模型与 KV 显存，但当前没有速度收益；F16 会破坏生成。因此 GPT 默认继续使用 F32，不接入半精度 CUDA Graph。复现实验：
-
-```bash
-cargo bench --features cuda --bench gpt_dtype_bench
-```
-
-可用真实模型和 `mao.wav` 检查短、中、长文本以及重复 Graph 调用：
-
-```bash
-cargo run --release --features cuda --example compare_cuda_graph_tokens
-```
-
-只覆盖第一次 Graph replay，可缩短 sanitizer 调试时间：
-
-```bash
-GPT_SOVITS_TEST_MAX_TOKENS=34 compute-sanitizer --tool memcheck \
-  --error-exitcode 99 target/release/examples/compare_cuda_graph_tokens
-```
+[2026 年 7 月记录](history/performance-2026-07.md)及 [cuda-oxide 实验](CUDA_OXIDE_EXPERIMENT.md)
+保存了早期 KV、半精度和 Graph 实验的测量条件与结果。

@@ -4,8 +4,8 @@
 直接从上游下载并校验全部所需文件，不需要先安装宿主机转换器。
 已有模型的用户继续阅读下面的转换说明。
 
-`gpt-sovits-rs` 不在源码仓库、release binary 或 Docker 镜像中分发模型权重。用户应自行
-从官方渠道下载、从已有 GPT-SoVITS 安装目录复制，或使用自己训练好的模型。默认推理需要四部分：
+模型可以从官方渠道下载、从已有 GPT-SoVITS 安装目录复制，或使用自己训练的权重。
+它们单独准备，转换后放在本机 `models/` 目录。默认推理使用四部分：
 
 | 组件 | 默认来源 | 转换后路径 |
 |---|---|---|
@@ -16,6 +16,13 @@
 
 模型源文件和转换结果合计需要约 3 GiB。转换时建议至少保留 6 GiB 可用磁盘空间和
 4 GiB 可用内存。
+
+## 获取转换器
+
+[Release 压缩包](https://github.com/ricardomlee/gpt-sovits-rs/releases/latest)同时包含
+`gpt-sovits` 和 `gpt-sovits-convert`，也可[从源码构建](DEVELOPMENT.md#build-from-source)。
+下面的命令假设这两个程序已加入 `PATH`；在解压目录直接运行时，命令前加 `./`。
+仅使用 Docker 的用户看[镜像内转换](#docker-转换)。
 
 ## 准备官方 v2 模型
 
@@ -54,18 +61,19 @@ gpt-sovits-convert hubert \
   models/hubert/hubert.safetensors
 ```
 
-当前仓库不内置下载器，也不镜像第三方模型。下载可以通过浏览器、`huggingface-cli`、
-`git lfs`、系统包管理器或你已有的 GPT-SoVITS 安装目录完成。转换本身不需要 Python。
+`tokenizer.json` 与转换后的 BERT 权重放在同一目录，保留原文件即可。
 
-如果只想使用 Docker 镜像里的转换器，可以把源模型目录只读挂载进去，把输出写入本机
-`models/`：
+## Docker 转换
+
+镜像中的转换器使用相同的子命令。把源目录只读挂载到 `/source`，输出目录挂载到 `/models`：
 
 ```bash
+mkdir -p models
 docker run --rm \
   -v "$PWD/models:/models" \
   -v "/path/to/source-models:/source:ro" \
   --entrypoint gpt-sovits-convert \
-  ghcr.io/ricardomlee/gpt-sovits-rs:latest \
+  ghcr.io/ricardomlee/gpt-sovits-rs:1.2.1 \
   sovits /source/gsv-v2final-pretrained/s2G2333k.pth /models/sovits-model.safetensors
 ```
 
@@ -83,15 +91,15 @@ gpt-sovits-convert sovits \
   models/sovits-model.safetensors
 ```
 
-如果一个服务里要放多个微调音色，不需要为每个音色起一个容器。把权重放在 `models/`
-下，并在对应的 `voices/<name>/voice.json` 里绑定模型：
+一个服务可以使用多个微调音色。把权重放在 `models/` 下，并在对应的
+`voices/<name>/voice.json` 里绑定模型。例如 `voices/demo/voice.json`：
 
 ```text
 models/
-  carol/
+  demo/
     gpt.safetensors
     sovits.safetensors
-  sun/
+  second/
     gpt.safetensors
     sovits.safetensors
 ```
@@ -100,16 +108,19 @@ models/
 {
   "reference_audio": "ref.wav",
   "reference_text": "参考音频对应的文字",
-  "sv_embedding": "ref_sv.safetensors",
-  "gpt_model": "carol/gpt.safetensors",
-  "sovits_model": "carol/sovits.safetensors",
+  "gpt_model": "demo/gpt.safetensors",
+  "sovits_model": "demo/sovits.safetensors",
   "language": "zh"
 }
 ```
 
-`gpt_model`、`sovits_model` 和 `bigvgan_model` 的相对路径按 `--models-dir` 解析。没有配置
-这些字段的 voice 会继续使用服务启动时加载的默认模型。CLI 的 `--voice` 与 HTTP API
-都会使用绑定模型，显式的 `--gpt-model` / `--sovits-model` 参数优先。
+`gpt_model`、`sovits_model` 的相对路径按 `--models-dir` 解析。没有配置
+这些字段的 voice 会使用服务启动时加载的默认模型。CLI 的 `--voice` 使用绑定模型，
+显式的 `--gpt-model` / `--sovits-model` 可覆盖该次 CLI 选择。HTTP 则按请求中的 voice
+选择绑定模型；启动参数配置默认模型对。服务启动时仍需一套可用的默认模型，
+路径配置见[部署](DEPLOYMENT.md#准备目录和音色)。
+
+`bigvgan_model` 字段虽可解析，但 BigVGAN 尚未接入主 SoVITS 合成路径，不能用它启用 v3/v4。
 
 HTTP 服务共享 BERT 和 HuBERT，并默认用容量为 2 的 LRU 缓存 GPT/SoVITS pipeline。
 超过容量的音色仍然可用，但下次切回时会重新加载；用 `--max-cached-pipelines` 调整容量。
@@ -117,17 +128,19 @@ HTTP 服务共享 BERT 和 HuBERT，并默认用容量为 2 的 LRU 缓存 GPT/S
 GPT 与 SoVITS 必须来自兼容的 GPT-SoVITS v2 或 v2Pro 架构。v3、v4 和改过网络结构的
 checkpoint 不能仅靠改扩展名使用。
 
+## v2Pro SV
+
 v2Pro 的 SoVITS `.pth` 使用官方 `05`/`06` 版本头，`gpt-sovits-convert sovits` 会自动处理。
 如果训练预处理目录里有 `logs/<voice>_v2pro/7-sv_cn/<ref>.wav.pt`，可以把它转换成 Rust
 runtime 可读的 speaker-verification embedding：
 
 ```bash
 gpt-sovits-convert sv \
-  logs/diana_v2pro/7-sv_cn/ref.wav.pt \
-  voices/diana/ref_sv.safetensors
+  logs/demo_v2pro/7-sv_cn/ref.wav.pt \
+  voices/demo/ref_sv.safetensors
 ```
 
-然后在 `voices/diana/voice.json` 中配置：
+然后在 `voices/demo/voice.json` 中配置：
 
 ```json
 {
@@ -140,20 +153,26 @@ gpt-sovits-convert sv \
 
 不提供 `sv_embedding` 时，v2Pro 仍可运行，但会使用零 SV embedding，音色相似度通常不如官方完整路径。
 
-自训练音色仍然需要一段与文本严格对应的参考音频。可以用 ASR 先转写，再人工修正成 3 到
-10 秒的短参考文本。
+转换器读取已有训练 SV 文件，不会从新参考音频提取 SV。更换参考音频时应使用与之匹配的
+embedding；主线和 v1.2.1 都没有音频到 SV 的原生提取接口。
+
+自训练音色使用 3 到 10 秒的清晰参考音频及准确转写。可先用 ASR 转写，再人工核对。
 
 ## 验证
 
-转换后检查文件：
+转换后检查文件，再创建[音色配置](DEPLOYMENT.md#准备目录和音色)。以下使用默认文件名，
+自定义模型将 `--inspect` 后的路径改为实际文件：
 
 ```bash
 gpt-sovits --inspect models/gpt-model.safetensors
 gpt-sovits --inspect models/sovits-model.safetensors
+gpt-sovits --doctor --models-dir models --voices-dir voices --voice demo
+gpt-sovits --models-dir models --voices-dir voices --voice demo \
+  --text '你好，这是一次语音测试。' --output test.wav
 ```
 
-再用一段 3 到 10 秒的清晰参考音频做实际推理。参考文本必须与音频内容一致，否则音色
-和韵律会明显下降。
+检查 doctor 输出中的模型、参考音频和 SV 路径，并试听 `test.wav`。
+通过后可[启动 HTTP 服务](DEPLOYMENT.md)。
 
 ## 许可证
 

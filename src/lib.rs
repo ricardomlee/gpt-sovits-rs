@@ -95,3 +95,7 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(doctest)]
+#[doc = include_str!("../docs/API.md")]
+pub struct ApiDocumentation;

@@ -7,11 +7,13 @@ new release exists; old-version compatibility is tested separately from the cand
 
 ## Candidate CPU Image
 
-Requires Docker Compose, curl, Rust, and the normal build dependencies. From the repo:
+Requires Docker Compose, curl, jq, Rust, and the normal build dependencies. From the repo:
 
 ```bash
 docker build -t gpt-sovits-rs:candidate .
-DEMO_IMAGE=gpt-sovits-rs:candidate DEMO_PULL_POLICY=never DEMO_EXPECTED_VERSION=1.2.1 \
+export DEMO_EXPECTED_VERSION
+DEMO_EXPECTED_VERSION=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "gpt-sovits-rs") | .version')
+DEMO_IMAGE=gpt-sovits-rs:candidate DEMO_PULL_POLICY=never \
   bash examples/first-run/verify.sh /tmp/tts-candidate-demo /tmp/tts-candidate-evidence
 ```
 
@@ -25,8 +27,24 @@ Do not rerun preparation on a production voice directory.
 
 The main CI's CPU-container job runs this against its newly built image. The
 separate first-run workflow verifies published 1.2.1 and keeps 1.2.0 as a
-compatibility baseline. Neither substitutes
-for GPU testing or proves semantic completeness from a WAV's shape alone.
+compatibility baseline. Local GPU and speech checks follow below.
+
+## Local GPU Performance
+
+Before each tag, run the candidate's [GPU benchmark](PERFORMANCE.md) on the local
+GPU with the same voice, matching SV, models and corpus as the previous baseline.
+Build the candidate from the recorded commit.
+Use `release`, warm up, repeat, and keep the automatically generated `report.json`,
+`report.md`, logs, WAVs and ASR manifest outside Git. Record concurrent GPU workloads.
+
+The report measures warm in-process synthesis. Compare per-case latency, audio duration
+and RTF after checking speech completeness with ASR and listening. Keep models and
+sampling settings fixed across versions. The tool rejects CPU fallback, missing v2Pro
+SV, incomplete measurements and failed signal checks.
+
+CI tests report calculations and failure handling; the local run supplies GPU measurements.
+Leave GPU acceptance pending when hardware is unavailable. Review reports for private
+data before publishing. Complete the candidate-image and HTTP checks as well.
 
 ## Speech Regression
 
@@ -41,15 +59,16 @@ Build the Rust capture/comparison tool (curl 7.76+ is its HTTP transport):
 ```bash
 cargo build --locked --example speech_regression
 target/debug/examples/speech_regression capture \
-  --url http://127.0.0.1:19881 --voice sun --label '1.2.0; image sha256:...' \
+  --url http://127.0.0.1:19881 --voice sun --label 'v1.2.1 baseline; image sha256:...' \
   --output-dir /tmp/tts-baseline --repeats 3
 # Replace only the isolated service with the candidate, then:
 target/debug/examples/speech_regression capture \
-  --url http://127.0.0.1:19881 --voice sun --label '1.2.1 candidate; image sha256:...' \
+  --url http://127.0.0.1:19881 --voice sun --label 'candidate commit ...; image sha256:...' \
   --output-dir /tmp/tts-candidate --repeats 3
 ```
 
-Eight cases cover short speech, multiple sentences, digits, pronunciation annotations,
+The [tracked corpus](../examples/speech_regression/corpus.json) covers short speech,
+multiple sentences, digits, decimal/percentage boundaries, pronunciation annotations,
 mixed text, a paragraph, streaming WAV, and the OpenAI-compatible speech endpoint.
 An optional `--corpus` selects another JSON corpus. All attempts are retained;
 there are no automatic retries, cherry-picking, or sampling overrides. Reference
@@ -59,8 +78,8 @@ Sampling remains stochastic, so repeats matter. Output directories cannot be reu
 Each run contains requests, raw HTTP responses, headers, curl timings, waveform
 metrics, `capture.json`, and `asr.jsonl`. Streaming responses retain their raw
 unknown-length WAV header; the ASR copy has only RIFF/data lengths repaired. PCM
-samples are unchanged. Curl's first-byte time includes HTTP headers; it is **not**
-claimed as time to the first audible sample.
+samples are unchanged. Curl's first-byte time includes HTTP headers; measuring the
+first playable audio requires timing PCM arrival in the client.
 
 ASR is a separate optional tool. With a locally installed Audire and a pinned,
 offline Qwen3-ASR model snapshot, evaluate every captured clip:
@@ -88,15 +107,15 @@ The overall mean is an equal-weight regression indicator, not a corpus-wide CER.
 Choose tolerances **before** running with `--max-mean-increase` and `--max-case-increase`.
 A measured regression returns a nonzero status and retains the comparison JSON.
 
-Always inspect the hypotheses and listen to suspect clips. An ASR error is not
-automatically a TTS error; digits and letter sequences may transcribe differently.
-Passing relative thresholds does not mean either version is error-free, nor can
-ASR reliably judge voice similarity, naturalness, or every polyphonic pronunciation.
-Investigate failures without silently widening thresholds or replacing bad takes.
+Inspect the hypotheses and listen to suspect clips to distinguish synthesis errors
+from transcription errors, especially for digits and letter sequences. Also listen
+for voice similarity, naturalness and polyphonic pronunciation. Retain failed takes
+and the original thresholds when investigating a regression.
 
 ## Upgrade and Rollback
 
-In the isolated deployment, exercise `1.2.0 -> candidate -> 1.2.0` with identical
+In the isolated deployment, exercise `last published -> candidate -> last published`
+(currently `1.2.1 -> candidate -> 1.2.1`) with identical
 read-only model/voice mounts. At each stage check `/health`, `/status`, `/voices`,
 and real audio. Record the image ID and version, then compare SHA-256 manifests of
 models, the voice JSON, reference recording, and SV embedding before and after.
@@ -109,7 +128,7 @@ host port exposure is separate. The server still has no built-in authentication.
 
 ## Publish
 
-1. Require candidate CI and local CUDA/SV/regression/rollback evidence before tagging.
+1. Require candidate CI, a fresh local GPU Markdown/JSON report, and CUDA/SV/speech/rollback evidence before tagging.
 2. Match `Cargo.toml`, the package entry in `Cargo.lock`, the tag, and release notes.
    Release preflight checks metadata before any binary/image publishing job starts.
 3. Use absolute HTTPS links in release notes. Pin repository documentation links to

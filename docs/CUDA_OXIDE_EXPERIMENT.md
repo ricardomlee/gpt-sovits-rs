@@ -1,12 +1,16 @@
 # cuda-oxide 实验记录
 
+历史实验（2026 年 7 月），不是当前发布性能基线。以下环境、工具链兼容办法和数字
+仅对应当时的本机实验，没有本轮重新测量；生产路径仍未引入 cuda-oxide。
+当前行为和自动报告见 [性能指南](PERFORMANCE.md)。
+
 ## 目的
 
 验证 [cuda-oxide](https://github.com/NVlabs/cuda-oxide) 能否用于本项目的自定义 CUDA 融合算子，同时不改变 Candle 的张量、显存和 CUDA context 管理。
 
 这不是替换 Candle。合适的用法是：cuda-oxide 负责把少量性能关键的 Rust kernel 编译成 PTX，Candle 继续负责模型和运行时。
 
-## 当前结果
+## 当时的结果
 
 测试环境：
 
@@ -18,7 +22,7 @@
 
 测试算子是 SoVITS 中可用的 fused LeakyReLU，输入为 1,048,576 个 F32 元素。20 次预热、500 次执行后：
 
-| 路径 | 平均 kernel 时间 | 最大误差 |
+| 路径 | 平均调用耗时（含主机开销） | 最大误差 |
 | --- | ---: | ---: |
 | cuda-oxide 自带 host runtime | 7.97 us | 0 |
 | cuda-oxide + Candle，复用输出 | 11.83-16.59 us | 0 |
@@ -36,13 +40,14 @@
 
 ## 复现
 
-cuda-oxide 目前要求 Linux、CUDA Toolkit 12 以上、指定 nightly，以及带 `rust-src`、`rustc-dev` 的工具链。
+当时固定版本使用 Linux、CUDA Toolkit 12 以上、指定 nightly，以及带 `rust-src`、`rustc-dev` 的工具链。
 
 ```bash
 rustup toolchain install nightly-2026-04-03 \
   --component rust-src,rustc-dev,rust-analyzer
 cargo +nightly-2026-04-03 install \
-  --git https://github.com/NVlabs/cuda-oxide.git cargo-oxide --force
+  --git https://github.com/NVlabs/cuda-oxide.git \
+  --rev ae41d1edce943d2f8c8f720e7024a9ef5e98ade9 cargo-oxide --force
 
 cd experiments/cuda-oxide
 cargo oxide setup
