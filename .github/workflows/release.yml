@@ -24,6 +24,8 @@ jobs:
       - name: Require matching package version and release notes
         run: |
           version=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "gpt-sovits-rs") | .version')
+          client_version=$(cargo metadata --manifest-path client/Cargo.toml --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "gpt-sovits-client") | .version')
+          test "$client_version" = "$version"
           test "v$version" = "$GITHUB_REF_NAME"
           test -s "docs/releases/$GITHUB_REF_NAME.md"
 

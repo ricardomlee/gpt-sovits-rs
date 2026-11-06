@@ -154,7 +154,7 @@ gpt-sovits-convert sv \
 不提供 `sv_embedding` 时，v2Pro 仍可运行，但会使用零 SV embedding，音色相似度通常不如官方完整路径。
 
 转换器读取已有训练 SV 文件，不会从新参考音频提取 SV。更换参考音频时应使用与之匹配的
-embedding；主线和 v1.2.1 都没有音频到 SV 的原生提取接口。
+embedding；1.2.2 需要用户提供匹配的 embedding 文件。
 
 自训练音色使用 3 到 10 秒的清晰参考音频及准确转写。可先用 ASR 转写，再人工核对。
 

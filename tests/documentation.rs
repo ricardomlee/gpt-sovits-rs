@@ -106,6 +106,41 @@ fn json_examples_parse() {
     }
 }
 
+#[test]
+fn current_release_notes_use_absolute_links_and_existing_tagged_paths() {
+    let version = env!("CARGO_PKG_VERSION");
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let notes = fs::read_to_string(root.join(format!("docs/releases/v{version}.md"))).unwrap();
+    let repository = "https://github.com/ricardomlee/gpt-sovits-rs";
+    let tagged_prefix = format!("{repository}/blob/v{version}/");
+    let mut checked = 0;
+    for event in Parser::new_ext(&notes, Options::ENABLE_TABLES) {
+        let destination = match event {
+            Event::Start(Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. }) => dest_url,
+            _ => continue,
+        };
+        assert!(
+            destination.starts_with("https://"),
+            "release notes require absolute HTTPS links: {destination}"
+        );
+        if destination.starts_with(&format!("{repository}/blob/")) {
+            let target = destination.strip_prefix(&tagged_prefix).unwrap_or_else(|| {
+                panic!("release documentation link must pin v{version}: {destination}")
+            });
+            let path = target.split(['#', '?']).next().unwrap();
+            assert!(
+                root.join(path).is_file(),
+                "missing release link target: {path}"
+            );
+            checked += 1;
+        }
+    }
+    assert!(
+        checked > 0,
+        "release notes must link to versioned documentation"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn bash_examples_are_syntax_checked_not_executed() {

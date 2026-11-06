@@ -148,5 +148,5 @@ GPT/SoVITS stay F32. Half-precision and cuda-oxide experiments are archived in t
 
 Follow [release acceptance](RELEASE_ACCEPTANCE.md), including the local GPU report.
 Check `cargo run --quiet --bin gpt-sovits -- --version` explicitly: the root package defines two binaries.
-Update documentation with behavior changes, and mark source-only features as unreleased.
+Update documentation with behavior changes and identify the version introducing each feature.
 Do not change pinned first-run images until the new artifacts are published and verified.

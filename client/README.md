@@ -4,12 +4,13 @@
 response. Use it from a shell, a script, or an agent's command provider.
 The service owns models, reference audio, SV embeddings, and inference settings.
 
-This client is new in this branch. The v1.2.1 release archives do not include it.
-It works with the v1.2.1 `/tts` endpoint; build it from source until the next release.
+The client is included in the 1.2.2 Linux/macOS binary archives and uses the same
+version number as the inference package. It also works with a v1.2.1 service.
 
 ## Install
 
-From the repository root, with stable Rust and Cargo installed:
+Use `gpt-sovits-client` from the [binary archive](https://github.com/ricardomlee/gpt-sovits-rs/releases),
+or install from the repository root with stable Rust and Cargo:
 
 ```bash
 cargo install --locked --path client
