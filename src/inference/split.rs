@@ -68,15 +68,47 @@ pub(super) fn split_text(
         let decimal_point = ch == '.'
             && index > 0
             && index + 1 < chars.len()
-            && chars[index - 1].is_ascii_digit()
-            && chars[index + 1].is_ascii_digit();
-        let current_chars = current.trim().chars().count();
+            && is_decimal_digit(chars[index - 1])
+            && is_decimal_digit(chars[index + 1]);
+        let current_chars = current.chars().count();
         let sentence_boundary = delimiters.contains(&ch) && !decimal_point;
         let soft_boundary = method == SplitMethod::Sentence
             && SENTENCE_SOFT_DELIMITERS.contains(&ch)
             && !decimal_point
             && current_chars >= soft_split_chars;
-        let hard_boundary = method == SplitMethod::Sentence && current_chars >= hard_split_chars;
+        // Keep an immediately following sentence stop with this chunk rather
+        // than dropping it later as a punctuation-only fragment.
+        let hard_boundary = method == SplitMethod::Sentence
+            && current_chars >= hard_split_chars
+            && !chars
+                .get(index + 1)
+                .is_some_and(|next| delimiters.contains(next));
+        // Move a trailing numeric literal into the next chunk instead of cutting
+        // between digits, a decimal point, a sign, or a percent suffix. An entire
+        // overlong numeric chunk still hits the hard limit.
+        if hard_boundary
+            && !sentence_boundary
+            && !soft_boundary
+            && chars
+                .get(index + 1)
+                .is_some_and(|ch| is_numeric_literal_char(*ch))
+        {
+            if let Some((start, _)) = current
+                .char_indices()
+                .rev()
+                .take_while(|(_, ch)| is_numeric_literal_char(*ch))
+                .last()
+                .filter(|(start, _)| *start > 0)
+            {
+                let tail = current.split_off(start);
+                let prefix = current.trim();
+                if prefix.chars().any(char::is_alphanumeric) {
+                    sentences.push(prefix.to_string());
+                }
+                current = tail;
+                continue;
+            }
+        }
         if (sentence_boundary || soft_boundary || hard_boundary) && !current.trim().is_empty() {
             let trimmed = current.trim().to_string();
             if trimmed.chars().any(char::is_alphanumeric) {
@@ -126,6 +158,18 @@ pub(super) fn split_text(
     merged
 }
 
+fn is_decimal_digit(ch: char) -> bool {
+    ch.is_ascii_digit() || matches!(ch, '０'..='９')
+}
+
+fn is_numeric_literal_char(ch: char) -> bool {
+    is_decimal_digit(ch)
+        || matches!(
+            ch,
+            '.' | '．' | '+' | '＋' | '-' | '－' | '−' | '%' | '％' | ' '
+        )
+}
+
 fn soft_split_chars(language: Language) -> usize {
     match language {
         Language::English => 80,
@@ -157,6 +201,50 @@ mod tests {
         let chunks = split_cut5_for_language("value is 3.14, then stop", 1, Language::English);
 
         assert_eq!(chunks, vec!["value is 3.14,", "then stop."]);
+    }
+
+    #[test]
+    fn sentence_and_cut5_keep_fullwidth_decimals_together() {
+        for method in [SplitMethod::Sentence, SplitMethod::Cut5] {
+            let chunks = split_text("数值３.１４。误差0.05%。", 1, Language::Chinese, method);
+            assert_eq!(chunks, vec!["数值３.１４。", "误差0.05%。"]);
+        }
+    }
+
+    #[test]
+    fn hard_wrap_keeps_numeric_literals_together() {
+        for number in [
+            "50%",
+            "50 %",
+            "3.140",
+            "-3.5",
+            "+12.5%",
+            "５０％",
+            "３.１４",
+        ] {
+            for prefix_len in 55..60 {
+                let prefix = "字".repeat(prefix_len);
+                let text = format!("{prefix}{number}。下一句话。");
+                let chunks = split_sentences_for_language(&text, 1, Language::Chinese);
+                assert!(
+                    chunks.iter().any(|chunk| chunk.contains(number)),
+                    "{chunks:?}"
+                );
+                assert!(
+                    chunks.iter().all(|chunk| chunk.chars().count() <= 61),
+                    "{number} at {prefix_len}: {chunks:?}"
+                );
+                assert_eq!(chunks.concat(), text);
+            }
+        }
+    }
+
+    #[test]
+    fn hard_wrap_still_bounds_an_overlong_numeric_chunk() {
+        let text = "5".repeat(150);
+        let chunks = split_sentences_for_language(&text, 1, Language::Chinese);
+        assert!(chunks.iter().all(|chunk| chunk.chars().count() <= 60));
+        assert_eq!(chunks.concat(), format!("{text}。"));
     }
 
     #[test]
