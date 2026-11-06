@@ -155,12 +155,12 @@ impl Report {
             self.passed()
         )
         .unwrap();
-        output.push_str("This is warm in-process synthesis, not HTTP latency, audio TTFA, or a Python comparison.\n");
-        output.push_str("RTF = synthesis seconds / generated audio seconds. Lower is faster. Shorter or incorrect speech is not an improvement.\n");
-        output.push_str("Signal checks cannot prove spoken completeness; inspect WAVs and run the separate ASR manifest before release.\n\n");
+        output.push_str("Measures warm in-process synthesis through a complete host AudioBuffer. Model and reference loading are timed separately.\n");
+        output.push_str("RTF = synthesis seconds / generated audio seconds. Lower is faster.\n");
+        output.push_str("Signal checks cover waveform validity. Speech quality is reviewed with the ASR manifest and listening tests.\n\n");
         writeln!(
             output,
-            "Warmups per case: {}. Measured repeats: {}. No retries or sampling overrides.\n",
+            "Warmups per case: {}. Measured repeats: {}. Sampling: voice profile.\n",
             self.warmup_count, self.repeat_count
         )
         .unwrap();

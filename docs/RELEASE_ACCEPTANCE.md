@@ -27,28 +27,24 @@ Do not rerun preparation on a production voice directory.
 
 The main CI's CPU-container job runs this against its newly built image. The
 separate first-run workflow verifies published 1.2.1 and keeps 1.2.0 as a
-compatibility baseline. Neither substitutes
-for GPU testing or proves semantic completeness from a WAV's shape alone.
+compatibility baseline. Local GPU and speech checks follow below.
 
 ## Local GPU Performance
 
-Before **every** tag, run the candidate's [GPU benchmark](PERFORMANCE.md) on the local
+Before each tag, run the candidate's [GPU benchmark](PERFORMANCE.md) on the local
 GPU with the same voice, matching SV, models and corpus as the previous baseline.
-Build the actual candidate first; the package version alone does not identify a commit.
+Build the candidate from the recorded commit.
 Use `release`, warm up, repeat, and keep the automatically generated `report.json`,
 `report.md`, logs, WAVs and ASR manifest outside Git. Record concurrent GPU workloads.
 
-Inspect per-case latency, audio duration and RTF alongside the audio/ASR results.
-Missing measurements, CPU fallback, missing v2Pro SV, and failed signal checks must
-not produce a passing performance report. Signal checks do not detect all missing words.
-Do not accept a speedup caused by truncated speech, reduced sampling, or different models.
-The report is in-process synthesis, not HTTP latency or first playable audio time.
+The report measures warm in-process synthesis. Compare per-case latency, audio duration
+and RTF after checking speech completeness with ASR and listening. Keep models and
+sampling settings fixed across versions. The tool rejects CPU fallback, missing v2Pro
+SV, incomplete measurements and failed signal checks.
 
-CI tests the report calculations and failure handling without a GPU or private models.
-This does **not** replace the local GPU run. If hardware is unavailable, record that
-acceptance is incomplete; do not reuse an old report as new release evidence.
-Only publish reviewed, non-private report data. Candidate-image/HTTP acceptance below
-is still required because a local library benchmark does not test the packaged runtime.
+CI tests report calculations and failure handling; the local run supplies GPU measurements.
+Leave GPU acceptance pending when hardware is unavailable. Review reports for private
+data before publishing. Complete the candidate-image and HTTP checks as well.
 
 ## Speech Regression
 
@@ -82,8 +78,8 @@ Sampling remains stochastic, so repeats matter. Output directories cannot be reu
 Each run contains requests, raw HTTP responses, headers, curl timings, waveform
 metrics, `capture.json`, and `asr.jsonl`. Streaming responses retain their raw
 unknown-length WAV header; the ASR copy has only RIFF/data lengths repaired. PCM
-samples are unchanged. Curl's first-byte time includes HTTP headers; it is **not**
-claimed as time to the first audible sample.
+samples are unchanged. Curl's first-byte time includes HTTP headers; measuring the
+first playable audio requires timing PCM arrival in the client.
 
 ASR is a separate optional tool. With a locally installed Audire and a pinned,
 offline Qwen3-ASR model snapshot, evaluate every captured clip:
@@ -111,11 +107,10 @@ The overall mean is an equal-weight regression indicator, not a corpus-wide CER.
 Choose tolerances **before** running with `--max-mean-increase` and `--max-case-increase`.
 A measured regression returns a nonzero status and retains the comparison JSON.
 
-Always inspect the hypotheses and listen to suspect clips. An ASR error is not
-automatically a TTS error; digits and letter sequences may transcribe differently.
-Passing relative thresholds does not mean either version is error-free, nor can
-ASR reliably judge voice similarity, naturalness, or every polyphonic pronunciation.
-Investigate failures without silently widening thresholds or replacing bad takes.
+Inspect the hypotheses and listen to suspect clips to distinguish synthesis errors
+from transcription errors, especially for digits and letter sequences. Also listen
+for voice similarity, naturalness and polyphonic pronunciation. Retain failed takes
+and the original thresholds when investigating a regression.
 
 ## Upgrade and Rollback
 

@@ -1,6 +1,6 @@
 # GPT-SoVITS Rust 实现说明
 
-核对到主线 `ee4d719`（2026-11-06）。本文描述当前代码，不承诺与任意版本的上游逐位一致。
+对应主线 `ee4d719`（2026-11-06）。
 发布范围见 [文档入口](docs/README.md)，操作步骤见 [API](docs/API.md) 和 [模型指南](docs/MODELS.md)。
 
 ## 推理流程
@@ -21,13 +21,13 @@
   -> 波形；可逐段合成后加间隔、淡入淡出并拼接
 ```
 
-`enc_q` 是训练相关的 posterior encoder，不是这里的参考音色推理路径。
-代码中的 `ref_mel` 名称沿用历史，但实际输入是 STFT 幅度频谱，不是 mel filterbank。
+参考音色通过 `ref_enc` 编码，`enc_q` 用于训练时的 posterior encoder。
+代码中的 `ref_mel` 名称沿用历史，实际输入是 STFT 幅度频谱。
 
 ## 文本和参考特征
 
 [speaker.rs](src/inference/speaker.rs) 负责参考缓存和目标特征准备。
-参考/目标的音素与对齐后的 BERT 特征分别拼接后送给 GPT；不只输入目标文本。
+参考/目标的音素与对齐后的 BERT 特征分别拼接后送给 GPT。
 G2P 与 BERT 使用同一份规范化文本，数字展开和读音覆盖通过原文索引映射保持一致。
 数字修复在 v1.2.1 发布后合入，细节见 [API](docs/API.md)。
 
@@ -37,10 +37,10 @@ G2P 与 BERT 使用同一份规范化文本，数字展开和读音覆盖通过�
 当前参考编码器使用前 704 个频率 bin。
 
 [GPT](src/models/gpt.rs) 对 BERT 特征去除 CLS/SEP，投影到 512 维并根据 `word2ph` 展开。
-非中文及无法直接对齐的情形有回退处理，不应声称所有语言已经与上游数值对齐。
+非中文及无法直接对齐的情形使用回退处理。
 
-每个 Pipeline 最多缓存 16 组参考特征，键包含参考音频路径、参考文本和 SV 路径，
-不是文件内容哈希。原地修改文件不会自动失效；更换路径、清理缓存或重启后再验收。
+每个 Pipeline 最多缓存 16 组参考特征，键包含参考音频路径、参考文本和 SV 路径。
+原地修改文件后，需要更换路径、清理缓存或重启来刷新特征。
 
 ## GPT 解码
 
@@ -52,23 +52,23 @@ G2P 与 BERT 使用同一份规范化文本，数字展开和读音覆盖通过�
 | `auto` | CUDA F32 默认 Graph，其他设备默认 KV |
 
 Graph 前 32 步使用 eager/static KV，短生成可能在 capture 前结束。首次 replay 做结果检查，
-出现不适用情形时有 KV 回退保护。Graph 属于单次生成，不是跨请求永久复用。
+出现不适用情形时有 KV 回退保护。每次生成分别创建 Graph。
 `GPT_SOVITS_DISABLE_CUDA_GRAPH=1` 让自动选择退回 KV；旧的 experimental 开关已删除。
 
 Prefill 使用文本双向、音频因果的 hybrid mask；单步 decode 可看到所有有效历史缓存。
 采样保留最短生成长度的 EOS 屏蔽，以及 argmax 或采样结果为 EOS 时停止的判断。
-模型仍可能提前结束或漏读；分段与质量验收不能省略。
+提前结束或漏读的样本通过分段日志、ASR 和试听排查。
 
 ## SoVITS 和 v2Pro
 
 [sovits.rs](src/models/sovits.rs) 根据权重是否包含 `sv_emb.*` 等层加载 v2Pro 条件分支。
 SV 接受 `[20480]` 或 `[1, 20480]`，应与参考音频匹配。
-未给 SV 时模型可以使用零向量运行，但不代表完整音色条件；性能和发布验收必须使用匹配 SV。
+缺少 SV 时使用零向量。性能和发布验收使用与参考音频匹配的 SV。
 Rust 转换器可转换已有 embedding，不负责从参考录音计算新的 SV。
 
 EncP 的 attention/FFN 使用 post-norm：`LayerNorm(x + block(x))`。
-Flow 的 gate 先做 `a + b` 再分通道执行 tanh/sigmoid，并非分别激活后相加。
-声码器使用项目内的 SoVITS decoder；配置中出现 BigVGAN 路径不代表支持 v3/v4。
+Flow 的 gate 先做 `a + b` 再分通道执行 tanh/sigmoid。
+声码器使用项目内的 SoVITS decoder。BigVGAN 尚未接入主推理路径，v3/v4 尚未支持。
 
 [Config](src/config/mod.rs) 当前把 GPT 与 SoVITS 保持在 F32；`--half` 为兼容选项。
 CUDA 不可用时普通配置可能回落 CPU。发布 GPU 基准会显式拒绝这种回落。
@@ -77,9 +77,8 @@ CUDA 不可用时普通配置可能回落 CPU。发布 GPU 基准会显式拒绝
 ## 服务和验收边界
 
 HTTP 服务共享 BERT/HuBERT，按 GPT/SoVITS 模型对维护有界 LRU（默认两个 Pipeline），
-并串行执行推理。增加请求并发不等于增加单 GPU 吞吐。
-`/tts/stream` 是完整文本输入后的分段音频输出，不是双向文本流；协议限制见 [API](docs/API.md)。
+并通过一个推理槽串行处理请求，其余请求排队。
+`/tts/stream` 接收完整文本，逐段输出音频；协议见 [API](docs/API.md)。
 
 模型无关测试覆盖文本、配置、缓存、请求和报告处理。真实模型验证需要显式执行
 [发布验收](docs/RELEASE_ACCEPTANCE.md) 与 [GPU 基准](docs/PERFORMANCE.md)。
-旧文档中没有附固定权重/fixture 的“20/20”“129/129”数值不作为当前正确性保证。

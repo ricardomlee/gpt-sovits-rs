@@ -46,7 +46,7 @@ do not contain a source-build toolchain. Models and voices are prepared separate
 | `examples/gpu_benchmark/`, `examples/speech_regression/` | Local GPU reports and offline HTTP speech regression |
 
 The [implementation notes](../IMPLEMENTATION.md) explain the runtime paths and
-known limits; dependency versions live in Cargo.toml/Cargo.lock rather than a second table here.
+known limits. Dependency versions live in Cargo.toml/Cargo.lock.
 
 ## Local Checks
 
@@ -86,12 +86,12 @@ cargo run --locked --release --features cuda --example quality_smoke -- \
 ```
 
 Run the [local GPU benchmark](PERFORMANCE.md) **before every release**, and retain its
-JSON/Markdown report plus the audio/ASR evidence. A waveform pass is not proof against
-missing words. [Release acceptance](RELEASE_ACCEPTANCE.md) covers candidate images,
+JSON/Markdown report plus the audio/ASR evidence. Check speech completeness with ASR
+and listening. [Release acceptance](RELEASE_ACCEPTANCE.md) covers candidate images,
 HTTP regression, ASR, and upgrade/rollback without touching the existing service.
 
 The old `e2e_quick`, `profile_kv_cache`, and dtype examples have their own fixtures
-and measurement boundaries. They are debugging tools, not release performance reports.
+and measurement boundaries described in the performance guide.
 
 ## Docker Checks
 
@@ -105,9 +105,9 @@ GPT_SOVITS_SMOKE_IMAGE=gpt-sovits-rs:dev \
 
 The deployment smoke test uses an empty env file and no model mounts. It must reach
 the expected missing-model diagnostic, catching unsupported Compose arguments and
-missing shared libraries. It does not prove readiness or audio quality.
+missing shared libraries. Readiness and audio quality are checked in real-model acceptance.
 For a CUDA image, also set `GPT_SOVITS_SMOKE_GPUS=all` on a GPU host.
-CI retains v1.2.0 specifically as a compatibility baseline, not the latest release.
+CI retains v1.2.0 as a compatibility baseline.
 
 ## Incremental CUDA Work
 
@@ -122,8 +122,7 @@ cargo run --locked --profile dev-gpu --features cuda --bin gpt-sovits -- \
 Set `SOVITS_DEBUG=1` to dump intermediate tensors in the working directory, or
 `GPT_SOVITS_SYNC_PROFILE=1` with CLI `--verbose` for synchronized stage analysis.
 Disable both during latency measurements; debug output can also contain private data.
-GPT/SoVITS stay F32. Half-precision and cuda-oxide observations are historical experiments,
-not production defaults or current performance guarantees.
+GPT/SoVITS stay F32. Half-precision and cuda-oxide experiments are archived in the performance guide.
 
 ## Before Tagging
 
