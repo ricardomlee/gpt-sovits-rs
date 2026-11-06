@@ -19,6 +19,7 @@ fn documents() -> Vec<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut paths = [
         "README.md",
+        "client/README.md",
         "IMPLEMENTATION.md",
         "site/README.md",
         "examples/samples/README.md",

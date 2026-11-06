@@ -1,7 +1,9 @@
 # Agent 接入
 
-助手通过 HTTP 发送文本和音色名，客户端负责切句、排队和播放。
+助手通过 HTTP 发送文本和音色名；需要逐句播放时，由助手端组织句子、排队和播放。
 接口字段见 [API](API.md)，版本差异见 [文档入口](README.md)。
+能发送 HTTP 请求的助手可直接调用接口；通过外部命令生成音频的助手可使用
+[`gpt-sovits-client`](../client/README.md)。[Hermes 配置](#hermes)见下文。
 
 ## 逐句生成和播放
 
@@ -61,6 +63,90 @@ curl --fail-with-body http://127.0.0.1:9880/tts \
 长期使用常驻 HTTP 服务。每句重新启动推理 CLI 都会重新加载模型。
 服务无内置认证。独立二进制默认监听 loopback，Compose 的访问范围由宿主机端口映射决定，
 配置见[部署](DEPLOYMENT.md#监听地址与版本兼容)。
+
+## Hermes
+
+使用 Hermes 的 command provider 接入：
+
+```text
+Hermes text_to_speech -> gpt-sovits-client -> POST /tts -> 常驻推理服务
+                        stdin: 文本          返回 WAV     模型与音色
+                        -o: 输出文件
+```
+
+`gpt-sovits-client` 是仓库提供的通用 HTTP 命令行客户端。v1.2.1 下载包尚未包含它，
+请先在本分支源码根目录执行 `cargo install --locked --path client`。
+它可以调用已运行的 v1.2.1 服务。[安装与用法](../client/README.md)列出了完整选项。
+
+### 验证服务和客户端
+
+按[部署文档](DEPLOYMENT.md)启动服务、准备音色。以下命令在 Hermes 所在机器执行，
+将 `demo` 换成 `/voices` 返回的音色名，大小写保持一致：
+
+```bash
+curl --fail-with-body http://127.0.0.1:9880/health
+curl --fail-with-body http://127.0.0.1:9880/voices
+gpt-sovits-client --url http://127.0.0.1:9880 --voice demo \
+  --text '你好，今天有什么安排？' -o /tmp/reply.wav
+```
+
+Hermes 与服务分开部署时，`--url` 应填写 Hermes 能访问的服务地址。
+模型、参考音频和 SV 留在服务端，客户端只传音色名和文本。
+首次加载某个音色会比后续调用慢，可用 `POST /warmup` 预热。
+
+### 配置 provider
+
+先确认 `command -v gpt-sovits-client` 能找到已安装的程序，再通过 Hermes CLI 保存配置：
+
+```bash
+hermes config set tts.providers.sovits.type command
+hermes config set tts.providers.sovits.command \
+  "\"$(command -v gpt-sovits-client)\" --url http://127.0.0.1:9880 --voice demo --timeout 120 -o {output_path} < {input_path}"
+hermes config set tts.providers.sovits.output_format wav
+hermes config set tts.providers.sovits.timeout 150
+hermes config set tts.provider sovits
+```
+
+Hermes 将文本写入临时文件并替换路径占位符，客户端从 stdin 读取，避免把整段回复
+放进命令行参数。provider 超时设得比客户端稍长，便于返回具体的 HTTP 错误。
+长文本需要按实际耗时同时调整两处超时。
+
+然后让 Hermes 调用 `text_to_speech`，传入一小段 `text`，检查工具结果和生成的音频。
+TTS provider 配置在每次工具调用时读取，修改这些配置后可直接重试。
+
+需要收到语音后自动语音回复时，设置：
+
+```bash
+hermes config set voice.auto_tts true
+```
+
+此项属于 `voice` 配置。已运行的网关还受会话语音模式影响；可在会话中用 `/voice on`
+开启，或重启网关加载新的全局默认值。
+
+### 输出格式和音色设置
+
+command provider 默认按文件交付 WAV。需要 Telegram 等平台的语音气泡时，在 Hermes
+运行环境安装 FFmpeg，并开启它的转码选项：
+
+```bash
+hermes config set tts.providers.sovits.voice_compatible true
+```
+
+Hermes 负责将 WAV 转成 Ogg/Opus，再交给平台发送。`voice_compatible` 影响交付方式，
+`voice.auto_tts` 控制何时自动回复，两项按需配置。
+Hermes 的 OpenAI provider 在部分平台会请求 `opus`，而服务的 speech 接口支持
+`wav` / `pcm`；这里用 command provider 明确获取 WAV。
+
+分句、语速和采样参数统一由服务端音色配置管理。需要调整长句表现时，将以下字段
+合并进该音色现有的 `voice.json`，保留原来的模型和参考音频设置：
+
+```json
+{"split_sentences":true,"split_method":"sentence","min_sentence_chars":12,"sentence_gap_ms":120}
+```
+
+客户端只发送 `voice` 和 `text`，原调用方的请求级参数覆盖需要移到音色配置。
+本节按 Hermes [`0a62610` 的 TTS 实现](https://github.com/NousResearch/hermes-agent/blob/0a62610f10cc34d696b2239b2c69fa1ba0f1ca63/tools/tts_tool.py)
+核对。若工具被权限策略拒绝，通过 Hermes 的工具授权或管理员配置处理。
 
 ## 读音和数字
 

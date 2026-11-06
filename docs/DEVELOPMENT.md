@@ -1,7 +1,8 @@
 # Development
 
 See [version scope](README.md) before comparing a source build with a release.
-The repository contains both the inference binary and the Rust weight converter.
+The root package contains the inference binary and the Rust weight converter.
+The HTTP command-line client builds separately under `client/`.
 
 ## Build From Source
 
@@ -37,6 +38,7 @@ do not contain a source-build toolchain. Models and voices are prepared separate
 | --- | --- |
 | `src/cli.rs`, `src/config/`, `src/doctor.rs` | CLI dispatch, configuration, lightweight setup checks |
 | `src/bin/gpt-sovits-convert.rs` | Rust checkpoint and embedding conversion |
+| `client/` | Standalone HTTP CLI; independent of the inference engine and CUDA |
 | `src/server.rs`, `src/server/` | Routes, handlers, lifecycle, request resolution, model registry and serialized inference state |
 | `src/voice.rs`, `src/model_paths.rs` | Voice defaults, model bindings and discovery |
 | `src/inference/` | Pipeline dispatch, reference cache, STFT, splitting and concatenation |
@@ -64,6 +66,24 @@ Default tests do not need models, a GPU, private audio, or network access.
 Documentation tests check local Markdown link paths, JSON examples, Bash syntax
 and documented CLI flags; the Rust API example is compiled as a no-run doctest.
 These checks do not execute deployment snippets or verify external URLs.
+
+## HTTP Client
+
+The standalone client has its own manifest and lockfile, so installing it does not
+build Candle or require libsoxr. Run its checks separately from the root package:
+
+```bash
+cargo fmt --manifest-path client/Cargo.toml -- --check
+cargo clippy --locked --manifest-path client/Cargo.toml --all-targets -- -D warnings
+cargo test --locked --manifest-path client/Cargo.toml
+cargo build --locked --release --manifest-path client/Cargo.toml
+client/target/release/gpt-sovits-client --version
+```
+
+Tests use a loopback mock server and synthetic WAVs to check request bodies,
+stdin/stdout, HTTP errors, timeouts, and output-file preservation. CI runs these
+without installing inference dependencies. Release jobs include the client in the
+Linux/macOS binary archives. Client usage: [README](../client/README.md).
 
 ## Real Models and Performance
 
@@ -127,6 +147,6 @@ GPT/SoVITS stay F32. Half-precision and cuda-oxide experiments are archived in t
 ## Before Tagging
 
 Follow [release acceptance](RELEASE_ACCEPTANCE.md), including the local GPU report.
-Check `cargo run --quiet --bin gpt-sovits -- --version` explicitly: there are two binaries.
+Check `cargo run --quiet --bin gpt-sovits -- --version` explicitly: the root package defines two binaries.
 Update documentation with behavior changes, and mark source-only features as unreleased.
 Do not change pinned first-run images until the new artifacts are published and verified.
