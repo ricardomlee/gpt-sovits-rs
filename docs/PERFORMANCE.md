@@ -64,6 +64,10 @@ target/release/examples/gpu_benchmark \
 
 ## 已记录的测量
 
+[1.2.2 Sun v2Pro + SV / RTX 4060 Ti](benchmarks/v1.2.2-sun-cuda.md)：
+提交 `53c4fbf`，12 项各测量 5 次，热推理 RTF 中位数为 0.1285–0.1558。
+独立的 HTTP 版本对照未通过语音验收，其中一段已由用户确认乱读；报告保留失败结果。
+
 [2026-11-06 Sun v2Pro + SV / RTX 4060 Ti](benchmarks/2026-11-06-sun-cuda.md)：
 release、12 项、每项预热 2 次和测量 5 次。84 次波形检查通过，ASR 异常待试听确认。
 报告包含逐项耗时、输入哈希和识别结果。

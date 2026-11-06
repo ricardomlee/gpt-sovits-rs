@@ -99,12 +99,12 @@ impl EncoderLayer {
         // Post-norm attention: y = attn(x); x = norm1(x + y)
         // Matches Python: x = self.norm_layers_1[i](x + attn(x))
         let attn_out = self.self_attn.forward(x, x_mask)?;
-        let x = self.norm1.forward(&x.add(&attn_out)?)?;
+        let x = self.norm1.forward_channels_first(&x.add(&attn_out)?)?;
 
         // Post-norm FFN: y = ffn(x); x = norm2(x + y)
         // Matches Python: x = self.norm_layers_2[i](x + ffn(x))
         let ffn_out = self.ffn.forward(&x)?;
-        let x = self.norm2.forward(&x.add(&ffn_out)?)?;
+        let x = self.norm2.forward_channels_first(&x.add(&ffn_out)?)?;
 
         Ok(x.broadcast_mul(x_mask)?)
     }
