@@ -46,6 +46,17 @@ CI tests report calculations and failure handling; the local run supplies GPU me
 Leave GPU acceptance pending when hardware is unavailable. Review reports for private
 data before publishing. Complete the candidate-image and HTTP checks as well.
 
+Run the CUDA normalization boundary test on the same GPU:
+
+```bash
+cargo test --locked --release --features cuda --lib \
+  channels_first_layer_norm_cuda_matches_cpu_at_length_boundary -- --ignored --nocapture
+```
+
+This checks the SoVITS channel axis at 190, 192 and 194 frames, including the
+equal channel/time shape that caused incoherent 96-token audio. See the
+[boundary investigation and retained speech results](benchmarks/v1.2.2-layer-norm-fix.md).
+
 ## Speech Regression
 
 Use the same hardware, model files, voice profile, SV embedding, corpus, and ASR

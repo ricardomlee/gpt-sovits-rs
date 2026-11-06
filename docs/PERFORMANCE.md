@@ -64,6 +64,10 @@ target/release/examples/gpu_benchmark \
 
 ## 已记录的测量
 
+[SoVITS 通道归一化修复验证](benchmarks/v1.2.2-layer-norm-fix.md)：
+提交 `46b7455`，热推理 RTF 中位数 0.1268–0.1537，完整 HTTP 回归通过原定 ASR 阈值。
+95/96/97-token 对照验证了长度边界修复；中英混合句仍有错误，报告列出了待试听项。
+
 [1.2.2 Sun v2Pro + SV / RTX 4060 Ti](benchmarks/v1.2.2-sun-cuda.md)：
 提交 `53c4fbf`，12 项各测量 5 次，热推理 RTF 中位数为 0.1285–0.1558。
 独立的 HTTP 版本对照未通过语音验收，其中一段已由用户确认乱读；报告保留失败结果。
