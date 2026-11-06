@@ -89,6 +89,8 @@ indicatif = "0.17"
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 tempfile = "3.14"
+sha2 = "0.10"
+pulldown-cmark = { version = "0.13", default-features = false }
 
 [features]
 default = []
@@ -105,7 +107,7 @@ opt-level = 3
 inherits = "release"
 lto = false
 
-# Fast dev builds: ~3-5x faster compile, GPU perf unchanged (bottleneck is CUDA kernels)
+# Faster iteration profile; measure it separately from release builds.
 [profile.dev-gpu]
 inherits = "release"
 codegen-units = 16

@@ -7,11 +7,13 @@ new release exists; old-version compatibility is tested separately from the cand
 
 ## Candidate CPU Image
 
-Requires Docker Compose, curl, Rust, and the normal build dependencies. From the repo:
+Requires Docker Compose, curl, jq, Rust, and the normal build dependencies. From the repo:
 
 ```bash
 docker build -t gpt-sovits-rs:candidate .
-DEMO_IMAGE=gpt-sovits-rs:candidate DEMO_PULL_POLICY=never DEMO_EXPECTED_VERSION=1.2.1 \
+export DEMO_EXPECTED_VERSION
+DEMO_EXPECTED_VERSION=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "gpt-sovits-rs") | .version')
+DEMO_IMAGE=gpt-sovits-rs:candidate DEMO_PULL_POLICY=never \
   bash examples/first-run/verify.sh /tmp/tts-candidate-demo /tmp/tts-candidate-evidence
 ```
 
@@ -28,6 +30,26 @@ separate first-run workflow verifies published 1.2.1 and keeps 1.2.0 as a
 compatibility baseline. Neither substitutes
 for GPU testing or proves semantic completeness from a WAV's shape alone.
 
+## Local GPU Performance
+
+Before **every** tag, run the candidate's [GPU benchmark](PERFORMANCE.md) on the local
+GPU with the same voice, matching SV, models and corpus as the previous baseline.
+Build the actual candidate first; the package version alone does not identify a commit.
+Use `release`, warm up, repeat, and keep the automatically generated `report.json`,
+`report.md`, logs, WAVs and ASR manifest outside Git. Record concurrent GPU workloads.
+
+Inspect per-case latency, audio duration and RTF alongside the audio/ASR results.
+Missing measurements, CPU fallback, missing v2Pro SV, and failed signal checks must
+not produce a passing performance report. Signal checks do not detect all missing words.
+Do not accept a speedup caused by truncated speech, reduced sampling, or different models.
+The report is in-process synthesis, not HTTP latency or first playable audio time.
+
+CI tests the report calculations and failure handling without a GPU or private models.
+This does **not** replace the local GPU run. If hardware is unavailable, record that
+acceptance is incomplete; do not reuse an old report as new release evidence.
+Only publish reviewed, non-private report data. Candidate-image/HTTP acceptance below
+is still required because a local library benchmark does not test the packaged runtime.
+
 ## Speech Regression
 
 Use the same hardware, model files, voice profile, SV embedding, corpus, and ASR
@@ -41,15 +63,16 @@ Build the Rust capture/comparison tool (curl 7.76+ is its HTTP transport):
 ```bash
 cargo build --locked --example speech_regression
 target/debug/examples/speech_regression capture \
-  --url http://127.0.0.1:19881 --voice sun --label '1.2.0; image sha256:...' \
+  --url http://127.0.0.1:19881 --voice sun --label 'v1.2.1 baseline; image sha256:...' \
   --output-dir /tmp/tts-baseline --repeats 3
 # Replace only the isolated service with the candidate, then:
 target/debug/examples/speech_regression capture \
-  --url http://127.0.0.1:19881 --voice sun --label '1.2.1 candidate; image sha256:...' \
+  --url http://127.0.0.1:19881 --voice sun --label 'candidate commit ...; image sha256:...' \
   --output-dir /tmp/tts-candidate --repeats 3
 ```
 
-Eight cases cover short speech, multiple sentences, digits, pronunciation annotations,
+The [tracked corpus](../examples/speech_regression/corpus.json) covers short speech,
+multiple sentences, digits, decimal/percentage boundaries, pronunciation annotations,
 mixed text, a paragraph, streaming WAV, and the OpenAI-compatible speech endpoint.
 An optional `--corpus` selects another JSON corpus. All attempts are retained;
 there are no automatic retries, cherry-picking, or sampling overrides. Reference
@@ -96,7 +119,8 @@ Investigate failures without silently widening thresholds or replacing bad takes
 
 ## Upgrade and Rollback
 
-In the isolated deployment, exercise `1.2.0 -> candidate -> 1.2.0` with identical
+In the isolated deployment, exercise `last published -> candidate -> last published`
+(currently `1.2.1 -> candidate -> 1.2.1`) with identical
 read-only model/voice mounts. At each stage check `/health`, `/status`, `/voices`,
 and real audio. Record the image ID and version, then compare SHA-256 manifests of
 models, the voice JSON, reference recording, and SV embedding before and after.
@@ -109,7 +133,7 @@ host port exposure is separate. The server still has no built-in authentication.
 
 ## Publish
 
-1. Require candidate CI and local CUDA/SV/regression/rollback evidence before tagging.
+1. Require candidate CI, a fresh local GPU Markdown/JSON report, and CUDA/SV/speech/rollback evidence before tagging.
 2. Match `Cargo.toml`, the package entry in `Cargo.lock`, the tag, and release notes.
    Release preflight checks metadata before any binary/image publishing job starts.
 3. Use absolute HTTPS links in release notes. Pin repository documentation links to

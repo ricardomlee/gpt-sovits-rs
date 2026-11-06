@@ -1,5 +1,8 @@
 # API
 
+This page follows the current source branch. See [version scope](README.md#先选你的版本)
+for differences from published v1.2.1. Numeric normalization from #10 is unreleased.
+
 GPT-SoVITS-RS exposes three integration surfaces:
 
 - CLI: one-shot synthesis and inspection.
@@ -23,10 +26,10 @@ Useful options:
 | `--doctor` | Check model files, voice profile, reference audio/text, and device setup without running inference. |
 | `--voice <name>` | Load `voices/<name>/voice.json`. |
 | `--models-dir <dir>` | Search a custom model directory. |
-| `--device auto|cuda|cpu|mps` | Select runtime device. |
-| `--mode auto|plain|kv|cuda-graph` | Select GPT decode path. |
+| `--device <device>` | `auto`, `cuda`, `cpu`, or `mps`; acceleration requires a build with that backend. Published macOS binaries are CPU-only. |
+| `--mode <mode>` | `auto` (default), `plain`, `kv`, or `cuda-graph`. Auto selects CUDA Graph for CUDA F32 unless disabled, and KV otherwise. |
 | `--split-sentences` | Split long text and concatenate chunks. |
-| `--split-method sentence|cut5` | Use smooth sentence splitting or Python-compatible punctuation splitting. |
+| `--split-method <method>` | `sentence` (default) or `cut5` (also splits at commas/semicolons). |
 | `--max-tokens <n>` | Raise this for long sentences. |
 | `--sv-embedding <path>` | Optional v2Pro speaker-verification embedding safetensors. |
 | `--list-voices` | List voice profiles without loading models. |
@@ -47,34 +50,40 @@ profile mode=... target=... ref=... target_bert=... gpt=... sovits=... total=...
 ```
 
 Use it to see where inference time is going.
+These are per-chunk internal timings, not HTTP latency or fully synchronized GPU
+kernel timings. See [measurement boundaries](PERFORMANCE.md#指标定义) before comparing results.
 
 ## Rust API
 
-```rust
+```rust,no_run
 use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
 
-let mut pipeline = Pipeline::new(Config::builder().with_device("cuda").build())?;
-pipeline.load_gpt("models/gpt-model.safetensors")?;
-pipeline.load_sovits("models/sovits-model.safetensors")?;
-pipeline.load_bert("models/bert/bert.safetensors")?;
-pipeline.load_hubert("models/hubert/hubert.safetensors")?;
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut pipeline = Pipeline::new(Config::builder().with_device("auto").build())?;
+    pipeline.load_gpt("models/gpt-model.safetensors")?;
+    pipeline.load_sovits("models/sovits-model.safetensors")?;
+    pipeline.load_bert("models/bert/bert.safetensors")?;
+    pipeline.load_hubert("models/hubert/hubert.safetensors")?;
 
-let options = InferenceOptions::builder()
-    .top_k(15)
-    .top_p(0.95)
-    .temperature(0.8)
-    .language(Language::Chinese)
-    .max_tokens(500)
-    .build();
+    let options = InferenceOptions::builder()
+        .top_k(15)
+        .top_p(0.95)
+        .temperature(0.8)
+        .language(Language::Chinese)
+        .max_tokens(500)
+        .build();
 
-let audio = pipeline.inference_kv_cache(
-    "你好，这是合成语音。",
-    "ref.wav",
-    "参考音频对应的文字",
-    &options,
-)?;
+    let audio = pipeline.inference_with_mode(
+        "auto",
+        "你好，这是合成语音。",
+        "ref.wav",
+        "参考音频对应的文字",
+        &options,
+    )?;
 
-audio.save("output.wav")?;
+    audio.save("output.wav")?;
+    Ok(())
+}
 ```
 
 Decode methods:
@@ -82,8 +91,13 @@ Decode methods:
 | Method | GPT strategy | Typical use |
 |---|---|---|
 | `inference()` | Recompute sequence every step | Debugging and parity checks. |
-| `inference_kv_cache()` | Prefill + single-token KV decode | CPU, MPS, and explicit KV mode. |
+| `inference_kv_cache()` | Prefill + single-token KV decode | CPU and explicit KV mode. |
 | `inference_cuda_graph()` | KV decode with CUDA Graph replay | CUDA F32 production path. |
+
+`inference_with_mode("auto", ...)` selects the device-appropriate path. These methods
+synthesize one chunk; `inference_split_with_method()` provides splitting and concatenation.
+For v2Pro, also set `options.sv_embedding` and use `preload_speaker_with_options()`
+when preloading a reference. See the [implementation and cache notes](../IMPLEMENTATION.md).
 
 All three methods use the same SoVITS synthesis path, so audio quality should match for the same generated semantic tokens.
 
@@ -257,11 +271,16 @@ Chinese pronunciation annotations can be embedded directly in `text` for polypho
 ```json
 {
   "voice": "demo",
-  "text": "这个人很好[hao4]学，银行的行[hang2]长正在重[zhong4]新安排会议。"
+  "text": "这个人很好[hao4]学，银行的行[hang2]长正在重[chong2]新安排会议。"
 }
 ```
 
 The service removes the bracketed markers before BERT/G2P alignment and forces the marked character to use that pinyin. Use tone `1`-`5`; `5` is neutral tone.
+
+On unreleased master, Chinese numbers such as `50%`, `3.140`, and `-3.5` are expanded
+before G2P. Fullwidth digits work too; annotations remain bound to the original
+characters. Published v1.2.1 does not include this fix. Dates, currency, phone numbers,
+and English numbers still need caller-supplied spoken forms when exact reading matters.
 
 The response includes metadata headers such as:
 
@@ -289,17 +308,30 @@ This endpoint is useful when the client already has the full text and wants lowe
 
 On a single local service instance, concurrent TTS requests are queued behind one inference pipeline. Parallel calls mostly add scheduling complexity unless you run multiple workers or multiple GPUs.
 
+The stream uses an unknown-length WAV header and PCM16 samples at the generated
+sample rate (currently 32 kHz mono). It always splits the input, regardless of
+`split_sentences`; `split_method` controls the boundaries. A synthesis error after
+HTTP 200 terminates the body: HTTP status alone does not establish completeness.
+Some file players require repaired RIFF/data lengths after saving the stream;
+the regression capture tool writes both the raw response and a repaired WAV.
+HTTP headers can arrive before any PCM, so curl's `time_starttransfer` is not audio TTFA.
+
 ### `POST /tts/batch`
 
 Synthesize multiple texts. Speaker/reference features are computed once, and results are returned as NDJSON.
 
 ```bash
-curl -X POST http://localhost:9880/tts/batch \
+set -euo pipefail
+curl --fail-with-body http://localhost:9880/tts/batch \
   -H 'Content-Type: application/json' \
   -d '{
     "voice": "demo",
     "texts": ["第一句话", "第二句话", "第三句话"]
   }' | while IFS= read -r line; do
+    if ! echo "$line" | jq -e '.error == null and (.wav_base64 | type == "string")' > /dev/null; then
+      echo "$line" >&2
+      exit 1
+    fi
     index=$(echo "$line" | jq -r '.index')
     echo "$line" | jq -r '.wav_base64' | base64 -d > "out_${index}.wav"
     echo "$line" | jq -r '"[\(.index)] \(.duration_s)s  \(.inference_ms)ms"'
@@ -309,7 +341,7 @@ done
 Each line includes fields like:
 
 ```json
-{"index":0,"wav_base64":"...","sample_rate":32000,"duration_s":1.5,"inference_ms":820}
+{"index":0,"wav_base64":"...","error":null,"sample_rate":32000,"duration_s":1.5,"inference_ms":820}
 ```
 
 ### `POST /v1/audio/speech`
@@ -337,10 +369,16 @@ Set the client base URL to `http://localhost:9880/v1` when using compatible agen
 
 ## Errors
 
-HTTP API errors use one JSON shape:
+Application validation and inference errors before streaming use this JSON shape:
 
 ```json
 {"success":false,"error":"text must not be empty","message":"text must not be empty"}
 ```
 
 Requests are rejected before inference when required text is empty, the voice profile cannot be loaded, the language is unsupported, reference audio is missing, or reference text is empty.
+
+Malformed JSON/content-type errors may instead come directly from Axum. Queue
+timeouts return 503; buffered inference failures return 500. A batch may return
+HTTP 200 with an individual line containing `error` and no `wav_base64`, so check
+each line before decoding `wav_base64`. A broken WAV stream fails at the transport
+level rather than appending a JSON error to its PCM bytes.

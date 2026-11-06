@@ -11,7 +11,7 @@ speak with a configured voice. Conversion and inference run in Rust. Training st
 in [upstream GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS).
 
 [Try it](#quick-start) | [Listen](#samples) | [中文上手](docs/FIRST_RUN.zh-CN.md) |
-[Use your models](docs/MODELS.md) | [API](docs/API.md)
+[Use your models](docs/MODELS.md) | [API](docs/API.md) | [Documentation](docs/README.md)
 
 ## Samples
 
@@ -23,7 +23,7 @@ Actual CPU inference with the maintainer's local **Sun v2Pro + SV** voice. Only 
 audio is shared, not the model, SV embedding, or reference. [Settings and provenance](examples/samples/README.md).
 This short example is not a quality or speed benchmark; long text can still lose words.
 There is also a [service confirmation sample](examples/samples/sun-zh.wav) and a
-[browser listening page](site/README.md).
+[browser listening page](https://ricardomlee.github.io/gpt-sovits-rs/).
 The downloadable first-run demo below uses standard v2 weights, not Sun.
 
 ## Quick Start
@@ -32,6 +32,9 @@ The downloadable first-run demo below uses standard v2 weights, not Sun.
 Allow at least 6 GiB free disk and 4 GiB available memory. Downloads are about
 1.1 GB plus the container; conversion and the first model load take time.
 No Rust, Python, API key, or GPU is needed for this CPU demo.
+
+The demo runs the published release. Unreleased changes on `master`, including
+numeric-reading fixes, require a source build; see [version scope](docs/README.md#先选你的版本).
 
 The script downloads weights directly from their publisher, verifies checksums,
 converts all four models inside the published **1.2.1** image, and checks the setup.

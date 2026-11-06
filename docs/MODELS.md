@@ -54,8 +54,9 @@ gpt-sovits-convert hubert \
   models/hubert/hubert.safetensors
 ```
 
-当前仓库不内置下载器，也不镜像第三方模型。下载可以通过浏览器、`huggingface-cli`、
-`git lfs`、系统包管理器或你已有的 GPT-SoVITS 安装目录完成。转换本身不需要 Python。
+Rust 二进制不内置通用模型下载器，也不镜像第三方模型。仓库的
+[首次体验脚本](../examples/first-run/prepare.sh)用 curl 下载并校验固定清单；自己的模型可通过
+浏览器、已有下载工具或已有 GPT-SoVITS 安装目录取得。转换本身不需要 Python。
 
 如果只想使用 Docker 镜像里的转换器，可以把源模型目录只读挂载进去，把输出写入本机
 `models/`：
@@ -65,7 +66,7 @@ docker run --rm \
   -v "$PWD/models:/models" \
   -v "/path/to/source-models:/source:ro" \
   --entrypoint gpt-sovits-convert \
-  ghcr.io/ricardomlee/gpt-sovits-rs:latest \
+  ghcr.io/ricardomlee/gpt-sovits-rs:1.2.1 \
   sovits /source/gsv-v2final-pretrained/s2G2333k.pth /models/sovits-model.safetensors
 ```
 
@@ -107,9 +108,11 @@ models/
 }
 ```
 
-`gpt_model`、`sovits_model` 和 `bigvgan_model` 的相对路径按 `--models-dir` 解析。没有配置
+`gpt_model`、`sovits_model` 的相对路径按 `--models-dir` 解析。没有配置
 这些字段的 voice 会继续使用服务启动时加载的默认模型。CLI 的 `--voice` 与 HTTP API
 都会使用绑定模型，显式的 `--gpt-model` / `--sovits-model` 参数优先。
+
+`bigvgan_model` 字段虽可解析，但 BigVGAN 尚未接入主 SoVITS 合成路径，不能用它启用 v3/v4。
 
 HTTP 服务共享 BERT 和 HuBERT，并默认用容量为 2 的 LRU 缓存 GPT/SoVITS pipeline。
 超过容量的音色仍然可用，但下次切回时会重新加载；用 `--max-cached-pipelines` 调整容量。
@@ -139,6 +142,9 @@ gpt-sovits-convert sv \
 ```
 
 不提供 `sv_embedding` 时，v2Pro 仍可运行，但会使用零 SV embedding，音色相似度通常不如官方完整路径。
+
+转换器读取已有训练 SV 文件，不会从新参考音频提取 SV。更换参考音频时应使用与之匹配的
+embedding；主线和 v1.2.1 都没有音频到 SV 的原生提取接口。
 
 自训练音色仍然需要一段与文本严格对应的参考音频。可以用 ASR 先转写，再人工修正成 3 到
 10 秒的短参考文本。

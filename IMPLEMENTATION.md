@@ -1,152 +1,85 @@
-# GPT-SoVITS-RS 实现说明
+# GPT-SoVITS Rust 实现说明
 
-## 推理流程（与 Python 原版对齐）
+核对到主线 `ee4d719`（2026-11-06）。本文描述当前代码，不承诺与任意版本的上游逐位一致。
+发布范围见 [文档入口](docs/README.md)，操作步骤见 [API](docs/API.md) 和 [模型指南](docs/MODELS.md)。
 
-```
-ref_text ──→ G2P ──→ ref_phoneme_ids
-                          │
-target_text → G2P ──→ target_phoneme_ids
-                          │
-                     拼接 phoneme_ids = [ref | target]
-                          │
-BERT(ref_text)   ──→ project(1024→512) ──→ word2ph 对齐 ──→ ref_bert_aligned
-BERT(target_text)──→ project(1024→512) ──→ word2ph 对齐 ──→ target_bert_aligned
-                                                                    │
-                                              combined_bert = cat([ref, target], dim=1)
-                                                                    │
-ref_audio ──→ HuBERT(soxr 16kHz) ──→ VQ 量化 ──→ prompt_tokens
-                   │
-                   └──→ mel 频谱 ──→ enc_q ──→ 音色条件
+## 推理流程
 
-GPT(phoneme_ids, prompt_tokens, combined_bert) ──→ semantic_tokens
+```text
+参考文本 / 目标文本
+  -> 读音标注解析、语言判断、数字规范化
+  -> G2P + word2ph                         -> 音素
+  -> BERT -> 投影 1024 到 512 -> 音素对齐   -> BERT 条件
 
-SoVITS(semantic_tokens, target_phoneme_ids, ref_mel) ──→ 波形
+参考音频 -> 16 kHz + 尾部静音 -> HuBERT -> VQ -> prompt semantic tokens
+参考音频 -> SoVITS 采样率频谱 -> ref_enc ----> speaker conditioning
+匹配的 SV embedding（v2Pro）-> sv_emb ------> speaker conditioning
+
+参考及目标音素 / BERT 条件 + prompt tokens
+  -> GPT 自回归生成目标 semantic tokens
+  -> SoVITS enc_p + flow + decoder（结合 speaker conditioning）
+  -> 波形；可逐段合成后加间隔、淡入淡出并拼接
 ```
 
-## 实现细节
+`enc_q` 是训练相关的 posterior encoder，不是这里的参考音色推理路径。
+代码中的 `ref_mel` 名称沿用历史，但实际输入是 STFT 幅度频谱，不是 mel filterbank。
 
-### ref_text 拼接
+## 文本和参考特征
 
-Python 原版在调用 GPT 前拼接参考文本和目标文本的音素序列和 BERT 特征：
-```python
-phones = phones1 + phones2          # ref_phones + target_phones
-bert = torch.cat([bert1, bert2], 1) # 分别对齐后拼接
-```
+[speaker.rs](src/inference/speaker.rs) 负责参考缓存和目标特征准备。
+参考/目标的音素与对齐后的 BERT 特征分别拼接后送给 GPT；不只输入目标文本。
+G2P 与 BERT 使用同一份规范化文本，数字展开和读音覆盖通过原文索引映射保持一致。
+数字修复在 v1.2.1 发布后合入，细节见 [API](docs/API.md)。
 
-Rust 实现位于 `src/inference/mod.rs::inference()`。缺少这一步时，GPT 通常只生成约 11-14 个 token，输出接近 0.5 秒静音。
+[HuBERT](src/models/hubert.rs) 使用 soxr 重采样到 16 kHz，并追加 9600 个零样本。
+已经是 16 kHz 的输入也追加静音。另一条参考路径在
+[ref_audio.rs](src/inference/ref_audio.rs) 计算 SoVITS 频谱（FFT 2048、hop 640）。
+当前参考编码器使用前 704 个频率 bin。
 
-### HuBERT 重采样与静音填充
+[GPT](src/models/gpt.rs) 对 BERT 特征去除 CLS/SEP，投影到 512 维并根据 `word2ph` 展开。
+非中文及无法直接对齐的情形有回退处理，不应声称所有语言已经与上游数值对齐。
 
-使用 `soxr = "0.6"`（libsoxr HQ），对齐 librosa 默认 soxr_hq：
-- 输入任意采样率 → 16kHz
-- 重采样后追加 9600 个零样本（0.6s 静音，匹配 Python 预处理）
-- 无论输入是否已为 16kHz，静音填充都要执行（`src/models/hubert.rs::load_audio()`）
+每个 Pipeline 最多缓存 16 组参考特征，键包含参考音频路径、参考文本和 SV 路径，
+不是文件内容哈希。原地修改文件不会自动失效；更换路径、清理缓存或重启后再验收。
 
-Python 在调用 HuBERT 前无条件追加 9600 样本，不区分是否重采样。若 16kHz 音频跳过此步骤，VQ prompt tokens 会变短，GPT 可能把参考音频末尾内容（如"而中道崩殂"）当作目标内容生成，输出前缀会混入参考音频语义。
+## GPT 解码
 
-实现位于 `src/models/hubert.rs`。目前测试集中，VQ prompt tokens 与 Python 计算结果 20/20 对齐（包含 32kHz 和 16kHz 输入）。
+| 模式 | 行为 |
+| --- | --- |
+| `plain` | 每一步重新计算完整前缀，主要用于对照 |
+| `kv` | Prefill 后缓存历史 K/V，每步只输入新 token；attention 仍需访问历史缓存 |
+| `cuda-graph` | 静态 KV 加 CUDA Graph，减少 decode 的主机调度开销 |
+| `auto` | CUDA F32 默认 Graph，其他设备默认 KV |
 
-### BERT 对齐（project_and_align_bert）
+Graph 前 32 步使用 eager/static KV，短生成可能在 capture 前结束。首次 replay 做结果检查，
+出现不适用情形时有 KV 回退保护。Graph 属于单次生成，不是跨请求永久复用。
+`GPT_SOVITS_DISABLE_CUDA_GRAPH=1` 让自动选择退回 KV；旧的 experimental 开关已删除。
 
-纯 Candle BERT 输出 `[1, seq+2, 1024]`（含 CLS/SEP）：
-1. 去除 CLS（第 0 位）和 SEP（最后一位）
-2. 线性投影 1024 → 512（`bert_proj` 权重）
-3. 按 `word2ph` 展开到音素级（每个汉字对应若干音素）
+Prefill 使用文本双向、音频因果的 hybrid mask；单步 decode 可看到所有有效历史缓存。
+采样保留最短生成长度的 EOS 屏蔽，以及 argmax 或采样结果为 EOS 时停止的判断。
+模型仍可能提前结束或漏读；分段与质量验收不能省略。
 
-实现位于 `src/models/gpt.rs::project_and_align_bert()`。
+## SoVITS 和 v2Pro
 
-### GPT 生成模式
+[sovits.rs](src/models/sovits.rs) 根据权重是否包含 `sv_emb.*` 等层加载 v2Pro 条件分支。
+SV 接受 `[20480]` 或 `[1, 20480]`，应与参考音频匹配。
+未给 SV 时模型可以使用零向量运行，但不代表完整音色条件；性能和发布验收必须使用匹配 SV。
+Rust 转换器可转换已有 embedding，不负责从参考录音计算新的 SV。
 
-**`generate_with_prompts_aligned_bert()`（标准模式）**
-- 每步对完整序列 `[text_emb + prompt_emb + generated_emb]` 做 forward
-- 时间复杂度 O(n²)
+EncP 的 attention/FFN 使用 post-norm：`LayerNorm(x + block(x))`。
+Flow 的 gate 先做 `a + b` 再分通道执行 tanh/sigmoid，并非分别激活后相加。
+声码器使用项目内的 SoVITS decoder；配置中出现 BigVGAN 路径不代表支持 v3/v4。
 
-**`generate_with_prompts_aligned_bert_kv_cache()`（KV cache 模式）**
-- Prefill：对 `[text_emb + prompt_emb]` 做一次完整 forward，填充 KV cache
-- 自回归：每步只处理 1 个 token，时间复杂度 O(n)
-- mask 策略：prefill 用 hybrid mask（文本双向 + 音频因果），自回归步 mask=None（新 token 看所有缓存）
-- **embedding 查表**：`lookup_tokens()` 使用 `embedding.embedding(&ids_flat)` 纯 GPU 执行（`index_select`），无 D2H transfer；ids 须先 flatten 为 1D 再传入（Candle 0.10 要求）
-- **D2H transfer 控制**：`sample_token()` 返回 `(sampled_token, argmax)`，两个值从同一次 `to_vec1()` 得到，避免为 argmax EOS 检查再做一次重复 transfer
+[Config](src/config/mod.rs) 当前把 GPT 与 SoVITS 保持在 F32；`--half` 为兼容选项。
+CUDA 不可用时普通配置可能回落 CPU。发布 GPU 基准会显式拒绝这种回落。
+依赖版本以 [Cargo.toml](Cargo.toml) 和 [Cargo.lock](Cargo.lock) 为准。
 
-**静态 KV 和 CUDA Graph**
+## 服务和验收边界
 
-- 静态 KV 预分配缓存，避免逐 token 拼接 K/V。
-- 默认推理使用动态 KV cache，这是当前经过长音频验证的稳定路径。
-- CUDA Graph 可以减少 decode 阶段的 kernel launch，但长生成仍可能无法正常产生 EOS，因此目前不是默认能力。
-- BERT 在 prefill 阶段处理。capture 前会清理 allocator free-list，避免 BERT 中间张量影响 Graph replay 的地址稳定性。
-- 设置 `GPT_SOVITS_EXPERIMENTAL_CUDA_GRAPH=1` 后才会实际启用 Graph；否则 `cuda-graph` 模式自动回退到动态 KV。
-- Graph 路径的前 32 个 token 使用 static KV。输出提前结束时不创建 Graph；CPU 和非 CUDA 构建使用动态 KV。
+HTTP 服务共享 BERT/HuBERT，按 GPT/SoVITS 模型对维护有界 LRU（默认两个 Pipeline），
+并串行执行推理。增加请求并发不等于增加单 GPU 吞吐。
+`/tts/stream` 是完整文本输入后的分段音频输出，不是双向文本流；协议限制见 [API](docs/API.md)。
 
-最新版 Python 上游也实现了动态 KV cache 和 PyTorch SDPA。这里的 KV 基准只比较本项目的几种实现，不能当作 Rust 与 Python 的速度对比。
-
-### SoVITS enc_p 的 post-norm 顺序
-
-`src/models/sovits_encp.rs` 中 attention 和 FFN 都使用 post-norm，和 Python 一致：
-```
-x = LayerNorm(x + Attn(x))   # 先残差加，后 norm
-x = LayerNorm(x + FFN(x))
-```
-Pre-norm（先 norm 再 attention）会改变模型行为，音质会下降。
-
-### SoVITS Flow 的 fused gate
-
-`src/models/sovits_flow.rs` 中 `fused_add_tanh_sigmoid_multiply` 的正确实现：
-```
-in_act = a + b
-result = tanh(in_act[:n]) * sigmoid(in_act[n:])
-```
-写成 `tanh(a)*sigmoid(a) + tanh(b)*sigmoid(b)` 数学上不等价，会破坏 Flow 解码。
-
-### EOS 停止条件（与 Python 匹配）
-
-```
-step < 11:  logits 中屏蔽 EOS（audio_vocab_size-1），保证最短生成长度
-step >= 11: argmax(logits) == EOS  OR  sampled == EOS → 停止
-```
-
-### 中文变调规则（`src/text_frontend/tone_sandhi.rs`）
-
-**三声连读（`three_sandhi`）**：按 jieba 分词结构感知词边界
-- 2字词全三声：前字变二声（你好 → ni2 hao3）
-- 3字词全三声：按 1+2 或 2+1 分组，各组首字变二声（蒙古包 2+1 → 2 2 3；纸老虎 1+2 → 3 2 3）
-- 4字成语：拆成两个 2字组分别处理
-- 混合声调：局部相邻三声对也处理
-
-**"不"变调（`bu_sandhi`）**：
-- V不V 模式（看不看）→ 中间"不"变轻声
-- 不 + 四声字 → "不"变二声（不对 → bu2 dui4）
-
-**"一"变调（`yi_sandhi`）**：
-- V一V 模式（看一看）→ "一"变轻声
-- 第一 → "一"保持一声
-- 一 + 四声 → "一"变二声；一 + 其他 → "一"变四声
-- 纯数字序列中保留原声调
-
-**轻声（`neural_sandhi`）**：叠词（名词/动词/形容词）、语气词（吧/呢/啊…）、的/地/得、了/着/过、们/子、方位词（上/下/里）、"来/去"趋向补语、量词"个"等
-
-## 数值对齐
-
-| 步骤 | Python 参考 | Rust 状态 |
-|------|------------|-----------|
-| G2P 音素 | `symbols_v2.json` 732 符号 | 对齐 |
-| BERT 特征 | Candle chinese-roberta-wwm-ext-large | 数值一致 |
-| HuBERT 重采样 | librosa (soxr HQ) | VQ tokens 20/20（32kHz 和 16kHz 输入均一致） |
-| VQ prompt tokens | Python softmax + argmin | 129/129 一致 |
-| GPT 生成 token 数 | 83–123 个 | 同范围（受采样随机性影响） |
-| SoVITS 音频 RMS | ~0.06–0.08 | 同范围 |
-| 输出前缀 | 仅目标文本语义 | 已修复（静音填充确保 VQ token 覆盖完整参考音频） |
-
-## 依赖说明
-
-| crate | 版本 | 用途 |
-|-------|------|------|
-| `candle-core` | 0.10 | Tensor + CUDA |
-| `soxr` | 0.6 | 音频重采样（需要系统包 `libsoxr-dev`） |
-| `hound` | 3.5 | WAV I/O |
-| `jieba-rs` | 0.6 | 中文分词 |
-| `tokenizers` | 0.22 | BERT tokenizer |
-| `safetensors` | 0.4 | 权重加载 |
-
-## 已知限制
-
-- 三声链超过 4 字时还没有继续细分；词边界内已经按结构处理。
+模型无关测试覆盖文本、配置、缓存、请求和报告处理。真实模型验证需要显式执行
+[发布验收](docs/RELEASE_ACCEPTANCE.md) 与 [GPU 基准](docs/PERFORMANCE.md)。
+旧文档中没有附固定权重/fixture 的“20/20”“129/129”数值不作为当前正确性保证。

@@ -18,6 +18,9 @@ cp .env.example .env
 ```
 
 模型按[模型文档](MODELS.md)中的目录和文件名放好即可。文件名不同时，在 `.env` 里改对应路径。
+`.env` 由 Compose 读取，独立二进制不会自动加载它。长期部署建议固定
+`GPT_SOVITS_IMAGE_TAG=1.2.1` 或 `CUDA_IMAGE_TAG=1.2.1-cuda-sm89`，不要把移动的 `latest`
+当成可复现的版本标识。主线未发布功能见[版本范围](README.md#先选你的版本)。
 
 创建一个本地 voice profile：
 
@@ -126,11 +129,15 @@ tar -xzf gpt-sovits-1.2.1-linux-x86_64.tar.gz
 cd gpt-sovits-1.2.1-linux-x86_64
 ./gpt-sovits-convert --version
 ./gpt-sovits --models-dir /path/to/models \
+  --voices-dir /path/to/voices \
   --http --port 9880
 ```
 
 macOS 包同时携带对应的 `libsoxr.0.dylib`。首次运行若被 Gatekeeper 阻止，需要在
 系统设置中确认允许该二进制。
+
+已发布的 Linux/macOS 二进制是 CPU 构建；macOS 构建未启用 Metal，`--device mps`
+不会让这些发行物自动获得 GPU 加速。NVIDIA 推理使用 CUDA 镜像，或带 `cuda` feature 的源码构建。
 
 ## 监听地址与版本兼容
 
