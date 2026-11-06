@@ -19,12 +19,11 @@ in [upstream GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS).
 
 > 你好，欢迎回来。今天有什么想和我聊聊的吗？
 
-Actual CPU inference with the maintainer's local **Sun v2Pro + SV** voice. Only generated
-audio is shared, not the model, SV embedding, or reference. [Settings and provenance](examples/samples/README.md).
-This short example is not a quality or speed benchmark; long text can still lose words.
-There is also a [service confirmation sample](examples/samples/sun-zh.wav) and a
-[browser listening page](https://ricardomlee.github.io/gpt-sovits-rs/).
-The downloadable first-run demo below uses standard v2 weights, not Sun.
+Generated on CPU with the maintainer's **Sun v2Pro + SV** voice.
+[Listen in your browser](https://ricardomlee.github.io/gpt-sovits-rs/) or download the
+[service confirmation sample](examples/samples/sun-zh.wav).
+[Settings and provenance](examples/samples/README.md) accompany the public audio;
+the Sun model and reference files remain private. The installable demo below uses standard v2 weights.
 
 ## Quick Start
 
@@ -78,19 +77,19 @@ curl --fail-with-body http://127.0.0.1:9881/tts \
   -d '{"voice":"demo","text":"The backup is complete."}' --output reply.wav
 ```
 
-An [OpenAI-compatible speech endpoint](docs/API.md), sentence streaming, and multiple
+An [OpenAI-compatible speech endpoint](docs/API.md#post-v1audiospeech), sentence streaming, and multiple
 voice profiles are also available. For an LLM assistant, submit completed short
 sentences in order; [agent integration](docs/AGENT_INTEGRATION.md) covers playback
 and errors. The service is not an authenticated public API.
 
-## Before You Choose It
+## Models and Speech Quality
 
-- Supports compatible **v2 and v2Pro** weights, not arbitrary newer GPT-SoVITS checkpoints.
+- Supports compatible **v2 and v2Pro** weights.
 - A clean 3-10 second reference clip and matching transcript are still required.
 - v2Pro needs an SV embedding for the full voice-conditioning path. The released converter
   can convert an existing training embedding; it does not extract one from audio.
-- Sentence splitting helps, but does **not** guarantee that every word will be spoken.
-- No claim of being faster than Python. See [measured performance](docs/PERFORMANCE.md).
+- Long text can still lose words. Use short sentences and review important output.
+- [Performance reports](docs/PERFORMANCE.md) record hardware, models and repeated measurements.
 - Models are not bundled or rehosted. Only use voices and recordings you have permission to use.
 
 ## Help and Contribute

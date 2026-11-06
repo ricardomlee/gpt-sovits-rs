@@ -3,7 +3,12 @@
 第一次试用且没有现成模型，可先走[Docker 首次运行](FIRST_RUN.zh-CN.md)，
 无需安装宿主机转换器。下面的流程用于已有模型和自己的音色配置。
 
-这个服务按本地 HTTP TTS 来部署。建议挂载三个目录：
+下面的 Compose 命令在仓库根目录执行。按顺序完成目录和音色配置，再选择 CPU、CUDA
+或二进制启动，最后[验证服务](#验证服务)。
+
+## 准备目录和音色
+
+按[模型文档](MODELS.md)取得转换器并准备权重。部署使用以下目录：
 
 ```text
 models/   模型权重
@@ -11,16 +16,32 @@ voices/   音色配置和参考音频
 outputs/  输出文件和测试报告，可选
 ```
 
-先复制 `.env.example`：
+首次使用 Compose 时复制 `.env.example`；已有 `.env` 的部署保留原配置：
 
 ```bash
 cp .env.example .env
 ```
 
-模型按[模型文档](MODELS.md)中的目录和文件名放好即可。文件名不同时，在 `.env` 里改对应路径。
-`.env` 由 Compose 读取，独立二进制不会自动加载它。长期部署建议固定
-`GPT_SOVITS_IMAGE_TAG=1.2.1` 或 `CUDA_IMAGE_TAG=1.2.1-cuda-sm89`，不要把移动的 `latest`
-当成可复现的版本标识。主线未发布功能见[版本范围](README.md#先选你的版本)。
+`.env` 由 Compose 读取，独立二进制使用命令行参数。个人部署先在 `.env` 中设置端口和
+固定的 CPU 镜像版本；CUDA 镜像标签在下文按显卡选择：
+
+```env
+GPT_SOVITS_PORT=127.0.0.1:9880
+GPT_SOVITS_IMAGE_TAG=1.2.1
+```
+
+路径按配置位置解析：
+
+| 配置 | 路径所在位置 | 示例 |
+| --- | --- | --- |
+| `MODELS_DIR`、`VOICES_DIR`、`OUTPUTS_DIR` | 宿主机目录，挂载进容器 | `MODELS_DIR=/home/me/tts/models` |
+| `GPT_MODEL`、`SOVITS_MODEL`、`BERT_MODEL`、`HUBERT_MODEL` | 容器内模型文件 | `GPT_MODEL=/app/models/gpt-model.safetensors` |
+| `voice.json` 的 `reference_audio`、`sv_embedding` | 相对于该音色目录 | `ref.wav`、`ref_sv.safetensors` |
+| `voice.json` 的 `gpt_model`、`sovits_model` | 相对于模型根目录 | `demo/gpt.safetensors` |
+
+服务启动时会加载一套默认 GPT/SoVITS。若只有放在 `models/demo/` 下的微调模型，
+将 `.env` 的 `GPT_MODEL`、`SOVITS_MODEL` 分别设为 `/app/models/demo/gpt.safetensors`、
+`/app/models/demo/sovits.safetensors`。BERT、HuBERT 和 tokenizer 按模型文档放好。
 
 创建一个本地 voice profile：
 
@@ -38,37 +59,11 @@ cat > voices/demo/voice.json <<'JSON'
 JSON
 ```
 
-v2Pro 音色还应把 SV embedding 放进同一个 voice 目录，并在 `voice.json` 里引用。compose
-只挂载整个 `VOICES_DIR`，不需要给每个音色单独加环境变量：
+v2Pro 还需[转换匹配的 SV](MODELS.md#v2pro-sv)，放在 `voices/demo/ref_sv.safetensors`，
+并在 JSON 中加入 `"sv_embedding": "ref_sv.safetensors"`。Compose 挂载整个音色目录。
 
-```bash
-gpt-sovits-convert sv \
-  /path/to/logs/demo_v2pro/7-sv_cn/ref.wav.pt \
-  voices/demo/ref_sv.safetensors
-```
-
-```json
-{
-  "reference_audio": "ref.wav",
-  "reference_text": "参考音频里逐字对应的文字",
-  "sv_embedding": "ref_sv.safetensors",
-  "language": "zh",
-  "mode": "auto",
-  "split_sentences": true
-}
-```
-
-官方 v2 模型或自训练模型使用 Rust converter 准备。项目不分发模型权重，用户需要自行
-下载官方模型、复用已有 GPT-SoVITS 安装目录，或使用自己训练出的 checkpoint：
-
-```bash
-mkdir -p models/bert models/hubert
-gpt-sovits-convert gpt /path/to/s1bert25hz.ckpt models/gpt-model.safetensors
-gpt-sovits-convert sovits /path/to/s2G2333k.pth models/sovits-model.safetensors
-gpt-sovits-convert bert /path/to/chinese-roberta-wwm-ext-large/pytorch_model.bin models/bert/bert.safetensors
-cp /path/to/chinese-roberta-wwm-ext-large/tokenizer.json models/bert/tokenizer.json
-gpt-sovits-convert hubert /path/to/chinese-hubert-base/pytorch_model.bin models/hubert/hubert.safetensors
-```
+CPU 和 CUDA Compose 使用同一个容器名 `gpt-sovits-rs`，选择其中一种启动。
+已有服务按[升级与回滚](#升级与回滚)操作。
 
 ## CPU
 
@@ -77,19 +72,11 @@ CPU 镜像发布 `linux/amd64` 版本并启用静态链接的 MKL，适合没有
 
 ```bash
 docker compose -f compose.cpu.yml pull
-docker compose -f compose.cpu.yml up -d
+docker compose -f compose.cpu.yml up -d --wait --wait-timeout 900
 docker compose -f compose.cpu.yml ps
-curl http://localhost:9880/health
-curl http://localhost:9880/voices
 ```
 
-发布镜像：
-
-```text
-ghcr.io/ricardomlee/gpt-sovits-rs:latest
-ghcr.io/ricardomlee/gpt-sovits-rs:1.2
-ghcr.io/ricardomlee/gpt-sovits-rs:1.2.1
-```
+CPU 固定版本镜像为 `ghcr.io/ricardomlee/gpt-sovits-rs:1.2.1`。
 
 ## CUDA
 
@@ -97,31 +84,34 @@ ghcr.io/ricardomlee/gpt-sovits-rs:1.2.1
 里设置 `CUDA_IMAGE_TAG`：
 
 ```text
-RTX 20: latest-cuda-sm75
-RTX 30: latest-cuda-sm86
-RTX 40: latest-cuda-sm89
-H100:   latest-cuda-sm90
+RTX 20: 1.2.1-cuda-sm75
+RTX 30: 1.2.1-cuda-sm86
+RTX 40: 1.2.1-cuda-sm89
+H100:   1.2.1-cuda-sm90
 ```
 
 ```bash
 docker compose -f compose.cuda.yml pull
-docker compose -f compose.cuda.yml up -d
+docker compose -f compose.cuda.yml up -d --wait --wait-timeout 900
 docker compose -f compose.cuda.yml ps
-curl http://localhost:9880/health
-curl http://localhost:9880/voices
 ```
 
-版本固定标签使用 `1.2.1-cuda-sm89` 这种格式。其他 compute capability 可以本地构建：
+其他 compute capability 可以本地构建：
 
 ```bash
 docker build -f Dockerfile.cuda \
   --build-arg CUDA_COMPUTE_CAP=80 \
-  -t gpt-sovits-rs:cuda-sm80 .
+  -t ghcr.io/ricardomlee/gpt-sovits-rs:local-cuda-sm80 .
+CUDA_IMAGE_TAG=local-cuda-sm80 docker compose -f compose.cuda.yml \
+  up -d --pull never --wait --wait-timeout 900
 ```
+
+这里的 `local-cuda-sm80` 是本地标签。长期使用时将它写入 `.env` 的 `CUDA_IMAGE_TAG`，
+启动保留 `--pull never`，跳过远端拉取。
 
 ## Binary
 
-Release 中的 Linux x86_64 包已经携带 `libsoxr`，并包含 `gpt-sovits` 与
+[Release](https://github.com/ricardomlee/gpt-sovits-rs/releases/latest) 中的 Linux x86_64 包已经携带 `libsoxr`，并包含 `gpt-sovits` 与
 `gpt-sovits-convert` 两个可执行文件，解压后可直接运行：
 
 ```bash
@@ -139,6 +129,22 @@ macOS 包同时携带对应的 `libsoxr.0.dylib`。首次运行若被 Gatekeeper
 已发布的 Linux/macOS 二进制是 CPU 构建；macOS 构建未启用 Metal，`--device mps`
 不会让这些发行物自动获得 GPU 加速。NVIDIA 推理使用 CUDA 镜像，或带 `cuda` feature 的源码构建。
 
+## 验证服务
+
+在另一个终端执行。`/health` 应返回 `OK`，`/voices` 应包含刚创建的 `demo`：
+
+```bash
+curl --fail http://127.0.0.1:9880/health
+curl --fail http://127.0.0.1:9880/voices
+curl --fail-with-body http://127.0.0.1:9880/tts \
+  -H 'Content-Type: application/json' \
+  -d '{"voice":"demo","text":"你好，这是一次语音测试。","text_language":"zh"}' \
+  --output output.wav
+```
+
+试听当前目录的 `output.wav`。HTTP 返回的音频由客户端保存；容器的 `/app/outputs` 挂载
+用于容器内程序写文件。API 参数和其他输出方式见 [API](API.md#http-server)。
+
 ## 监听地址与版本兼容
 
 从 `1.2.1` 开始，独立二进制默认监听 `127.0.0.1`。从 `1.2.0` 升级且需要局域网
@@ -150,7 +156,11 @@ Dockerfile 和 Compose 都设置 `GPT_SOVITS_HOST=0.0.0.0`，保证 Docker 的�
 已发布的 `1.2.0` 镜像会忽略该变量，本身就监听所有接口，因此同一份 Compose 也能运行
 固定版本 `1.2.0`。不要给 `1.2.0` 添加 `--host`，该版本尚不支持这个参数。
 
-长期运行请使用仓库中的 Compose 文件和 `.env`，不要依赖 `/tmp` 中的临时配置。
+仓库 Compose 的默认端口映射是所有宿主机接口；上面的 `127.0.0.1:9880` 设置将其限制为本机。
+跨机器访问时配置宿主机绑定地址，并通过防火墙或带认证的反向代理控制访问；服务本身无内置认证。
+
+## 升级与回滚
+
 升级时先在 `.env` 中设置确切的镜像标签，再拉取并等待服务就绪：
 
 ```bash
@@ -162,9 +172,6 @@ curl --fail http://localhost:9880/status
 CPU 部署改用 `compose.cpu.yml`。回滚时把 `.env` 的镜像标签改回之前的固定版本，
 再运行相同命令。模型、音色和输出均为宿主机目录挂载，重建容器不会覆盖它们。
 
-容器内监听地址与宿主机端口绑定是两回事。需要只允许本机访问时，可在 `.env` 中设置
-`GPT_SOVITS_PORT=127.0.0.1:9880`；默认 `9880` 保持现有的所有宿主机接口映射。
-
 ## 音色目录
 
 每个音色放在 `voices/<name>/voice.json`。参考音频和 SV embedding 的相对路径按该 voice
@@ -172,12 +179,13 @@ CPU 部署改用 `compose.cpu.yml`。回滚时把 `.env` 的镜像标签改回�
 
 ```text
 voices/
-  mao/
+  demo/
     voice.json
     ref.wav
 ```
 
-微调音色可以在 `voice.json` 里绑定自己的 GPT/SoVITS 权重。模型字段的相对路径按
+以下 v2Pro 音色在 `voice.json` 中绑定自己的 GPT/SoVITS 和 SV；v2 音色省略 `sv_embedding`。
+模型字段的相对路径按
 `MODELS_DIR` / 容器内 `/app/models` 解析；服务会在第一次请求该 voice 时加载并缓存对应
 pipeline：
 
@@ -186,8 +194,8 @@ pipeline：
   "reference_audio": "ref.wav",
   "reference_text": "参考音频对应的文字",
   "sv_embedding": "ref_sv.safetensors",
-  "gpt_model": "carol/gpt.safetensors",
-  "sovits_model": "carol/sovits.safetensors",
+  "gpt_model": "demo/gpt.safetensors",
+  "sovits_model": "demo/sovits.safetensors",
   "language": "zh",
   "split_sentences": true
 }
@@ -202,27 +210,6 @@ HTTP 请求直接传入的参考音频和 SV embedding 默认必须位于 `VOICE
 只传 `voice + text`；只有明确需要读取其他挂载目录进行调试时，才给启动命令增加
 `--allow-external-reference-paths`。
 
-助手调用示例：
-
-```bash
-curl -X POST http://localhost:9880/tts \
-  -H 'Content-Type: application/json' \
-  -d '{"voice":"demo","text":"你好，这是 GPT-SoVITS-RS 的本地语音服务。"}' \
-  --output output.wav
-```
-
-也可以直接传参考音频和参考文本，主要用于调试：
-
-```json
-{
-  "text": "你好世界",
-  "refer_wav_path": "/app/voices/mao/ref.wav",
-  "prompt_text": "参考音频对应的文字",
-  "sv_embedding": "/app/voices/mao/ref_sv.safetensors",
-  "text_language": "zh"
-}
-```
-
 ## 排障
 
 容器带有 `/health` healthcheck。启动后先看状态：
@@ -235,18 +222,18 @@ docker compose -f compose.cpu.yml logs --tail=100 gpt-sovits
 如果希望提前承担模型加载和参考特征计算，可以在启动后预热常用音色：
 
 ```bash
-curl -X POST http://localhost:9880/warmup \
+curl --fail-with-body http://127.0.0.1:9880/warmup \
   -H 'Content-Type: application/json' \
-  -d '{"voice":"diana"}'
+  -d '{"voice":"demo"}'
 ```
 
 常用音色也可以在 `.env` 里自动预热：
 
 ```env
-PRELOAD_VOICES=diana,carol
+PRELOAD_VOICES=demo
 ```
 
-预热列表最好不要超过 `MAX_CACHED_PIPELINES`，否则前面的音色会在服务开放前就被 LRU
+多个音色用逗号分隔。预热列表最好不要超过 `MAX_CACHED_PIPELINES`，否则前面的音色会在服务开放前就被 LRU
 淘汰。任一预热音色配置错误时服务会启动失败，Docker healthcheck 不会错误地显示 ready。
 
 HTTP 默认限制每条合成文本最多 10,000 个 Unicode 字符、每个 batch 最多 64 条。可以在

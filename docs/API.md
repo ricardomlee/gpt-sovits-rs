@@ -5,9 +5,14 @@ for differences from published v1.2.1. Numeric normalization from #10 is unrelea
 
 GPT-SoVITS-RS exposes three integration surfaces:
 
-- CLI: one-shot synthesis and inspection.
-- Rust API: embed the inference pipeline in another Rust program.
-- HTTP API: run a local TTS service.
+- [CLI](#cli): one-shot synthesis and inspection.
+- [Rust API](#rust-api): embed the inference pipeline in another Rust program.
+- [HTTP API](#http-server): call a running service from an application.
+
+Examples use the deployment default `http://127.0.0.1:9880` and a configured `demo` voice.
+For the [first-run demo](FIRST_RUN.zh-CN.md), use port **9881**. Its reference is English;
+`text_language: "auto"` detects reference and target languages independently.
+Create your own voice with the [deployment guide](DEPLOYMENT.md#准备目录和音色).
 
 ## CLI
 
@@ -19,13 +24,15 @@ GPT-SoVITS-RS exposes three integration surfaces:
   --output output.wav
 ```
 
-Useful options:
+Useful options for one-shot synthesis:
 
 | Option | Purpose |
 |---|---|
 | `--doctor` | Check model files, voice profile, reference audio/text, and device setup without running inference. |
 | `--voice <name>` | Load `voices/<name>/voice.json`. |
+| `--voices-dir <dir>` | Directory containing voice profiles; defaults to `voices`. |
 | `--models-dir <dir>` | Search a custom model directory. |
+| `--language <language>` | Use the voice's language by default; `auto` detects reference and target languages independently. |
 | `--device <device>` | `auto`, `cuda`, `cpu`, or `mps`; acceleration requires a build with that backend. Published macOS binaries are CPU-only. |
 | `--mode <mode>` | `auto` (default), `plain`, `kv`, or `cuda-graph`. Auto selects CUDA Graph for CUDA F32 unless disabled, and KV otherwise. |
 | `--split-sentences` | Split long text and concatenate chunks. |
@@ -103,25 +110,39 @@ All three methods use the same SoVITS synthesis path, so audio quality should ma
 
 ## HTTP Server
 
+Use an existing [deployment](DEPLOYMENT.md), or start a source build with prepared models:
+
 ```bash
-cargo run --release --features "cuda,http-api" --bin gpt-sovits -- \
-  --http --port 9880
+cargo run --locked --release --features http-api --bin gpt-sovits -- \
+  --http --models-dir models --voices-dir voices --port 9880
 ```
+
+For a CUDA build, use `--features cuda,http-api` and add `--device cuda` to the server arguments.
 
 Starting with 1.2.1, standalone binaries default to `127.0.0.1`.
 For LAN access, explicitly set `--host 0.0.0.0`; the server has no authentication.
 `--host <IP>` overrides `GPT_SOVITS_HOST`;
 both accept IPv4 or unbracketed IPv6 literals (`::1`, `::`). Docker/Compose sets
 the environment variable to `0.0.0.0` for port forwarding. Published v1.2.0
-binaries always bind to `0.0.0.0` and do not accept `--host`. The built-in server
-does not provide authentication.
+binaries always bind to `0.0.0.0` and do not accept `--host`.
+
+| Endpoint | Response | Use |
+| --- | --- | --- |
+| [`GET /health`](#get-health) | Plain text `OK` | Readiness |
+| [`GET /voices`](#get-voices) | JSON | Available voice IDs |
+| [`GET /status`](#get-status) | JSON | Queue and model-cache state |
+| [`POST /warmup`](#post-warmup) | JSON | Preload a voice |
+| [`POST /tts`](#post-tts) | Complete WAV | One text request |
+| [`POST /tts/stream`](#post-ttsstream) | Streaming WAV | Play a complete text request as chunks arrive |
+| [`POST /tts/batch`](#post-ttsbatch) | NDJSON | Multiple texts, one result per item |
+| [`POST /v1/audio/speech`](#post-v1audiospeech) | WAV or PCM | Compatible speech clients |
 
 ### `GET /health`
 
 Health check.
 
 ```bash
-curl http://localhost:9880/health
+curl --fail http://127.0.0.1:9880/health
 ```
 
 ### `GET /voices`
@@ -129,7 +150,7 @@ curl http://localhost:9880/health
 List voice profiles under `voices/`.
 
 ```bash
-curl http://localhost:9880/voices
+curl --fail http://127.0.0.1:9880/voices
 ```
 
 Example response:
@@ -148,7 +169,7 @@ Returns lightweight runtime status without loading another model:
 
 The counters are process-local and reset when the service restarts. `queued_requests` counts calls
 waiting for the serialized inference slot; `busy` includes model loading, warmup, and synthesis.
-Requests that cannot enter the inference slot within `--queue-timeout-secs` receive HTTP 503. The
+Synthesis requests that cannot enter the inference slot within `--queue-timeout-secs` receive HTTP 503. The
 timeout only covers queue waiting; model loading and inference are not cancelled midway.
 
 ### `POST /warmup`
@@ -156,14 +177,14 @@ timeout only covers queue waiting; model loading and inference are not cancelled
 Loads one voice's model pair and reference features before the first synthesis request:
 
 ```bash
-curl -X POST http://localhost:9880/warmup \
+curl --fail-with-body http://127.0.0.1:9880/warmup \
   -H 'Content-Type: application/json' \
-  -d '{"voice":"diana"}'
+  -d '{"voice":"demo"}'
 ```
 
 Warming more voices than the configured cache capacity evicts the least recently used pipeline.
-For automatic startup warmup, pass `--preload-voices diana,carol` or set
-`PRELOAD_VOICES=diana,carol` in Compose. The server fails startup when a configured voice cannot be
+For automatic startup warmup, pass `--preload-voices demo` or set
+`PRELOAD_VOICES=demo` in Compose; separate multiple voice IDs with commas. The server fails startup when a configured voice cannot be
 loaded, so health checks never report ready with a broken preload configuration.
 
 HTTP requests accept at most 10,000 Unicode characters per synthesis item and 64 items per batch by
@@ -188,10 +209,19 @@ HuBERT are shared between pipelines. Change the limit with `--max-cached-pipelin
 
 ### `POST /tts`
 
-Synthesize one WAV.
+Synthesize one WAV using a configured voice:
 
 ```bash
-curl -X POST http://localhost:9880/tts \
+curl --fail-with-body http://127.0.0.1:9880/tts \
+  -H 'Content-Type: application/json' \
+  -d '{"voice":"demo","text":"你好世界。","text_language":"auto"}' \
+  --output output.wav
+```
+
+For debugging, supply reference files and their transcript directly:
+
+```bash
+curl --fail-with-body http://127.0.0.1:9880/tts \
   -H 'Content-Type: application/json' \
   -d '{
     "text": "你好世界。",
@@ -206,25 +236,21 @@ Request-supplied `refer_wav_path` and `sv_embedding` files must be inside `--voi
 Locally managed `voice.json` paths are trusted. For a debugging setup that intentionally reads other
 directories, start the server with `--allow-external-reference-paths`.
 
-With a voice profile:
+HTTP synthesis settings use this precedence: request fields, then `voice.json`, then
+built-in defaults. For LLM output, send completed sentences in order;
+[agent integration](AGENT_INTEGRATION.md) covers chunking, playback and cancellation.
 
-```bash
-curl -X POST http://localhost:9880/tts \
-  -H 'Content-Type: application/json' \
-  -d '{"voice":"demo","text":"你好世界。"}' \
-  --output output.wav
-```
+| Field | Default when absent from the voice | Purpose |
+| --- | --- | --- |
+| `text_language` | `zh` | `auto` detects each text's language; `zh` and `en` force Chinese or English |
+| `top_k` | `15` | GPT top-k sampling |
+| `top_p` | `0.95` | GPT nucleus sampling |
+| `temperature` | `0.8` | GPT sampling temperature |
+| `speed` | `1.0` | Speech-speed multiplier |
 
-For agent integrations that stream text from an LLM, prefer sending one finished speech chunk per `/tts` request instead of waiting for a full paragraph:
-
-```bash
-curl -X POST http://localhost:9880/tts \
-  -H 'Content-Type: application/json' \
-  -d '{"voice":"demo","text":"先帝创业未半而中道崩殂。"}' \
-  --output chunk_001.wav
-```
-
-Keep chunks short and speech-like. For Chinese, 10-25 spoken characters per chunk is usually safer than one long paragraph. The client should play returned chunks in order.
+The voice field for language is `language`; the request field is `text_language`.
+The legacy `prompt_language` field is accepted but ignored. Use `auto` when reference
+and target languages differ. Set the decode `mode` in `voice.json`.
 
 Common aliases are accepted for easier client integration:
 
@@ -241,7 +267,7 @@ Long text quality controls:
 | Field | Purpose |
 | --- | --- |
 | `split_sentences` | Enable chunked synthesis. Defaults to the voice profile value, usually `true`. |
-| `split_method` | `sentence` keeps sentence cadence and now protects very long comma clauses; `cut5` also splits on commas/semicolons like Python GPT-SoVITS. |
+| `split_method` | `sentence` splits at sentence ends and bounds long clauses; `cut5` also splits at commas/semicolons. |
 | `min_sentence_chars` | Merge very short chunks until this many characters are reached. |
 | `sentence_gap_ms` | Silence between chunks. |
 | `sentence_fade_ms` | Fade each chunk in/out before concatenation. |
@@ -253,11 +279,12 @@ CamelCase aliases such as `splitMethod`, `minSentenceChars`, `maxTokens`, and `r
 For long Chinese prose, prefer explicit chunking:
 
 ```bash
-curl -X POST http://localhost:9880/tts \
+curl --fail-with-body http://127.0.0.1:9880/tts \
   -H 'Content-Type: application/json' \
   -d '{
     "voice": "demo",
     "text": "臣亮言：先帝创业未半而中道崩殂，今天下三分，益州疲弊，此诚危急存亡之秋也。",
+    "text_language": "auto",
     "split_method": "sentence",
     "min_sentence_chars": 12,
     "sentence_gap_ms": 120,
@@ -271,7 +298,8 @@ Chinese pronunciation annotations can be embedded directly in `text` for polypho
 ```json
 {
   "voice": "demo",
-  "text": "这个人很好[hao4]学，银行的行[hang2]长正在重[chong2]新安排会议。"
+  "text": "这个人很好[hao4]学，银行的行[hang2]长正在重[chong2]新安排会议。",
+  "text_language": "auto"
 }
 ```
 
@@ -293,20 +321,21 @@ X-TTS-Sample-Rate
 X-TTS-Channels
 ```
 
+`X-TTS-Language` reports the selected language mode, including the literal `auto`.
+
 ### `POST /tts/stream`
 
 Synthesize one already-complete text request as sentence chunks and stream one WAV response.
 
 ```bash
-curl -X POST http://localhost:9880/tts/stream \
+curl --fail-with-body http://127.0.0.1:9880/tts/stream \
   -H 'Content-Type: application/json' \
-  -d '{"voice":"demo","text":"第一句话。第二句话。第三句话。"}' \
+  -d '{"voice":"demo","text":"第一句话。第二句话。第三句话。","text_language":"auto"}' \
   --output stream.wav
 ```
 
-This endpoint is useful when the client already has the full text and wants lower first-byte latency than buffered `/tts`. It is not a token-streaming input endpoint for LLM output. When an agent is still generating text, split complete sentences on the client side and call `/tts` once per speech chunk.
-
-On a single local service instance, concurrent TTS requests are queued behind one inference pipeline. Parallel calls mostly add scheduling complexity unless you run multiple workers or multiple GPUs.
+Playback can begin after the first synthesized chunk arrives. The request contains the complete
+text; for LLM token streams, use the client-side queue described in [agent integration](AGENT_INTEGRATION.md).
 
 The stream uses an unknown-length WAV header and PCM16 samples at the generated
 sample rate (currently 32 kHz mono). It always splits the input, regardless of
@@ -318,14 +347,16 @@ HTTP headers can arrive before any PCM, so curl's `time_starttransfer` is not au
 
 ### `POST /tts/batch`
 
-Synthesize multiple texts. Speaker/reference features are computed once, and results are returned as NDJSON.
+Synthesize multiple texts sequentially, reusing reference features. Results arrive as NDJSON,
+one line per item. The shell example requires Bash, curl 7.76+, jq and base64.
 
 ```bash
 set -euo pipefail
-curl --fail-with-body http://localhost:9880/tts/batch \
+curl --fail-with-body http://127.0.0.1:9880/tts/batch \
   -H 'Content-Type: application/json' \
   -d '{
     "voice": "demo",
+    "text_language": "auto",
     "texts": ["第一句话", "第二句话", "第三句话"]
   }' | while IFS= read -r line; do
     if ! echo "$line" | jq -e '.error == null and (.wav_base64 | type == "string")' > /dev/null; then
@@ -338,10 +369,12 @@ curl --fail-with-body http://localhost:9880/tts/batch \
 done
 ```
 
-Each line includes fields like:
+Success and failure lines have these shapes; `error` is omitted on success and
+`wav_base64` is omitted on failure:
 
-```json
-{"index":0,"wav_base64":"...","error":null,"sample_rate":32000,"duration_s":1.5,"inference_ms":820}
+```jsonl
+{"index":0,"voice":"demo","language":"auto","text_chars":4,"wav_base64":"...","sample_rate":32000,"duration_s":1.5,"inference_ms":820}
+{"index":1,"voice":"demo","language":"auto","text_chars":4,"error":"synthesis failed","sample_rate":0,"duration_s":0.0,"inference_ms":12}
 ```
 
 ### `POST /v1/audio/speech`
@@ -349,23 +382,27 @@ Each line includes fields like:
 OpenAI-compatible speech adapter for agent frameworks and clients that already know the OpenAI audio API shape.
 
 ```bash
-curl -X POST http://localhost:9880/v1/audio/speech \
+curl --fail-with-body http://127.0.0.1:9880/v1/audio/speech \
   -H 'Content-Type: application/json' \
   -d '{
     "model": "gpt-sovits",
     "voice": "demo",
     "input": "你好，这是本地语音服务。",
+    "text_language": "auto",
     "response_format": "wav"
   }' \
   --output output.wav
 ```
 
-Supported `response_format` values:
+`input` and `voice` are required. `response_format` defaults to `wav`; `pcm` returns
+raw signed PCM16 little-endian, currently 32 kHz mono. MP3 and Opus requests return 400.
+`speed` overrides the voice's speed setting.
 
-- `wav`
-- `pcm`
+`model` and `instructions` are accepted for client compatibility and currently ignored.
+The selected voice profile determines the GPT/SoVITS weights. To change pronunciation,
+use annotations in `input`; `instructions` does not control emotion or delivery.
 
-Set the client base URL to `http://localhost:9880/v1` when using compatible agent frameworks.
+Set the client base URL to `http://127.0.0.1:9880/v1` when using compatible agent frameworks.
 
 ## Errors
 
@@ -377,8 +414,9 @@ Application validation and inference errors before streaming use this JSON shape
 
 Requests are rejected before inference when required text is empty, the voice profile cannot be loaded, the language is unsupported, reference audio is missing, or reference text is empty.
 
-Malformed JSON/content-type errors may instead come directly from Axum. Queue
-timeouts return 503; buffered inference failures return 500. A batch may return
+Malformed JSON/content-type errors may instead come directly from Axum. Synthesis queue
+timeouts return 503; buffered inference failures return 500. `/warmup` failures return 400.
+A batch may return
 HTTP 200 with an individual line containing `error` and no `wav_base64`, so check
 each line before decoding `wav_base64`. A broken WAV stream fails at the transport
 level rather than appending a JSON error to its PCM bytes.

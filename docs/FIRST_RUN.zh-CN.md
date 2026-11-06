@@ -1,8 +1,7 @@
 # 第一次运行
 
-这条路径用于先试出第一段语音，不需要已有的模型、参考音频或 Python 环境。
-它使用官方通用 v2 权重和公开的英文参考音频，不代表你的微调音色效果。
-网页上的 Sun 试听仅提供生成结果；首次体验不会下载 Sun 模型、SV 文件或参考录音。
+用官方通用 v2 权重和公开的英文参考音频，先生成一段语音。脚本会准备模型和音色配置，
+转换与推理都在 Docker 中完成。网页上的 Sun 试听使用维护者的私人模型，配置见[样本说明](../examples/samples/README.md)。
 已有模型请直接看[模型转换](MODELS.md)和[部署](DEPLOYMENT.md)。
 
 ## 准备
@@ -11,8 +10,7 @@
 - 至少 6 GiB 可用磁盘、4 GiB 可用内存。模型源文件下载约 1.1 GB，另需下载镜像。
 - 能访问 GitHub、GHCR、Hugging Face。运行前阅读[下载清单](../examples/first-run/downloads.txt)
   和[准备脚本](../examples/first-run/prepare.sh)。运行后会从上游下载，不会把模型放入本仓库。
-- macOS 可用[原生二进制](DEPLOYMENT.md#binary)；ARM Linux 目前需要[源码构建](DEVELOPMENT.md)。
-  这份 Docker 首次体验不把 amd64 模拟运行当成受支持的 ARM 路径。
+- macOS 使用[原生二进制](DEPLOYMENT.md#binary)；ARM Linux 使用[源码构建](DEVELOPMENT.md)。
 
 ## 跑出第一段音频
 
@@ -33,9 +31,8 @@ curl --fail-with-body --max-time 300 http://127.0.0.1:9881/tts \
 
 准备脚本完成四个模型的校验与转换、tokenizer 复制、音色配置和 doctor 检查。
 转换与推理都在固定版本 `1.2.1` 容器中运行，不需要安装宿主机转换器。
-默认版本只在新镜像正式发布并验证后更新，不会提前指向不存在的候选版本。
-服务会预加载 demo 音色再就绪；首次启动慢不等于每次请求都要重载模型。
-只有下载阶段需要外网，推理不调用云端服务。
+服务加载模型并预热 demo 音色后就绪，后续请求复用这些模型和参考特征。
+下载需要外网，推理在本机完成。
 
 使用独立目录、Compose 项目 `gpt-sovits-demo` 和仅本机开放的 `9881` 端口，
 不会替换已有的 `9880` 服务。不要同时启动两份同名 demo 项目。
@@ -69,7 +66,10 @@ GPT/SoVITS 权重。v2Pro 请同时准备训练预处理产生的 SV embedding�
 ## 接入和反馈
 
 应用只需发送 `voice` 和 `text`，看[API](API.md)和[Agent 接入](AGENT_INTEGRATION.md)。
-长回复建议按完整短句顺序提交、顺序播放；并行请求不会让单个推理设备自动并行。
+首次体验的地址是 `http://127.0.0.1:9881`；其他文档使用正式部署的默认端口 `9880`，
+试用时将示例端口改为 `9881`。demo 音色默认英文，中文请求传 `"text_language":"auto"`，
+让参考文字和目标文字分别识别语言；自己的中文音色按正式部署流程配置。
+长回复按完整短句顺序提交、顺序播放，单个服务按队列处理推理请求。
 
 [首次试用反馈](https://github.com/ricardomlee/gpt-sovits-rs/issues/new?template=first-run.yml)
 只需系统、版本、走到哪一步和脱敏错误。成功跑通也欢迎记录；不要上传私人音频、模型或密钥。

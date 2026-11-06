@@ -1,7 +1,7 @@
 # Agent 接入
 
-本页描述服务端契约，不依赖某个 agent 框架的配置格式。接口字段见 [API](API.md)，
-版本差异见 [文档入口](README.md)。框架的 provider、播放与格式设置应以其对应版本为准。
+助手通过 HTTP 发送文本和音色名，客户端负责切句、排队和播放。
+接口字段见 [API](API.md)，版本差异见 [文档入口](README.md)。
 
 ## 逐句生成和播放
 
@@ -13,10 +13,10 @@ LLM token stream -> 句子边界检测 -> 有界队列
 ```
 
 中文通常每段 10-25 字，优先在句末或较长从句的标点处分开，避免把一两个字拆成孤立请求。
-这是接入建议，不是模型保证；分句仍可能漏读或产生不自然的衔接。
+根据试听结果调整片段长度，留意漏读和句间衔接。
 不要切开数字、小数、百分比、版本号或 `字[pinyin+tone]` 标注。
 
-单个服务使用串行推理槽，多个请求会排队，并行提交不等于更快。
+单个服务使用串行推理槽，多个请求会排队。
 队列应有上限；用户打断时丢弃尚未播放的旧回复。客户端断开不保证已经开始的 GPU
 合成立刻取消。收到 503 可按客户端策略有限重试，不能无限重发过期内容。
 
@@ -36,11 +36,12 @@ LLM token stream -> 句子边界检测 -> 有界队列
 
 音色目录绑定模型、参考文字/音频、SV 和默认参数。Agent 只需稳定传 `voice` 和文字，
 不必暴露本机文件路径。可用 `GET /voices` 查询，`POST /warmup` 预加载。
+下面使用已配置的 `demo` 音色和默认端口 `9880`；首次体验服务改用 `9881`。
 
 ```bash
 curl --fail-with-body http://127.0.0.1:9880/tts \
   -H 'Content-Type: application/json' \
-  -d '{"voice":"sun","text":"你好，今天有什么安排？","text_language":"auto"}' \
+  -d '{"voice":"demo","text":"你好，今天有什么安排？","text_language":"auto"}' \
   --output /tmp/reply.wav
 ```
 
@@ -48,17 +49,18 @@ curl --fail-with-body http://127.0.0.1:9880/tts \
 `http://127.0.0.1:9880/v1`，调用 `POST /v1/audio/speech`：
 
 ```json
-{"model":"tts-1","voice":"sun","input":"你好，今天有什么安排？","response_format":"wav"}
+{"model":"tts-1","voice":"demo","input":"你好，今天有什么安排？","text_language":"auto","response_format":"wav"}
 ```
 
-这里只兼容 speech 请求，不提供完整 OpenAI API。支持 `wav` 和 `pcm`，不提供 MP3/Opus；
-当前 PCM 为 32 kHz、单声道、16-bit little-endian，播放端必须按该格式处理。
-不应给需要 MP3 的客户端返回标着 MP3 的 WAV。
+客户端输出格式选 `wav` 或 `pcm`。当前 PCM 为 32 kHz、单声道、16-bit little-endian。
+`model` 和 `instructions` 字段当前忽略；模型随音色配置选择。
+兼容字段和错误响应见 [speech API](API.md#post-v1audiospeech)。
 `/tts/batch` 的 HTTP 200 也可能包含逐项失败，应检查每一行的 `error` 和 `wav_base64`；
 批量结果没有 `success` 字段。
 
 长期使用常驻 HTTP 服务。每句重新启动推理 CLI 都会重新加载模型。
-服务无内置认证；默认限制在 loopback，跨机器访问需自己提供访问控制。
+服务无内置认证。独立二进制默认监听 loopback，Compose 的访问范围由宿主机端口映射决定，
+配置见[部署](DEPLOYMENT.md#监听地址与版本兼容)。
 
 ## 读音和数字
 
@@ -84,7 +86,7 @@ Agent 可先输出希望读出的文字，例如“二零二六年十月二十�
 先定位具体 chunk，不要直接全局调整 temperature/top_p：
 
 ```bash
-GPT_SOVITS_LOG_CHUNK_TEXT=1 ./gpt-sovits --http --port 9880 --voice sun
+GPT_SOVITS_LOG_CHUNK_TEXT=1 ./gpt-sovits --http --port 9880 --voice demo
 ```
 
 日志包含 chunk 序号、字数、semantic token 数、时长和 chars/sec。
