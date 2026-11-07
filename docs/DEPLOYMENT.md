@@ -111,8 +111,15 @@ CUDA_IMAGE_TAG=local-cuda-sm80 docker compose -f compose.cuda.yml \
 
 ## Binary
 
-[Release](https://github.com/ricardomlee/gpt-sovits-rs/releases/latest) 中的 Linux x86_64 包已经携带 `libsoxr`，并包含 `gpt-sovits` 与
-`gpt-sovits-convert` 两个可执行文件，解压后可直接运行：
+[Release](https://github.com/ricardomlee/gpt-sovits-rs/releases/latest) 中的 Linux x86_64 包携带 `libsoxr`，解压后可直接运行。
+
+| 程序 | 用途 |
+| --- | --- |
+| `gpt-sovits` | 本机推理或常驻 HTTP 服务 |
+| `gpt-sovits-convert` | 模型和 SV 文件转换 |
+| `gpt-sovits-client`（1.2.2 起） | 调用已有 HTTP 服务，适用于脚本和 Agent |
+
+以下使用 1.2.1 包演示服务启动；客户端用法见 [HTTP 客户端](../client/README.md)。
 
 ```bash
 tar -xzf gpt-sovits-1.2.1-linux-x86_64.tar.gz

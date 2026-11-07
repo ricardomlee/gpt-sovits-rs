@@ -1,6 +1,6 @@
 [package]
 name = "gpt-sovits-client"
-version = "0.1.0"
+version = "1.2.2"
 edition = "2021"
 description = "Command-line HTTP client for a running GPT-SoVITS service"
 license = "MIT"

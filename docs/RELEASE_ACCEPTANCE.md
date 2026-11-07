@@ -46,6 +46,17 @@ CI tests report calculations and failure handling; the local run supplies GPU me
 Leave GPU acceptance pending when hardware is unavailable. Review reports for private
 data before publishing. Complete the candidate-image and HTTP checks as well.
 
+Run the CUDA normalization boundary test on the same GPU:
+
+```bash
+cargo test --locked --release --features cuda --lib \
+  channels_first_layer_norm_cuda_matches_cpu_at_length_boundary -- --ignored --nocapture
+```
+
+This checks the SoVITS channel axis at 190, 192 and 194 frames, including the
+equal channel/time shape that caused incoherent 96-token audio. See the
+[boundary investigation and retained speech results](benchmarks/v1.2.2-layer-norm-fix.md).
+
 ## Speech Regression
 
 Use the same hardware, model files, voice profile, SV embedding, corpus, and ASR
@@ -129,14 +140,14 @@ host port exposure is separate. The server still has no built-in authentication.
 ## Publish
 
 1. Require candidate CI, a fresh local GPU Markdown/JSON report, and CUDA/SV/speech/rollback evidence before tagging.
-2. Match `Cargo.toml`, the package entry in `Cargo.lock`, the tag, and release notes.
+2. Match the root and client package versions in both manifests and lockfiles, the tag, and release notes.
    Release preflight checks metadata before any binary/image publishing job starts.
 3. Use absolute HTTPS links in release notes. Pin repository documentation links to
    the release tag, for example `https://github.com/ricardomlee/gpt-sovits-rs/blob/v1.2.1/docs/RELEASE_ACCEPTANCE.md`.
    The workflow copies the Markdown body verbatim; relative paths lose the source
    file's directory context on a Release page. After publication, open each link
    from the actual Release page, not just from the repository Markdown preview.
-4. Watch all Linux/macOS and CPU/CUDA release jobs; verify packaged binaries and hashes.
+4. Watch all Linux/macOS and CPU/CUDA release jobs; verify all three packaged binaries and hashes.
 5. After the versioned image exists, run the same verifier against it with pulling
    enabled. Then update the first-run defaults in `prepare.sh` and `compose.yml`,
    and the README/first-run guide. Include the new published version in the

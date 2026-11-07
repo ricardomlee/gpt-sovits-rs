@@ -430,22 +430,42 @@ impl LayerNorm {
     }
 
     pub fn forward(&self, input: &Tensor) -> Result<Tensor> {
-        // Normalize: (input - mean) / sqrt(var + eps)
-        // Auto-detect format based on input shape vs weight dimension
         let input_dims = input.dims();
         let rank = input_dims.len();
-        let norm_dim = self.weight.dims()[0];
+        let norm_dim = self.weight.dims1()?;
+        let last = rank.checked_sub(1).ok_or_else(|| {
+            candle_core::Error::Msg("layer norm requires a non-scalar input".into())
+        })?;
+        // Preserve the existing layout inference for callers. Channels-first
+        // tensors need an explicit axis when time and channel sizes coincide.
+        let axis = if input_dims[last] != norm_dim && rank >= 3 && input_dims[1] == norm_dim {
+            1
+        } else {
+            last
+        };
+        self.forward_on_axis(input, axis)
+    }
 
-        // Detect format:
-        // - [batch, seq_len, channels] (Transformer): last dim == norm_dim → normalize over D::Minus1
-        // - [batch, channels, seq_len] (SoVITS): middle dim == norm_dim → normalize over D::Minus2
-        let is_last_dim = rank >= 2 && input_dims[rank - 1] == norm_dim;
-        let is_middle_dim = rank >= 3 && input_dims[1] == norm_dim;
+    /// Normalize the channel axis of a [batch, channels, time] tensor.
+    pub fn forward_channels_first(&self, input: &Tensor) -> Result<Tensor> {
+        input.dims3()?;
+        self.forward_on_axis(input, 1)
+    }
+
+    fn forward_on_axis(&self, input: &Tensor, axis: usize) -> Result<Tensor> {
+        let rank = input.rank();
+        let norm_dim = self.weight.dims1()?;
+        if input.dim(axis)? != norm_dim || self.bias.dims1()? != norm_dim {
+            return Err(candle_core::Error::Msg(format!(
+                "layer norm axis {axis} must match weight and bias size {norm_dim}"
+            ))
+            .into());
+        }
 
         // Transformer tensors are contiguous and normalize the last dimension. Use
         // Candle's fused kernel here: besides reducing temporary tensors, it avoids
         // broadcast stride metadata that cannot safely outlive CUDA graph capture.
-        if is_last_dim && input.is_contiguous() {
+        if axis == rank - 1 && input.is_contiguous() {
             let output_dtype = input.dtype();
             let norm_input = input.to_dtype(self.weight.dtype())?;
             return candle_nn::ops::layer_norm(
@@ -458,19 +478,9 @@ impl LayerNorm {
             .map_err(Into::into);
         }
 
-        let dim = if is_last_dim {
-            candle_core::D::Minus1 // Transformer format
-        } else if is_middle_dim {
-            candle_core::D::Minus2 // SoVITS format
-        } else {
-            // Fallback: try last dimension (standard PyTorch behavior)
-            candle_core::D::Minus1
-        };
-
-        // Mean/var over the detected dimension
-        let mean = input.mean_keepdim(dim)?;
+        let mean = input.mean_keepdim(axis)?;
         let centered = input.broadcast_sub(&mean)?;
-        let var = centered.sqr()?.mean_keepdim(dim)?;
+        let var = centered.sqr()?.mean_keepdim(axis)?;
 
         // Convert eps to match input dtype
         let eps_val = self.eps as f32;
@@ -481,11 +491,7 @@ impl LayerNorm {
 
         // Apply weight and bias with proper shape
         let mut shape = vec![1; rank];
-        if is_last_dim {
-            shape[rank - 1] = norm_dim; // Transformer: [1, 1, channels]
-        } else {
-            shape[1] = norm_dim; // SoVITS: [1, channels, 1]
-        }
+        shape[axis] = norm_dim;
 
         let weight = self
             .weight
@@ -661,6 +667,120 @@ impl Conv1dWeightNorm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn channels_first_layer_norm_handles_equal_channels_and_time() -> Result<()> {
+        let device = Device::Cpu;
+        let channels = 192;
+        let norm = LayerNorm::new(
+            Tensor::ones(channels, DType::F32, &device)?,
+            Tensor::zeros(channels, DType::F32, &device)?,
+        );
+        for time in [190, 192, 194] {
+            let input = Tensor::arange(0f32, (channels * time) as f32, &device)?
+                .reshape((1, channels, time))?;
+            let mean = input.mean_keepdim(1)?;
+            let centered = input.broadcast_sub(&mean)?;
+            let std = centered
+                .sqr()?
+                .mean_keepdim(1)?
+                .affine(1.0, norm.eps)?
+                .sqrt()?;
+            let expected = centered.broadcast_div(&std)?;
+            let actual = norm.forward_channels_first(&input)?;
+            let max_error = actual
+                .sub(&expected)?
+                .abs()?
+                .flatten_all()?
+                .max(0)?
+                .to_scalar::<f32>()?;
+            assert!(max_error < 1e-5, "time={time}, max_error={max_error}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn layer_norm_layouts_match_explicit_reference_with_affine_parameters() -> Result<()> {
+        let device = Device::Cpu;
+        let norm = LayerNorm::new(
+            Tensor::new(&[0.5f32, 1.5, -1.0], &device)?,
+            Tensor::new(&[1f32, -0.2, 3.0], &device)?,
+        );
+        let input = Tensor::arange(0f32, 18f32, &device)?.reshape((2, 3, 3))?;
+        // Square shapes must still distinguish [B, T, C] from [B, C, T].
+        for channels_first in [false, true] {
+            let last_axis_input = if channels_first {
+                input.transpose(1, 2)?.contiguous()?
+            } else {
+                input.clone()
+            };
+            let expected = candle_nn::ops::layer_norm(
+                &last_axis_input,
+                &norm.weight,
+                &norm.bias,
+                norm.eps as f32,
+            )?;
+            let expected = if channels_first {
+                expected.transpose(1, 2)?
+            } else {
+                expected
+            };
+            let actual = if channels_first {
+                norm.forward_channels_first(&input)?
+            } else {
+                norm.forward(&input)?
+            };
+            let max_error = actual
+                .sub(&expected)?
+                .abs()?
+                .flatten_all()?
+                .max(0)?
+                .to_scalar::<f32>()?;
+            assert!(
+                max_error < 1e-5,
+                "channels_first={channels_first}, max_error={max_error}"
+            );
+        }
+        assert!(norm
+            .forward_channels_first(&Tensor::zeros((1, 4, 3), DType::F32, &device)?)
+            .is_err());
+        assert!(norm
+            .forward_channels_first(&Tensor::zeros((3, 3), DType::F32, &device)?)
+            .is_err());
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    #[ignore = "requires a CUDA GPU"]
+    fn channels_first_layer_norm_cuda_matches_cpu_at_length_boundary() -> Result<()> {
+        let cpu = Device::Cpu;
+        let cuda = Device::new_cuda(0)?;
+        let channels = 192;
+        let weight = Tensor::arange(0f32, channels as f32, &cpu)?.affine(0.01, 0.5)?;
+        let bias = weight.affine(0.1, -0.2)?;
+        let cpu_norm = LayerNorm::new(weight.clone(), bias.clone());
+        let cuda_norm = LayerNorm::new(weight.to_device(&cuda)?, bias.to_device(&cuda)?);
+        for time in [190, 192, 194] {
+            let input = Tensor::arange(0f32, (2 * channels * time) as f32, &cpu)?
+                .affine(0.17, -1.0)?
+                .sin()?
+                .reshape((2, time, channels))?
+                .transpose(1, 2)?;
+            let expected = cpu_norm.forward_channels_first(&input)?;
+            let actual = cuda_norm
+                .forward_channels_first(&input.to_device(&cuda)?)?
+                .to_device(&cpu)?;
+            let max_error = actual
+                .sub(&expected)?
+                .abs()?
+                .flatten_all()?
+                .max(0)?
+                .to_scalar::<f32>()?;
+            assert!(max_error < 1e-5, "time={time}, max_error={max_error}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_state_dict() {

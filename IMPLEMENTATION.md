@@ -1,6 +1,6 @@
 # GPT-SoVITS Rust 实现说明
 
-对应主线 `ee4d719`（2026-11-06）。
+本文描述 1.2.2 的推理实现。
 发布范围见 [文档入口](docs/README.md)，操作步骤见 [API](docs/API.md) 和 [模型指南](docs/MODELS.md)。
 
 ## 推理流程
@@ -29,7 +29,7 @@
 [speaker.rs](src/inference/speaker.rs) 负责参考缓存和目标特征准备。
 参考/目标的音素与对齐后的 BERT 特征分别拼接后送给 GPT。
 G2P 与 BERT 使用同一份规范化文本，数字展开和读音覆盖通过原文索引映射保持一致。
-数字修复在 v1.2.1 发布后合入，细节见 [API](docs/API.md)。
+1.2.2 的数字处理规则见 [API](docs/API.md)。
 
 [HuBERT](src/models/hubert.rs) 使用 soxr 重采样到 16 kHz，并追加 9600 个零样本。
 已经是 16 kHz 的输入也追加静音。另一条参考路径在

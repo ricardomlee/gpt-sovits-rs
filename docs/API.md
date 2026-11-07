@@ -1,13 +1,16 @@
 # API
 
-This page follows the current source branch. See [version scope](README.md#先选你的版本)
-for differences from published v1.2.1. Numeric normalization from #10 is unreleased.
+This page describes version 1.2.2. See [version differences](README.md#先选你的版本)
+when using an older binary or image.
 
 GPT-SoVITS-RS exposes three integration surfaces:
 
 - [CLI](#cli): one-shot synthesis and inspection.
 - [Rust API](#rust-api): embed the inference pipeline in another Rust program.
 - [HTTP API](#http-server): call a running service from an application.
+
+For shell scripts and agent command providers, the standalone
+[HTTP client](../client/README.md) calls a running service without loading models locally.
 
 Examples use the deployment default `http://127.0.0.1:9880` and a configured `demo` voice.
 For the [first-run demo](FIRST_RUN.zh-CN.md), use port **9881**. Its reference is English;
@@ -305,9 +308,9 @@ Chinese pronunciation annotations can be embedded directly in `text` for polypho
 
 The service removes the bracketed markers before BERT/G2P alignment and forces the marked character to use that pinyin. Use tone `1`-`5`; `5` is neutral tone.
 
-On unreleased master, Chinese numbers such as `50%`, `3.140`, and `-3.5` are expanded
+Starting with 1.2.2, Chinese numbers such as `50%`, `3.140`, and `-3.5` are expanded
 before G2P. Fullwidth digits work too; annotations remain bound to the original
-characters. Published v1.2.1 does not include this fix. Dates, currency, phone numbers,
+characters. Dates, currency, phone numbers,
 and English numbers still need caller-supplied spoken forms when exact reading matters.
 
 The response includes metadata headers such as:
