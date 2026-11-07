@@ -1,6 +1,6 @@
 # 推理性能
 
-本文描述 1.2.2 的推理路径和测量方法。版本差异见 [文档入口](README.md)。
+本文描述 1.3.0 的推理路径和测量方法。版本差异见 [文档入口](README.md)。
 
 ## 当前推理路径
 
@@ -63,6 +63,10 @@ target/release/examples/gpu_benchmark \
 应结合输出完整性、音频时长和多次测量的时延、RTF 判断变化。
 
 ## 已记录的测量
+
+[1.3.0 Sun v2Pro + SV / RTX 4060 Ti](benchmarks/v1.3.0-sun-cuda.md)：
+提交 `c58324d`，12 项各测量 5 次，热推理 RTF 中位数 0.1213–0.1487。
+HTTP 对照通过原定 ASR 阈值，用户试听通过；中英混合句的识别错误仍高于纯中文。
 
 [SoVITS 通道归一化修复验证](benchmarks/v1.2.2-layer-norm-fix.md)：
 提交 `46b7455`，热推理 RTF 中位数 0.1268–0.1537，完整 HTTP 回归通过原定 ASR 阈值。
