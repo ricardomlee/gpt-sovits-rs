@@ -148,12 +148,28 @@ pub(super) async fn openai_speech_handler(
 
     match result {
         Ok(audio) => {
-            let audio_bytes = match response_format {
-                SpeechOutputFormat::Wav => audio.to_wav_bytes().map_err(|e| {
-                    error!("Failed to encode WAV: {e}");
-                    StatusCode::INTERNAL_SERVER_ERROR
-                })?,
-                SpeechOutputFormat::Pcm => samples_to_pcm(&audio.samples),
+            let duration = audio.duration();
+            let channels = audio.channels;
+            let encoded = match tokio::task::spawn_blocking(move || {
+                super::encoding::encode(&audio, response_format)
+            })
+            .await
+            {
+                Ok(Ok(encoded)) => encoded,
+                Ok(Err(e)) => {
+                    error!("Speech encoding failed: {e:#}");
+                    return Ok(json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "speech encoding failed",
+                    ));
+                }
+                Err(e) => {
+                    error!("Speech encoding task failed: {e}");
+                    return Ok(json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "speech encoding task failed",
+                    ));
+                }
             };
             let builder =
                 add_synthesis_headers(Response::builder(), voice.as_deref(), language, text_chars);
@@ -162,10 +178,10 @@ pub(super) async fn openai_speech_handler(
                 .header(header::CONTENT_TYPE, response_format.content_type())
                 .header("x-tts-api", "openai-audio-speech")
                 .header("x-tts-response-format", response_format.as_header_value())
-                .header("x-tts-duration-s", format!("{:.3}", audio.duration()))
-                .header("x-tts-sample-rate", audio.sample_rate.to_string())
-                .header("x-tts-channels", audio.channels.to_string())
-                .body(Body::from(audio_bytes))
+                .header("x-tts-duration-s", format!("{duration:.3}"))
+                .header("x-tts-sample-rate", encoded.sample_rate.to_string())
+                .header("x-tts-channels", channels.to_string())
+                .body(Body::from(encoded.bytes))
                 .unwrap())
         }
         Err(e) => {

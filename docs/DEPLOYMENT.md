@@ -112,6 +112,8 @@ CUDA_IMAGE_TAG=local-cuda-sm80 docker compose -f compose.cuda.yml \
 ## Binary
 
 [Release](https://github.com/ricardomlee/gpt-sovits-rs/releases/latest) 中的 Linux x86_64 包携带 `libsoxr`，解压后可直接运行。
+1.3.0 的发布包还携带 MP3 编码所需的 `libmp3lame`，Opus 编码器编入程序。
+Docker 镜像包含相同的编码能力。第三方库说明见 [Audio Codec Notices](../THIRD_PARTY.md)。
 
 | 程序 | 用途 |
 | --- | --- |
@@ -130,7 +132,7 @@ cd gpt-sovits-1.2.1-linux-x86_64
   --http --port 9880
 ```
 
-macOS 包同时携带对应的 `libsoxr.0.dylib`。首次运行若被 Gatekeeper 阻止，需要在
+macOS 包同时携带对应的 `libsoxr.0.dylib`；1.3.0 还包含 `libmp3lame.0.dylib`。首次运行若被 Gatekeeper 阻止，需要在
 系统设置中确认允许该二进制。
 
 已发布的 Linux/macOS 二进制是 CPU 构建；macOS 构建未启用 Metal，`--device mps`

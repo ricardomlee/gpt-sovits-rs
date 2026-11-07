@@ -66,6 +66,8 @@ pub(super) fn add_synthesis_headers(
 pub(super) enum SpeechOutputFormat {
     Wav,
     Pcm,
+    Mp3,
+    Opus,
 }
 
 impl SpeechOutputFormat {
@@ -74,8 +76,10 @@ impl SpeechOutputFormat {
         match format.as_str() {
             "wav" => Ok(Self::Wav),
             "pcm" => Ok(Self::Pcm),
+            "mp3" => Ok(Self::Mp3),
+            "opus" => Ok(Self::Opus),
             other => Err(format!(
-                "unsupported response_format: {other}; supported formats: wav, pcm"
+                "unsupported response_format: {other}; supported formats: wav, pcm, mp3, opus"
             )),
         }
     }
@@ -84,6 +88,8 @@ impl SpeechOutputFormat {
         match self {
             Self::Wav => "audio/wav",
             Self::Pcm => "application/octet-stream",
+            Self::Mp3 => "audio/mpeg",
+            Self::Opus => "audio/ogg",
         }
     }
 
@@ -91,6 +97,8 @@ impl SpeechOutputFormat {
         match self {
             Self::Wav => "wav",
             Self::Pcm => "pcm",
+            Self::Mp3 => "mp3",
+            Self::Opus => "opus",
         }
     }
 }
@@ -106,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_only_lossless_speech_formats_for_openai_endpoint() {
+    fn accepts_speech_formats_and_preserves_the_wav_default() {
         assert_eq!(
             SpeechOutputFormat::parse(None).unwrap(),
             SpeechOutputFormat::Wav
@@ -119,7 +127,14 @@ mod tests {
             SpeechOutputFormat::parse(Some(" PCM ")).unwrap(),
             SpeechOutputFormat::Pcm
         );
-        assert!(SpeechOutputFormat::parse(Some("mp3")).is_err());
-        assert!(SpeechOutputFormat::parse(Some("opus")).is_err());
+        assert_eq!(
+            SpeechOutputFormat::parse(Some("mp3")).unwrap(),
+            SpeechOutputFormat::Mp3
+        );
+        assert_eq!(
+            SpeechOutputFormat::parse(Some(" OpUs ")).unwrap(),
+            SpeechOutputFormat::Opus
+        );
+        assert!(SpeechOutputFormat::parse(Some("flac")).is_err());
     }
 }

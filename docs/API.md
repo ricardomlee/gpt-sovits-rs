@@ -1,6 +1,6 @@
 # API
 
-This page describes version 1.2.2. See [version differences](README.md#先选你的版本)
+This page describes version 1.3.0. See [version differences](README.md#先选你的版本)
 when using an older binary or image.
 
 GPT-SoVITS-RS exposes three integration surfaces:
@@ -397,8 +397,20 @@ curl --fail-with-body http://127.0.0.1:9880/v1/audio/speech \
   --output output.wav
 ```
 
-`input` and `voice` are required. `response_format` defaults to `wav`; `pcm` returns
-raw signed PCM16 little-endian, currently 32 kHz mono. MP3 and Opus requests return 400.
+`input` and `voice` are required. `response_format` defaults to `wav` for
+compatibility with existing callers. Version 1.3.0 adds `mp3` and `opus`:
+
+| Format | Content-Type | Output |
+| --- | --- | --- |
+| `wav` | `audio/wav` | PCM16 WAV at the model's sample rate, currently 32 kHz mono |
+| `pcm` | `application/octet-stream` | Raw signed PCM16 little-endian at the same rate |
+| `mp3` | `audio/mpeg` | 64 kbit/s mono MP3, with encoder delay and padding metadata |
+| `opus` | `audio/ogg` | Ogg/Opus, 48 kHz mono, 48 kbit/s target VBR |
+
+MP3 and Opus responses contain complete files. Opus is resampled using libsoxr;
+its pre-skip and final granule preserve the audio duration. `x-tts-sample-rate`
+reports the encoded output rate. Unsupported formats return 400 before inference.
+`/tts`, `/tts/stream` and `/tts/batch` continue to return WAV.
 `speed` overrides the voice's speed setting.
 
 `model` and `instructions` are accepted for client compatibility and currently ignored.
@@ -406,6 +418,9 @@ The selected voice profile determines the GPT/SoVITS weights. To change pronunci
 use annotations in `input`; `instructions` does not control emotion or delivery.
 
 Set the client base URL to `http://127.0.0.1:9880/v1` when using compatible agent frameworks.
+For Hermes, configure its built-in OpenAI provider as shown in
+[Agent integration](AGENT_INTEGRATION.md#hermes). The server performs audio encoding;
+the binary archives and Docker images include the required libraries.
 
 ## Errors
 

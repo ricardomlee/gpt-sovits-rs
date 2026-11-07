@@ -33,7 +33,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsoxr-dev
+          sudo apt-get install -y libsoxr-dev libmp3lame-dev cmake
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -75,6 +75,24 @@ jobs:
           cargo clippy --locked --manifest-path client/Cargo.toml --all-targets -- -D warnings
           cargo test --locked --manifest-path client/Cargo.toml
 
+  macos-audio-codecs:
+    name: Audio codecs (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - run: brew install libsoxr lame cmake
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Decode MP3 and Ogg Opus roundtrips
+        run: |
+          LAME_LIB_DIR="$(brew --prefix lame)/lib"
+          export LAME_LIB_DIR
+          cargo test --locked --features http-api --bin gpt-sovits server::encoding
+
   release-binary:
     name: Compile release binary
     runs-on: ubuntu-24.04
@@ -84,7 +102,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsoxr-dev patchelf
+          sudo apt-get install -y libsoxr-dev libmp3lame-dev cmake patchelf
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -115,6 +133,10 @@ jobs:
           cp target/release/gpt-sovits-client "dist/${package}/"
           soxr="$(ldconfig -p | awk '$1 == "libsoxr.so.0" { print $NF; exit }')"
           cp -L "${soxr}" "dist/${package}/lib/libsoxr.so.0"
+          lame="$(ldconfig -p | awk '$1 == "libmp3lame.so.0" { print $NF; exit }')"
+          cp -L "${lame}" "dist/${package}/lib/libmp3lame.so.0"
+          cp LICENSE THIRD_PARTY.md "dist/${package}/"
+          cp -R licenses "dist/${package}/"
           rpath="\$ORIGIN/lib"
           patchelf --set-rpath "${rpath}" "dist/${package}/gpt-sovits"
           patchelf --set-rpath "${rpath}" "dist/${package}/gpt-sovits-convert"
@@ -146,7 +168,7 @@ jobs:
       - name: Install test dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsoxr-dev
+          sudo apt-get install -y libsoxr-dev libmp3lame-dev cmake ffmpeg jq
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -186,6 +208,7 @@ jobs:
         env:
           DEMO_IMAGE: gpt-sovits-rs:ci
           DEMO_PULL_POLICY: never
+          VERIFY_SPEECH_FORMATS: "1"
         run: |
           export DEMO_EXPECTED_VERSION
           DEMO_EXPECTED_VERSION=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "gpt-sovits-rs") | .version')

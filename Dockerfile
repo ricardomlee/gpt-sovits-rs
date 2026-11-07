@@ -15,6 +15,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
     libsoxr-dev \
+    libmp3lame-dev \
+    cmake \
     ca-certificates \
     clang \
     g++ \
@@ -44,11 +46,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     libssl3 \
     libsoxr0 \
+    libmp3lame0 \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/gpt-sovits /usr/local/bin/gpt-sovits
 COPY --from=builder /app/gpt-sovits-convert /usr/local/bin/gpt-sovits-convert
+COPY LICENSE THIRD_PARTY.md /usr/share/doc/gpt-sovits-rs/
+COPY licenses/ /usr/share/doc/gpt-sovits-rs/licenses/
 
 RUN mkdir -p /app/models
 

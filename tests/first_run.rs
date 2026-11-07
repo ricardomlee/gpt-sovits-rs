@@ -3,10 +3,14 @@
 use std::path::Path;
 
 fn check_wav(path: &Path) {
+    check_wav_at_rate(path, 32_000);
+}
+
+fn check_wav_at_rate(path: &Path, sample_rate: u32) {
     let mut reader = hound::WavReader::open(path).expect("a complete WAV, not an HTTP error body");
     let spec = reader.spec();
     assert_eq!(spec.channels, 1);
-    assert_eq!(spec.sample_rate, 32_000);
+    assert_eq!(spec.sample_rate, sample_rate);
     assert_eq!(spec.bits_per_sample, 16);
     let samples: Vec<f64> = reader
         .samples::<i16>()
@@ -40,7 +44,14 @@ fn public_sample_is_real_non_silent_audio() {
 #[test]
 #[ignore = "requires a completed HTTP request; set FIRST_RUN_WAV to the response path"]
 fn generated_http_audio_is_valid() {
-    check_wav(Path::new(&std::env::var("FIRST_RUN_WAV").unwrap()));
+    let rate = std::env::var("FIRST_RUN_SAMPLE_RATE")
+        .map(|value| {
+            value
+                .parse()
+                .expect("FIRST_RUN_SAMPLE_RATE must be an integer")
+        })
+        .unwrap_or(32_000);
+    check_wav_at_rate(Path::new(&std::env::var("FIRST_RUN_WAV").unwrap()), rate);
 }
 
 #[test]
