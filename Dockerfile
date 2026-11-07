@@ -17,6 +17,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsoxr-dev \
     libmp3lame-dev \
     cmake \
+    make \
     ca-certificates \
     clang \
     g++ \
