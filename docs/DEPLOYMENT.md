@@ -27,7 +27,7 @@ cp .env.example .env
 
 ```env
 GPT_SOVITS_PORT=127.0.0.1:9880
-GPT_SOVITS_IMAGE_TAG=1.2.1
+GPT_SOVITS_IMAGE_TAG=1.2.2
 ```
 
 路径按配置位置解析：
@@ -76,7 +76,7 @@ docker compose -f compose.cpu.yml up -d --wait --wait-timeout 900
 docker compose -f compose.cpu.yml ps
 ```
 
-CPU 固定版本镜像为 `ghcr.io/ricardomlee/gpt-sovits-rs:1.2.1`。
+CPU 固定版本镜像为 `ghcr.io/ricardomlee/gpt-sovits-rs:1.2.2`。
 
 ## CUDA
 
@@ -84,10 +84,10 @@ CPU 固定版本镜像为 `ghcr.io/ricardomlee/gpt-sovits-rs:1.2.1`。
 里设置 `CUDA_IMAGE_TAG`：
 
 ```text
-RTX 20: 1.2.1-cuda-sm75
-RTX 30: 1.2.1-cuda-sm86
-RTX 40: 1.2.1-cuda-sm89
-H100:   1.2.1-cuda-sm90
+RTX 20: 1.2.2-cuda-sm75
+RTX 30: 1.2.2-cuda-sm86
+RTX 40: 1.2.2-cuda-sm89
+H100:   1.2.2-cuda-sm90
 ```
 
 ```bash
@@ -121,11 +121,11 @@ Docker 镜像包含相同的编码能力。第三方库说明见 [Audio Codec No
 | `gpt-sovits-convert` | 模型和 SV 文件转换 |
 | `gpt-sovits-client`（1.2.2 起） | 调用已有 HTTP 服务，适用于脚本和 Agent |
 
-以下使用 1.2.1 包演示服务启动；客户端用法见 [HTTP 客户端](../client/README.md)。
+以下使用 1.2.2 包演示服务启动；客户端用法见 [HTTP 客户端](../client/README.md)。
 
 ```bash
-tar -xzf gpt-sovits-1.2.1-linux-x86_64.tar.gz
-cd gpt-sovits-1.2.1-linux-x86_64
+tar -xzf gpt-sovits-1.2.2-linux-x86_64.tar.gz
+cd gpt-sovits-1.2.2-linux-x86_64
 ./gpt-sovits-convert --version
 ./gpt-sovits --models-dir /path/to/models \
   --voices-dir /path/to/voices \

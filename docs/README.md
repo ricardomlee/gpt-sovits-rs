@@ -7,10 +7,10 @@
 | 版本 | 功能 |
 | --- | --- |
 | [1.3.0](releases/v1.3.0.md) | HTTP 返回 MP3/Ogg Opus，Hermes 内置 provider 直接接入 |
-| [1.2.2](releases/v1.2.2.md) | 中文数字归一化、注音位置与数字切句修复、HTTP 客户端、Hermes 接入和本地 GPU 基准报告 |
+| [1.2.2](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.2.2) | SoVITS 长度边界乱读修复、中文数字与注音处理、HTTP 客户端、Hermes 接入和本地 GPU 基准报告 |
 | [1.2.1](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.2.1) | v2/v2Pro、SV 文件、HTTP、分句流式和多模型缓存；独立二进制默认监听本机 |
 
-首次体验脚本固定使用已验证的 `1.2.1` 镜像。
+首次体验脚本固定使用已验证的 `1.2.2` 镜像。
 报告问题和性能时，同时提供源码提交、构建 features/profile 或镜像 digest。
 下载旧版用户应阅读[该 tag 下的文档](https://github.com/ricardomlee/gpt-sovits-rs/tree/v1.2.1/docs)。
 

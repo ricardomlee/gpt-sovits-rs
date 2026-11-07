@@ -36,7 +36,7 @@ The demo runs the published release. Unreleased changes on `master`, including
 numeric-reading fixes, require a source build; see [version scope](docs/README.md#先选你的版本).
 
 The script downloads weights directly from their publisher, verifies checksums,
-converts all four models inside the published **1.2.1** image, and checks the setup.
+converts all four models inside the published **1.2.2** image, and checks the setup.
 Read [what it downloads](examples/first-run/downloads.txt) and
 [the script](examples/first-run/prepare.sh) before running it. Model licenses remain
 separate from this project's MIT license.
