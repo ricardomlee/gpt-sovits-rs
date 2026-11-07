@@ -66,7 +66,8 @@ target/release/examples/gpu_benchmark \
 
 [1.3.0 Sun v2Pro + SV / RTX 4060 Ti](benchmarks/v1.3.0-sun-cuda.md)：
 提交 `c58324d`，12 项各测量 5 次，热推理 RTF 中位数 0.1213–0.1487。
-HTTP 对照通过原定 ASR 阈值，用户试听通过；中英混合句的识别错误仍高于纯中文。
+发布前候选镜像通过 ASR 阈值和用户试听。正式镜像复验的混合句触发单项阈值；
+追加每版 32 段对照后，旧版与正式版 MER 分别为 36.67% 和 36.04%，详见报告。
 
 [SoVITS 通道归一化修复验证](benchmarks/v1.2.2-layer-norm-fix.md)：
 提交 `46b7455`，热推理 RTF 中位数 0.1268–0.1537，完整 HTTP 回归通过原定 ASR 阈值。
