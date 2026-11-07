@@ -4,8 +4,12 @@
 response. Use it from a shell, a script, or an agent's command provider.
 The service owns models, reference audio, SV embeddings, and inference settings.
 
-The client is included in the 1.2.2 Linux/macOS binary archives and uses the same
+The client has been included in Linux/macOS binary archives since 1.2.2 and uses the same
 version number as the inference package. It also works with a v1.2.1 service.
+
+Hermes can connect directly to a 1.3.0 service using its built-in OpenAI provider;
+see [Hermes configuration](../docs/AGENT_INTEGRATION.md#hermes). This client is
+optional for shell scripts and command providers.
 
 ## Install
 

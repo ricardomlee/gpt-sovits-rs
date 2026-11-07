@@ -13,6 +13,7 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 
 mod audio;
+mod encoding;
 mod handlers;
 mod lifecycle;
 mod pipeline_registry;

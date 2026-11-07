@@ -51,4 +51,7 @@ curl --fail-with-body --silent --show-error --max-time 300 "$url/tts" \
 cd -- "$root"
 FIRST_RUN_WAV="$artifacts/first.wav" cargo test --locked --test first_run \
   generated_http_audio_is_valid -- --ignored --nocapture
+if [[ ${VERIFY_SPEECH_FORMATS:-0} == 1 ]]; then
+  bash "$root/examples/verify-http-formats.sh" "$url" demo "$artifacts/formats"
+fi
 printf 'Acceptance passed; evidence: %s\n' "$artifacts"

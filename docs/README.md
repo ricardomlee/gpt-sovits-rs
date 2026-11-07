@@ -1,11 +1,12 @@
 # 文档导航与版本范围
 
-本文档对应 1.2.2。下载入口见 [Releases](https://github.com/ricardomlee/gpt-sovits-rs/releases)。
+本文档对应 1.3.0。下载入口见 [Releases](https://github.com/ricardomlee/gpt-sovits-rs/releases)。
 
 ## 先选你的版本
 
 | 版本 | 功能 |
 | --- | --- |
+| [1.3.0](releases/v1.3.0.md) | HTTP 返回 MP3/Ogg Opus，Hermes 内置 provider 直接接入 |
 | [1.2.2](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.2.2) | SoVITS 长度边界乱读修复、中文数字与注音处理、HTTP 客户端、Hermes 接入和本地 GPU 基准报告 |
 | [1.2.1](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.2.1) | v2/v2Pro、SV 文件、HTTP、分句流式和多模型缓存；独立二进制默认监听本机 |
 

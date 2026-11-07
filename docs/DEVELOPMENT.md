@@ -7,17 +7,24 @@ The HTTP command-line client builds separately under `client/`.
 ## Build From Source
 
 Use stable Rust and Cargo, a C/C++ build toolchain, pkg-config, and libsoxr headers.
+HTTP builds also need CMake and libmp3lame. Cargo builds the bundled libopus source.
+Codec roundtrip tests run on Linux and both macOS architectures in CI.
+For a running v2/v2Pro service, install FFmpeg and jq and run
+`bash examples/verify-http-formats.sh http://127.0.0.1:9880 demo /tmp/speech-formats`.
+This maintainer check retains the requests, response headers, encoded files and
+independently decoded WAVs. The service itself does not invoke FFmpeg.
 CI uses Ubuntu 24.04 and the stable toolchain; the repository does not currently
 declare a tested minimum Rust version.
 
 ```bash
-sudo apt-get install -y build-essential pkg-config libsoxr-dev
+sudo apt-get install -y build-essential pkg-config libsoxr-dev libmp3lame-dev cmake
 cargo build --locked --release --features http-api
 target/release/gpt-sovits --version
 target/release/gpt-sovits-convert --version
 ```
 
-On macOS, install libsoxr with `brew install libsoxr pkg-config`. These builds are
+On macOS, run `brew install libsoxr lame pkg-config cmake` and
+`export LAME_LIB_DIR="$(brew --prefix lame)/lib"`. These builds are
 CPU-only; this repository does not enable Candle's Metal backend. Linux ARM users
 can build natively; the optional `mkl` feature is intended for x86_64 CPU builds.
 

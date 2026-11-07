@@ -12,6 +12,7 @@ __pycache__/
 
 # Debug intermediates
 *.txt
+!licenses/*.txt
 check_*.py
 compare_*.py
 debug_*.py

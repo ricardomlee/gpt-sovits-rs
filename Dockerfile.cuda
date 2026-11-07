@@ -16,7 +16,7 @@ ENV CUDA_COMPUTE_CAP=${CUDA_COMPUTE_CAP}
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl build-essential clang g++ pkg-config libssl-dev ca-certificates libsoxr-dev \
+    curl build-essential clang g++ pkg-config libssl-dev ca-certificates libsoxr-dev libmp3lame-dev cmake \
     && rm -rf /var/lib/apt/lists/* \
     && curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
     && ln -s /root/.cargo/bin/cargo /usr/local/bin/cargo \
@@ -45,7 +45,7 @@ ENV NVIDIA_VISIBLE_DEVICES=all
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libssl3 ca-certificates curl libsoxr0 libstdc++6 libgomp1 \
+    libssl3 ca-certificates curl libsoxr0 libmp3lame0 libstdc++6 libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy only the CUDA libs our binary actually links against (ldd verified)
@@ -56,6 +56,8 @@ COPY --from=builder /usr/local/cuda/lib64/libcurand.so.10.4.2.51  /usr/local/lib
 
 COPY --from=builder /app/gpt-sovits /usr/local/bin/gpt-sovits
 COPY --from=builder /app/gpt-sovits-convert /usr/local/bin/gpt-sovits-convert
+COPY LICENSE THIRD_PARTY.md /usr/share/doc/gpt-sovits-rs/
+COPY licenses/ /usr/share/doc/gpt-sovits-rs/licenses/
 
 RUN ldconfig && mkdir -p /app/models
 
