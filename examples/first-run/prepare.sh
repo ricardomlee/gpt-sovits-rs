@@ -9,7 +9,7 @@ if [[ $# != 1 || ${1:-} == --help ]]; then
   [[ $# == 1 && $1 == --help ]] && exit 0
   exit 2
 fi
-image=${DEMO_IMAGE:-ghcr.io/ricardomlee/gpt-sovits-rs:1.2.2}
+image=${DEMO_IMAGE:-ghcr.io/ricardomlee/gpt-sovits-rs:1.3.0}
 pull_policy=${DEMO_PULL_POLICY:-always}
 if [[ ! $image =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]]; then
   printf 'Invalid DEMO_IMAGE. Use a Docker image reference without whitespace or shell syntax.\n' >&2
