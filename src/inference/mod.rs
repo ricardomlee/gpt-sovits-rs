@@ -460,11 +460,14 @@ impl Pipeline {
         tracing::info!(
             mode = mode,
             max_tokens = options.max_tokens,
+            seed = ?options.seed.map(|seed| seed.wrapping_add(index as u64)),
             "synthesizing chunk"
         );
         let start = Instant::now();
+        let mut options = options.clone();
+        options.seed = options.seed.map(|seed| seed.wrapping_add(index as u64));
         let audio =
-            self.inference_with_mode(mode, text, reference_audio, reference_text, options)?;
+            self.inference_with_mode(mode, text, reference_audio, reference_text, &options)?;
         log_chunk_result(text, &audio, start.elapsed().as_millis());
         Ok(audio)
     }
@@ -484,9 +487,22 @@ impl Pipeline {
         }
     }
 
-    /// Reset the backend RNG for reproducible synthesis and quality comparisons.
+    /// Reset only the backend RNG. Use `InferenceOptions::seed` for complete,
+    /// request-local GPT sampling and SoVITS noise control.
+    #[deprecated(note = "use InferenceOptions::seed for request-local synthesis")]
     pub fn set_seed(&self, seed: u64) -> Result<()> {
         self.device.set_seed(seed)?;
+        Ok(())
+    }
+
+    fn configure_sampling(&self, seed: Option<u64>) -> Result<()> {
+        if let Some(gpt) = &self.gpt_model {
+            gpt.set_sampling_seed(seed)?;
+        }
+        if let Some(sovits) = &self.sovits_model {
+            // Keep acoustic noise independent of the semantic sampling stream.
+            sovits.set_sampling_seed(seed.map(|seed| seed ^ 0x9e37_79b9_7f4a_7c15))?;
+        }
         Ok(())
     }
 
@@ -497,6 +513,7 @@ impl Pipeline {
         reference_text: &str,
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
+        self.configure_sampling(options.seed)?;
         if self.gpt_model.is_none() {
             return Err(Error::ModelLoadError("GPT model not loaded".to_string()));
         }
@@ -562,6 +579,7 @@ impl Pipeline {
         reference_text: &str,
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
+        self.configure_sampling(options.seed)?;
         let total_start = Instant::now();
 
         // Reference features (cached after first call)
@@ -633,6 +651,7 @@ impl Pipeline {
         reference_text: &str,
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
+        self.configure_sampling(options.seed)?;
         let total_start = Instant::now();
 
         let ref_start = Instant::now();

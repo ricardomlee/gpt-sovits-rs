@@ -9,6 +9,7 @@ use std::path::Path;
 
 #[derive(Deserialize)]
 pub(super) struct TtsRequest {
+    pub(super) seed: Option<u64>,
     pub(super) voice: Option<String>,
     #[serde(alias = "input")]
     pub(super) text: String,
@@ -49,6 +50,7 @@ pub(super) struct TtsRequest {
 
 #[derive(Deserialize)]
 pub(super) struct OpenAiSpeechRequest {
+    pub(super) seed: Option<u64>,
     #[allow(dead_code)]
     pub(super) model: Option<String>,
     #[serde(alias = "text")]
@@ -87,6 +89,7 @@ pub(super) struct OpenAiSpeechRequest {
 /// Results stream back as NDJSON (one JSON line per item) as each completes.
 #[derive(Deserialize)]
 pub(super) struct TtsBatchRequest {
+    pub(super) seed: Option<u64>,
     /// List of texts to synthesize (processed sequentially on GPU).
     #[serde(alias = "inputs")]
     pub(super) texts: Vec<String>,
@@ -146,6 +149,7 @@ pub(super) struct RequestPathPolicy {
 
 #[derive(Default)]
 pub(super) struct SynthesisOverrides {
+    pub(super) seed: Option<u64>,
     pub(super) top_k: Option<usize>,
     pub(super) top_p: Option<f32>,
     pub(super) temperature: Option<f32>,
@@ -163,6 +167,7 @@ pub(super) struct SynthesisOverrides {
 impl SynthesisOverrides {
     pub(super) fn from_tts(req: &TtsRequest) -> Self {
         Self {
+            seed: req.seed,
             top_k: req.top_k,
             top_p: req.top_p,
             temperature: req.temperature,
@@ -180,6 +185,7 @@ impl SynthesisOverrides {
 
     pub(super) fn from_openai(req: &OpenAiSpeechRequest) -> Self {
         Self {
+            seed: req.seed,
             speed: req.speed,
             max_tokens: req.max_tokens,
             repetition_penalty: req.repetition_penalty,
@@ -195,6 +201,7 @@ impl SynthesisOverrides {
 
     pub(super) fn from_batch(req: &TtsBatchRequest) -> Self {
         Self {
+            seed: req.seed,
             top_k: req.top_k,
             top_p: req.top_p,
             temperature: req.temperature,
@@ -309,7 +316,7 @@ pub(super) fn resolve_synthesis(
             repetition_penalty: overrides.repetition_penalty,
         },
     );
-    let options = if let Some(path) = sv_embedding.as_ref() {
+    let mut options = if let Some(path) = sv_embedding.as_ref() {
         InferenceOptions {
             sv_embedding: Some(path.into()),
             ..options
@@ -317,6 +324,7 @@ pub(super) fn resolve_synthesis(
     } else {
         options
     };
+    options.seed = overrides.seed;
     let split_method = match overrides.split_method.as_deref().map(str::trim) {
         Some("") | None => defaults.split_method,
         Some(method) => SplitMethod::parse(method)
@@ -405,6 +413,38 @@ pub(super) fn validate_text(text: &str, field: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn seed_is_optional_and_must_be_an_unsigned_integer_on_every_endpoint() {
+        for seed in [
+            serde_json::json!(0),
+            serde_json::json!(u64::MAX),
+            serde_json::Value::Null,
+        ] {
+            let body =
+                serde_json::json!({"voice":"demo","text":"hello","texts":["hello"],"seed":seed});
+            let tts: TtsRequest = serde_json::from_value(body.clone()).unwrap();
+            let speech: OpenAiSpeechRequest = serde_json::from_value(body.clone()).unwrap();
+            let batch: TtsBatchRequest = serde_json::from_value(body).unwrap();
+            assert_eq!(SynthesisOverrides::from_tts(&tts).seed, seed.as_u64());
+            assert_eq!(SynthesisOverrides::from_openai(&speech).seed, seed.as_u64());
+            assert_eq!(SynthesisOverrides::from_batch(&batch).seed, seed.as_u64());
+        }
+        let tts: TtsRequest = serde_json::from_str(r#"{"text":"hello"}"#).unwrap();
+        assert_eq!(tts.seed, None);
+        for seed in [
+            serde_json::json!(-1),
+            serde_json::json!(1.5),
+            serde_json::json!("42"),
+            serde_json::json!(true),
+        ] {
+            let body =
+                serde_json::json!({"voice":"demo","text":"hello","texts":["hello"],"seed":seed});
+            assert!(serde_json::from_value::<TtsRequest>(body.clone()).is_err());
+            assert!(serde_json::from_value::<OpenAiSpeechRequest>(body.clone()).is_err());
+            assert!(serde_json::from_value::<TtsBatchRequest>(body).is_err());
+        }
+    }
 
     fn write_ref_audio(path: &Path) {
         std::fs::write(
@@ -523,6 +563,7 @@ mod tests {
             Some(request_ref.to_string_lossy().into_owned()),
             Some("request prompt".to_string()),
             SynthesisOverrides {
+                seed: Some(0),
                 top_k: Some(33),
                 top_p: Some(0.7),
                 temperature: Some(0.5),
@@ -545,6 +586,7 @@ mod tests {
         assert_eq!(resolved.language, Language::English);
         assert_eq!(resolved.refer_path, request_ref.to_string_lossy());
         assert_eq!(resolved.prompt_text, "request prompt");
+        assert_eq!(resolved.options.seed, Some(0));
         assert_eq!(resolved.options.top_k, 33);
         assert!((resolved.options.top_p - 0.7).abs() < 0.001);
         assert!((resolved.options.temperature - 0.5).abs() < 0.001);

@@ -43,6 +43,9 @@ struct Args {
     warmup: u32,
     #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u32).range(2..=100))]
     repeats: u32,
+    /// Reuse these seeds for each case's measured attempts.
+    #[arg(long, value_delimiter = ',', conflicts_with = "repeats")]
+    seeds: Vec<u64>,
 }
 
 fn hash_file(path: &Path) -> Result<Value> {
@@ -192,7 +195,8 @@ fn benchmark(args: &Args, report: &mut Report) -> Result<()> {
         "repetition_penalty": options.repetition_penalty, "max_tokens": options.max_tokens, "speed": options.speed,
         "sv_embedding": options.sv_embedding.is_some(), "split_sentences": defaults.split_sentences,
         "split_method": format!("{:?}", defaults.split_method), "min_sentence_chars": defaults.min_sentence_chars,
-        "sentence_gap_ms": defaults.sentence_gap_ms, "sentence_fade_ms": defaults.sentence_fade_ms});
+        "sentence_gap_ms": defaults.sentence_gap_ms, "sentence_fade_ms": defaults.sentence_fade_ms,
+        "seeds": args.seeds});
     report.save(&args.output_dir)?;
 
     let start = Instant::now();
@@ -222,6 +226,7 @@ fn benchmark(args: &Args, report: &mut Report) -> Result<()> {
             for repeat in 1..=count {
                 let id = format!("{}-{}{repeat:02}", case.id, if warmup { "w" } else { "r" });
                 println!("Synthesizing {id}");
+                options.seed = args.seeds.get((repeat - 1) as usize).copied();
                 let start = Instant::now();
                 let result = if defaults.split_sentences {
                     pipeline.inference_split_with_method(
@@ -246,6 +251,7 @@ fn benchmark(args: &Args, report: &mut Report) -> Result<()> {
                 };
                 // AudioBuffer owns host samples: synthesis has completed before stopping the clock.
                 let mut attempt = Attempt {
+                    seed: options.seed,
                     elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
                     audio_seconds: None,
                     output: None,
@@ -294,7 +300,14 @@ fn benchmark(args: &Args, report: &mut Report) -> Result<()> {
 }
 
 fn main() -> Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
+    if !args.seeds.is_empty() {
+        ensure!(
+            (2..=100).contains(&args.seeds.len()),
+            "provide between two and 100 seeds"
+        );
+        args.repeats = args.seeds.len() as u32;
+    }
     ensure!(
         !args.build_label.trim().is_empty(),
         "build label is required"

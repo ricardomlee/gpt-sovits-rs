@@ -50,6 +50,7 @@ pub(super) fn add_synthesis_headers(
     voice: Option<&str>,
     language: Language,
     text_chars: usize,
+    seed: Option<u64>,
 ) -> axum::http::response::Builder {
     builder = builder
         .header("x-tts-language", language_code(language))
@@ -57,6 +58,9 @@ pub(super) fn add_synthesis_headers(
 
     if let Some(voice) = voice {
         builder = builder.header("x-tts-voice", safe_header_value(voice));
+    }
+    if let Some(seed) = seed {
+        builder = builder.header("x-tts-seed", seed.to_string());
     }
 
     builder
@@ -106,6 +110,23 @@ impl SpeechOutputFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reports_only_explicit_sampling_seeds() {
+        for seed in [None, Some(0), Some(u64::MAX)] {
+            let response =
+                add_synthesis_headers(Response::builder(), None, Language::Chinese, 1, seed)
+                    .body(Body::empty())
+                    .unwrap();
+            assert_eq!(
+                response
+                    .headers()
+                    .get("x-tts-seed")
+                    .map(|v| v.to_str().unwrap().to_owned()),
+                seed.map(|v| v.to_string())
+            );
+        }
+    }
 
     #[test]
     fn sanitizes_non_ascii_header_values() {

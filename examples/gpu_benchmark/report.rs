@@ -13,6 +13,7 @@ pub struct Case {
 
 #[derive(Debug, Serialize)]
 pub struct Attempt {
+    pub seed: Option<u64>,
     pub elapsed_ms: f64,
     pub audio_seconds: Option<f64>,
     pub output: Option<String>,
@@ -215,6 +216,7 @@ mod tests {
 
     fn attempt(ms: f64, seconds: f64) -> Attempt {
         Attempt {
+            seed: None,
             elapsed_ms: ms,
             audio_seconds: Some(seconds),
             output: None,

@@ -67,7 +67,8 @@ tokenizers = { version = "0.22", default-features = false, features = ["onig"] }
 # Parallelism & Performance
 rayon = "1.10"
 num_cpus = "1.16"
-rand = "0.8"
+rand = "0.9"
+rand_distr = "0.5"
 
 # Async Runtime (for HTTP API)
 tokio = { version = "1.40", features = ["full"], optional = true }

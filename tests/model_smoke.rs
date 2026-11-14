@@ -9,7 +9,7 @@ use gpt_sovits_rs::audio_checks::{
 };
 use gpt_sovits_rs::model_paths::{ModelPathOverrides, ModelPaths};
 use gpt_sovits_rs::voice::{LoadedVoiceProfile, VoiceDefaults};
-use gpt_sovits_rs::{Config, Language, Pipeline};
+use gpt_sovits_rs::{Config, InferenceOptions, Language, Pipeline};
 use std::path::PathBuf;
 
 fn optional_path(var: &str) -> Option<PathBuf> {
@@ -82,30 +82,64 @@ fn real_model_inference_smoke_when_enabled() {
     pipeline
         .preload_speaker_with_options(&reference_audio, reference_text, &options)
         .expect("speaker features should preload");
-    let audio = if defaults.split_sentences {
-        pipeline.inference_split_with_method(
-            &text,
-            &reference_audio,
-            reference_text,
-            &options,
-            &defaults.mode,
-            defaults.min_sentence_chars,
-            defaults.sentence_gap_ms,
-            defaults.sentence_fade_ms,
-            defaults.split_method,
-        )
-    } else {
-        pipeline.inference_with_mode(
-            &defaults.mode,
-            &text,
-            &reference_audio,
-            reference_text,
-            &options,
-        )
-    }
-    .expect("real model smoke inference should succeed");
+    let synthesize = |pipeline: &mut Pipeline, options: &InferenceOptions| {
+        if defaults.split_sentences {
+            pipeline.inference_split_with_method(
+                &text,
+                &reference_audio,
+                reference_text,
+                options,
+                &defaults.mode,
+                defaults.min_sentence_chars,
+                defaults.sentence_gap_ms,
+                defaults.sentence_fade_ms,
+                defaults.split_method,
+            )
+        } else {
+            pipeline.inference_with_mode(
+                &defaults.mode,
+                &text,
+                &reference_audio,
+                reference_text,
+                options,
+            )
+        }
+    };
+    let audio =
+        synthesize(&mut pipeline, &options).expect("real model smoke inference should succeed");
 
     let metrics = AudioQualityMetrics::from_audio(&audio);
     let issues = validate_audio_quality(&metrics, &AudioQualityThresholds::default());
     assert!(issues.is_empty(), "smoke audio quality issues: {issues:?}");
+
+    if let Ok(seed) = std::env::var("GPT_SOVITS_SMOKE_SEED") {
+        let seed: u64 = seed.parse().expect("SMOKE_SEED must be a u64");
+        options.seed = Some(seed);
+        let first = synthesize(&mut pipeline, &options).unwrap();
+        options.seed = Some(seed.wrapping_add(1));
+        let different = synthesize(&mut pipeline, &options).unwrap();
+        assert_ne!(first.samples, different.samples);
+        options.seed = None;
+        let unseeded = synthesize(&mut pipeline, &options).unwrap();
+        assert_ne!(first.samples, unseeded.samples);
+        options.seed = Some(seed);
+        let replay = synthesize(&mut pipeline, &options).unwrap();
+        for audio in [&first, &different, &unseeded, &replay] {
+            let metrics = AudioQualityMetrics::from_audio(audio);
+            let issues = validate_audio_quality(&metrics, &AudioQualityThresholds::default());
+            assert!(issues.is_empty(), "seeded smoke audio issues: {issues:?}");
+        }
+        assert_eq!(first.sample_rate, replay.sample_rate);
+        assert_eq!(first.samples.len(), replay.samples.len());
+        let max_error = first
+            .samples
+            .iter()
+            .zip(&replay.samples)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert!(max_error <= 1e-6, "seeded replay error: {max_error}");
+        eprintln!(
+            "Seed {seed} replayed after other seeded and unseeded requests; max error {max_error}"
+        );
+    }
 }

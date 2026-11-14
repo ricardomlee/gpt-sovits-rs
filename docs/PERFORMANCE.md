@@ -35,6 +35,9 @@ target/release/examples/gpu_benchmark \
 基准读取语料文本，在进程内按音色的分句、语言和采样设置合成，每次尝试均保留。
 语料中的 HTTP endpoint/stream 设置由 [发布验收](RELEASE_ACCEPTANCE.md) 工具使用。
 `--corpus` 可指定同格式语料，`--mode kv` 可单独测 KV；对照时其他设置必须相同。
+需要固定采样对照时，用 `--seeds 11,22,33,44,55` 替代 `--repeats 5`。
+每项按相同 seed 顺序测量，JSON 记录 seed 列表和每次尝试实际使用的 seed。
+固定 seed 的噪声生成走主机端，与默认随机路径分别测量和比较。
 缺少 BERT、HuBERT、v2Pro 的 SV、CUDA，或波形检查失败时返回非零状态。
 
 输出包括：

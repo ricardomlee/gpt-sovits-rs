@@ -86,6 +86,17 @@ there are no automatic retries, cherry-picking, or sampling overrides. Reference
 and target languages are independently detected using `text_language=auto`.
 Sampling remains stochastic, so repeats matter. Output directories cannot be reused.
 
+When both servers support request-local seeds, replace `--repeats 3` with
+`--seeds 11,22,33` in both captures. Each seed is used once per case and recorded
+with the request. The tool requires the matching `x-tts-seed` response header;
+it fails against older services that ignore seeds. Keep an unseeded repeated run
+for normal-use quality coverage as well. A fixed seed aids diagnosis; it does not
+guarantee identical output across hardware, decode modes or library versions.
+
+The optional real-model smoke test also checks replay after other seeded and
+unseeded calls when `GPT_SOVITS_SMOKE_SEED=42` is set. Keep the existing model-smoke
+environment variables for model paths, voice, device and token limit.
+
 Each run contains requests, raw HTTP responses, headers, curl timings, waveform
 metrics, `capture.json`, and `asr.jsonl`. Streaming responses retain their raw
 unknown-length WAV header; the ASR copy has only RIFF/data lengths repaired. PCM

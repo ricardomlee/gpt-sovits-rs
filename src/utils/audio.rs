@@ -206,9 +206,9 @@ impl AudioBuffer {
         let fade_samples = (duration_ms as f32 * self.sample_rate as f32 / 1000.0) as usize;
         let fade_samples = fade_samples.min(self.samples.len());
 
-        for i in 0..fade_samples {
+        for (i, sample) in self.samples[..fade_samples].iter_mut().enumerate() {
             let factor = i as f32 / fade_samples as f32;
-            self.samples[i] *= factor;
+            *sample *= factor;
         }
     }
 
@@ -227,6 +227,27 @@ impl AudioBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fade_in_matches_the_original_gain_curve_including_empty_and_short_buffers() {
+        for len in [0, 1, 6] {
+            for duration_ms in [0, 1, 1000] {
+                let mut audio = AudioBuffer::new(vec![0.5; len], 1000, 1);
+                let count = (duration_ms as usize).min(len);
+                let expected: Vec<f32> = (0..len)
+                    .map(|i| {
+                        if i < count {
+                            0.5 * (i as f32 / count as f32)
+                        } else {
+                            0.5
+                        }
+                    })
+                    .collect();
+                audio.fade_in(duration_ms);
+                assert_eq!(audio.samples, expected);
+            }
+        }
+    }
 
     #[test]
     fn test_audio_buffer_duration() {

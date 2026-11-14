@@ -19,6 +19,8 @@ pub(super) struct Capture {
     pub label: String,
     pub voice: String,
     pub repeats: u32,
+    #[serde(default)]
+    pub seeds: Vec<u64>,
     pub cases: Vec<Case>,
     pub samples: Vec<Sample>,
 }
@@ -32,9 +34,12 @@ pub(super) struct Sample {
     pub issues: Vec<String>,
 }
 
-fn request(case: &Case, voice: &str) -> Value {
+fn request(case: &Case, voice: &str, seed: Option<u64>) -> Value {
     // Keep the voice's sampling settings. Auto detects reference and target languages separately.
     let mut request = json!({"voice": voice, "text_language": "auto"});
+    if let Some(seed) = seed {
+        request["seed"] = json!(seed);
+    }
     if case.endpoint == Endpoint::Speech {
         request["input"] = json!(case.text);
         request["model"] = json!("gpt-sovits");
@@ -116,6 +121,16 @@ fn one(url: &str, directory: &Path, case: &Case, sample: &mut Sample) -> Result<
     ensure!(result.status.success(), "curl failed: {}", result.status);
     let transfer: Value = serde_json::from_slice(&result.stdout)?;
     ensure!(transfer["http_code"] == 200, "expected HTTP 200");
+    if let Some(seed) = sample.request["seed"].as_u64() {
+        let headers = fs::read_to_string(stem.with_extension("headers.txt"))?;
+        ensure!(
+            headers.lines().any(|line| line
+                .split_once(':')
+                .is_some_and(|(key, value)| key.eq_ignore_ascii_case("x-tts-seed")
+                    && value.trim() == seed.to_string())),
+            "server did not acknowledge seed {seed}; it may not support seeded synthesis"
+        );
+    }
     let (wav, normalized) = audio(&fs::read(raw)?, case.endpoint == Endpoint::Stream)?;
     fs::write(stem.with_extension("wav"), normalized)?;
     let metrics = AudioQualityMetrics::from_audio(&wav);
@@ -140,6 +155,7 @@ pub(super) fn run(
     label: &str,
     cases: &[Case],
     repeats: u32,
+    seeds: &[u64],
     directory: &Path,
 ) -> Result<()> {
     let mut capture = Capture {
@@ -147,6 +163,7 @@ pub(super) fn run(
         label: label.into(),
         voice: voice.into(),
         repeats,
+        seeds: seeds.to_vec(),
         cases: cases.to_vec(),
         samples: Vec::new(),
     };
@@ -155,7 +172,7 @@ pub(super) fn run(
         for repeat in 1..=repeats {
             let mut sample = Sample {
                 id: format!("{}-r{repeat:02}", case.id),
-                request: request(case, voice),
+                request: request(case, voice, seeds.get((repeat - 1) as usize).copied()),
                 duration_s: None,
                 rms: None,
                 issues: Vec::new(),
@@ -221,7 +238,8 @@ mod tests {
     fn requests_do_not_override_voice_sampling() {
         let cases: Vec<Case> = serde_json::from_str(include_str!("corpus.json")).unwrap();
         for case in cases {
-            let request = request(&case, "sun");
+            let request = request(&case, "sun", None);
+            assert!(request.get("seed").is_none());
             for key in ["top_k", "temperature", "top_p", "repetition_penalty"] {
                 assert!(request.get(key).is_none());
             }
@@ -231,6 +249,7 @@ mod tests {
                 "text"
             };
             assert_eq!(request[field], case.text);
+            assert_eq!(super::request(&case, "sun", Some(0))["seed"], 0);
         }
     }
 }

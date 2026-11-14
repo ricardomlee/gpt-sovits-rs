@@ -171,8 +171,13 @@ pub(super) async fn openai_speech_handler(
                     ));
                 }
             };
-            let builder =
-                add_synthesis_headers(Response::builder(), voice.as_deref(), language, text_chars);
+            let builder = add_synthesis_headers(
+                Response::builder(),
+                voice.as_deref(),
+                language,
+                text_chars,
+                req.seed,
+            );
             Ok(builder
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, response_format.content_type())
@@ -285,8 +290,13 @@ pub(super) async fn tts_stream_handler(
     });
 
     let stream = ReceiverStream::new(rx).map(|item| item.map_err(std::io::Error::other));
-    let builder =
-        add_synthesis_headers(Response::builder(), voice.as_deref(), language, text_chars);
+    let builder = add_synthesis_headers(
+        Response::builder(),
+        voice.as_deref(),
+        language,
+        text_chars,
+        req.seed,
+    );
     Ok(builder
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "audio/wav")
@@ -337,8 +347,13 @@ pub(super) async fn tts_handler(
                 error!("Failed to encode WAV: {e}");
                 StatusCode::INTERNAL_SERVER_ERROR
             })?;
-            let builder =
-                add_synthesis_headers(Response::builder(), voice.as_deref(), language, text_chars);
+            let builder = add_synthesis_headers(
+                Response::builder(),
+                voice.as_deref(),
+                language,
+                text_chars,
+                req.seed,
+            );
             Ok(builder
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "audio/wav")
@@ -514,7 +529,11 @@ pub(super) async fn tts_batch_handler(
         ReceiverStream::new(rx).map(|bytes| -> Result<axum::body::Bytes, std::io::Error> {
             Ok(axum::body::Bytes::from(bytes))
         });
-    Ok(Response::builder()
+    let mut builder = Response::builder();
+    if let Some(seed) = req.seed {
+        builder = builder.header("x-tts-seed", seed.to_string());
+    }
+    Ok(builder
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/x-ndjson")
         .header(header::TRANSFER_ENCODING, "chunked")
