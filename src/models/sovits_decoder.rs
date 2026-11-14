@@ -421,8 +421,7 @@ impl Decoder {
             if resblock_start < self.resblocks.len() {
                 let mut xs_acc: Option<Tensor> = None;
 
-                for j in resblock_start..resblock_end {
-                    let block = &self.resblocks[j];
+                for block in &self.resblocks[resblock_start..resblock_end] {
                     let xs = block.forward(&x)?;
                     xs_acc = Some(match xs_acc {
                         Some(acc) => acc.add(&xs)?,
@@ -493,8 +492,7 @@ impl Decoder {
 
             if resblock_start < self.resblocks.len() {
                 let mut xs_acc: Option<Tensor> = None;
-                for j in resblock_start..resblock_end {
-                    let block = &self.resblocks[j];
+                for block in &self.resblocks[resblock_start..resblock_end] {
                     let xs = block.forward(&x)?;
                     xs_acc = Some(match xs_acc {
                         Some(acc) => acc.add(&xs)?,
