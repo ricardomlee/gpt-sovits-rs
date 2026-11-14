@@ -41,6 +41,23 @@ pub struct BertCandleModel {
     tokenizer: Tokenizer,
     device: Device,
     dtype: DType,
+    max_length: usize,
+    vocab_size: usize,
+}
+
+fn validate_token_ids(ids: &[u32], max_length: usize, vocab_size: usize) -> crate::Result<()> {
+    if ids.len() > max_length {
+        return Err(crate::Error::InferenceError(format!(
+            "BERT input has {} tokens; maximum is {max_length}; split the text into shorter chunks",
+            ids.len()
+        )));
+    }
+    if let Some(id) = ids.iter().find(|id| **id as usize >= vocab_size) {
+        return Err(crate::Error::InferenceError(format!(
+            "BERT token ID {id} is outside vocabulary size {vocab_size}; check tokenizer.json"
+        )));
+    }
+    Ok(())
 }
 
 impl BertCandleModel {
@@ -84,6 +101,8 @@ impl BertCandleModel {
             tokenizer,
             device: device.clone(),
             dtype,
+            max_length: config.max_position_embeddings,
+            vocab_size: config.vocab_size,
         })
     }
 
@@ -95,6 +114,8 @@ impl BertCandleModel {
             .map_err(|e| crate::Error::InferenceError(format!("tokenize: {e}")))?;
 
         let ids: Vec<u32> = enc.get_ids().to_vec();
+        // Validate on the host: CUDA index errors can poison subsequent requests.
+        validate_token_ids(&ids, self.max_length, self.vocab_size)?;
         let mask: Vec<u32> = enc.get_attention_mask().to_vec();
         let seq = ids.len();
 
@@ -115,5 +136,19 @@ impl BertCandleModel {
 
     pub fn dtype(&self) -> DType {
         self.dtype
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validates_position_and_vocabulary_bounds_before_gpu_indexing() {
+        assert!(validate_token_ids(&vec![21127; 512], 512, 21128).is_ok());
+        let long = validate_token_ids(&vec![0; 513], 512, 21128).unwrap_err();
+        assert!(long.to_string().contains("513 tokens; maximum is 512"));
+        let invalid = validate_token_ids(&[101, 21128, 102], 512, 21128).unwrap_err();
+        assert!(invalid.to_string().contains("outside vocabulary"));
     }
 }

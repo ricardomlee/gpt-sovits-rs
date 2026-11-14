@@ -16,8 +16,6 @@ fn device_str(dev: &Device) -> &'static str {
 pub struct BertModel {
     model: Arc<super::bert_candle::BertCandleModel>,
     device: &'static str,
-    #[allow(dead_code)]
-    max_length: usize,
 }
 
 impl BertModel {
@@ -52,7 +50,6 @@ impl BertModel {
         Ok(Self {
             model: Arc::new(model),
             device: device_str(device),
-            max_length: 512,
         })
     }
 

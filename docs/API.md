@@ -468,6 +468,8 @@ Configured BERT and HuBERT models must load successfully for CLI/server startup.
 Feature extraction, device transfer, semantic encoding, and BERT alignment failures
 stop inference with the failed stage in the error message. Library callers can
 still omit these optional models explicitly.
+BERT rejects inputs over 512 tokens (including special tokens) or token IDs outside
+its vocabulary before GPU execution. Split long text into shorter chunks.
 
 Reference WAVs support 8/16/24/32-bit PCM and 32-bit float. Truncated samples and
 NaN/Inf values are rejected; each PCM width uses its own amplitude scale.
