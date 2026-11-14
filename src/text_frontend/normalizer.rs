@@ -1,8 +1,9 @@
 //! Text normalization with source-character positions for pinyin annotations.
 
+mod english;
 mod numbers;
 
-use crate::Result;
+use crate::{Language, Result};
 
 /// Text normalizer for TTS input.
 #[derive(Debug, Default)]
@@ -76,7 +77,10 @@ impl TextNormalizer {
     /// Normalize text, expanding numbers using Chinese reading rules.
     /// Use `TextFrontend` for language-aware normalization and G2P.
     pub fn normalize(&self, text: &str) -> Result<String> {
-        Ok(self.normalize_mapped(text, true).into_parts().0)
+        Ok(self
+            .normalize_mapped(text, Language::Chinese)
+            .into_parts()
+            .0)
     }
 
     /// Normalize Chinese punctuation to the phone symbols used by GPT-SoVITS.
@@ -87,7 +91,8 @@ impl TextNormalizer {
         normalized.into_parts().0
     }
 
-    pub(super) fn normalize_mapped(&self, text: &str, chinese_numbers: bool) -> NormalizedText {
+    pub(super) fn normalize_mapped(&self, text: &str, language: Language) -> NormalizedText {
+        let expand_numbers = matches!(language, Language::Chinese | Language::English);
         let mut normalized = NormalizedText(Vec::with_capacity(text.chars().count()));
         let mut whitespace = None;
         for (index, ch) in text.chars().enumerate() {
@@ -107,25 +112,41 @@ impl TextNormalizer {
                 '[' => '【',
                 ']' => '】',
                 ',' => '，',
-                '０'..='９' if chinese_numbers => {
+                '０'..='９' if expand_numbers => {
                     char::from(b'0' + (ch as u32 - '０' as u32) as u8)
                 }
-                '％' if chinese_numbers => '%',
-                '．' if chinese_numbers => '.',
-                '＋' if chinese_numbers => '+',
-                '－' | '−' if chinese_numbers => '-',
+                '％' if expand_numbers => '%',
+                '．' if expand_numbers => '.',
+                '＋' if expand_numbers => '+',
+                '－' | '−' if expand_numbers => '-',
                 ch => ch,
             };
             normalized.0.push((ch, Some(index)));
         }
 
-        if chinese_numbers {
+        if expand_numbers {
             let chars: Vec<char> = normalized.0.iter().map(|(ch, _)| *ch).collect();
             let mut expanded = Vec::with_capacity(chars.len());
             let mut i = 0;
             while i < chars.len() {
-                if let Some((end, spoken)) = numbers::expand_at(&chars, i) {
+                let number = if language == Language::English {
+                    english::expand_at(&chars, i)
+                } else {
+                    numbers::expand_at(&chars, i)
+                };
+                if let Some((end, spoken)) = number {
+                    // Keep expanded words separate from adjacent identifiers and punctuation.
+                    if language == Language::English
+                        && expanded.last().is_some_and(|(ch, _)| *ch != ' ')
+                    {
+                        expanded.push((' ', None));
+                    }
                     expanded.extend(spoken.chars().map(|ch| (ch, None)));
+                    if language == Language::English
+                        && chars.get(end).is_some_and(|ch| !ch.is_whitespace())
+                    {
+                        expanded.push((' ', None));
+                    }
                     i = end;
                 } else {
                     expanded.push(normalized.0[i]);

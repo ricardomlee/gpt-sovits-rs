@@ -143,9 +143,7 @@ impl TextFrontend {
         } else {
             language
         };
-        let mut normalized = self
-            .normalizer
-            .normalize_mapped(&clean_text, lang == Language::Chinese);
+        let mut normalized = self.normalizer.normalize_mapped(&clean_text, lang);
         let (normalized, pinyin_overrides) = if lang == Language::Chinese {
             normalized.normalize_chinese_model_text();
             let (normalized, source_indices) = normalized.into_parts();
@@ -242,6 +240,33 @@ impl Default for TextFrontend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn english_numbers_reach_phonemes_as_english_words() {
+        let frontend = TextFrontend::new().unwrap();
+        for (input, spoken) in [
+            ("Pay 123 dollars", "Pay one hundred twenty three dollars"),
+            ("Value 3.14", "Value three point one four"),
+            ("Progress 12.5%", "Progress twelve point five percent"),
+            ("Code 007", "Code zero zero seven"),
+        ] {
+            let (ids, _, normalized) = frontend
+                .process_with_word2ph_and_text(input, Language::Auto)
+                .unwrap();
+            assert_eq!(normalized, spoken, "{input}");
+            assert_eq!(
+                frontend.process(input, Language::English).unwrap(),
+                frontend.process(spoken, Language::English).unwrap(),
+                "{input}"
+            );
+            assert_eq!(ids, frontend.process(spoken, Language::English).unwrap());
+            assert_eq!(
+                frontend.get_phonemes(input, Language::English).unwrap(),
+                frontend.get_phonemes(spoken, Language::English).unwrap(),
+                "{input}"
+            );
+        }
+    }
 
     #[test]
     fn auto_keeps_chinese_phones_even_when_english_is_the_majority() {
@@ -433,15 +458,15 @@ mod tests {
     }
 
     #[test]
-    fn language_is_resolved_before_chinese_number_expansion() {
+    fn language_is_resolved_before_number_expansion() {
         let frontend = TextFrontend::new().unwrap();
         for (input, requested, expected_lang, expected) in [
-            ("50%", Language::English, Language::English, "50%"),
+            ("50%", Language::English, Language::English, "fifty percent"),
             (
                 "value 3.14",
                 Language::Auto,
                 Language::English,
-                "value 3.14",
+                "value three point one four",
             ),
             (
                 "音量50%",

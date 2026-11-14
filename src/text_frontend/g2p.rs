@@ -3,7 +3,7 @@
 //! For Chinese: converts characters to initials + finals with tones,
 //! matching GPT-SoVITS Python text frontend (symbols_v2 format).
 
-use crate::text_frontend::tone_sandhi::ToneSandhi;
+use crate::text_frontend::{normalizer::TextNormalizer, tone_sandhi::ToneSandhi};
 use crate::{Error, Language, Result};
 use jieba_rs::Jieba;
 use pinyin::ToPinyin;
@@ -784,6 +784,16 @@ impl G2PConverter {
     /// Convert English text to ARPABET phonemes via CMUdict lookup.
     /// Words not found in CMUdict are spelled letter-by-letter.
     fn convert_english(&self, text: &str) -> Result<String> {
+        let normalized = text
+            .chars()
+            .any(|ch| ch.is_ascii_digit() || matches!(ch, '０'..='９'))
+            .then(|| {
+                TextNormalizer::new()
+                    .normalize_mapped(text, Language::English)
+                    .into_parts()
+                    .0
+            });
+        let text = normalized.as_deref().unwrap_or(text);
         let phonemes: Vec<String> = text
             .split_whitespace()
             .map(|word| self.english_word_to_phonemes(word))
@@ -922,6 +932,23 @@ mod tests {
         let converter = G2PConverter::new().unwrap();
         let result = converter.convert("Hello", Language::English);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn direct_english_g2p_preserves_numbers() {
+        let converter = G2PConverter::new().unwrap();
+        for (input, spoken) in [
+            ("123", "one hundred twenty three"),
+            ("12.5%", "twelve point five percent"),
+            ("v12", "v one two"),
+            ("１２", "twelve"),
+        ] {
+            assert_eq!(
+                converter.convert(input, Language::English).unwrap(),
+                converter.convert(spoken, Language::English).unwrap(),
+                "{input}"
+            );
+        }
     }
 
     #[test]
