@@ -156,7 +156,11 @@ fn real_model_inference_smoke_when_enabled() {
         eprintln!("Expected feature error: {error}");
     };
     if pipeline.bert_model().is_some() {
-        let oversized = "你好".repeat(300);
+        let oversized = if language == Language::English {
+            "hello ".repeat(600)
+        } else {
+            "你好".repeat(300)
+        };
         assert_feature_error(
             &mut pipeline,
             &oversized,
@@ -166,7 +170,7 @@ fn real_model_inference_smoke_when_enabled() {
         );
         assert_feature_error(
             &mut pipeline,
-            "你好",
+            &text,
             &reference_audio,
             &oversized,
             "Reference BERT",
@@ -174,12 +178,14 @@ fn real_model_inference_smoke_when_enabled() {
     }
     if pipeline.hubert_model().is_some() {
         let truncated = tempfile::NamedTempFile::new().unwrap();
-        let mut bytes = std::fs::read(&reference_audio).unwrap();
+        let mut bytes = gpt_sovits_rs::AudioBuffer::new(vec![0.0; 16000], 16000, 1)
+            .to_wav_bytes()
+            .unwrap();
         bytes.pop();
         std::fs::write(truncated.path(), bytes).unwrap();
         assert_feature_error(
             &mut pipeline,
-            "你好",
+            &text,
             truncated.path(),
             reference_text,
             "Reference HuBERT",
@@ -210,7 +216,7 @@ fn real_model_inference_smoke_when_enabled() {
         for _ in 0..2 {
             assert_feature_error(
                 &mut pipeline,
-                "你好",
+                &text,
                 &reference_audio,
                 reference_text,
                 "Reference semantic token",
@@ -218,7 +224,7 @@ fn real_model_inference_smoke_when_enabled() {
         }
         pipeline.load_semantic_tokenizer(&paths.sovits).unwrap();
         let recovered = pipeline
-            .inference_with_mode("kv", "你好", &reference_audio, reference_text, &options)
+            .inference_with_mode("kv", &text, &reference_audio, reference_text, &options)
             .expect("failed features must not poison the speaker cache");
         assert!(!recovered.is_empty());
     }
