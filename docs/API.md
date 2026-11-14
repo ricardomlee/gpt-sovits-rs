@@ -253,6 +253,9 @@ built-in defaults. For LLM output, send completed sentences in order;
 | `seed` | Random | Optional unsigned 64-bit integer controlling GPT sampling and SoVITS noise |
 
 The voice field for language is `language`; the request field is `text_language`.
+For Chinese mixed with ASCII words or abbreviations, `auto` uses the mixed Chinese
+G2P path even when Latin letters are the majority, so Chinese phones are retained.
+An explicit language selection keeps its existing behavior.
 
 For debugging, pass `"seed": 42` to `/tts`, `/tts/stream`, `/tts/batch`, or
 `/v1/audio/speech`, or use CLI `--seed 42`. Rust callers can use
