@@ -10,6 +10,7 @@
 
 use super::mrte::MRTE;
 use super::transformer::{TransformerConfig, TransformerGPTSoVITS};
+use crate::utils::sampling::SamplingRng;
 use crate::utils::{load_safetensors, KvCacheManager, StateDict, StaticKvManager};
 use crate::{Error, Result};
 use candle_core::{DType, Device, Tensor};
@@ -30,6 +31,7 @@ pub struct GPTModel {
     dtype: DType,
     vocab_size: usize,
     num_layers: usize, // Number of transformer layers for KV cache
+    sampling_rng: SamplingRng,
 }
 
 fn build_scaled_sine_positions(
@@ -307,7 +309,12 @@ impl GPTModel {
             dtype,
             vocab_size,
             num_layers: num_hidden_layers,
+            sampling_rng: SamplingRng::default(),
         })
+    }
+
+    pub(crate) fn set_sampling_seed(&self, seed: Option<u64>) -> Result<()> {
+        self.sampling_rng.set_seed(seed)
     }
 
     /// Sample next token from logits using top-k and top-p filtering
@@ -320,7 +327,9 @@ impl GPTModel {
     ///
     /// Returns `(sampled_token, argmax_token)` — both computed from ONE D2H transfer.
     /// `prompt_tokens` = prompt audio tokens (for rep penalty matching Python's y which includes prompt)
+    #[allow(clippy::too_many_arguments)]
     fn sample_token(
+        &self,
         logits: &Tensor,
         top_k: usize,
         top_p: f32,
@@ -330,7 +339,7 @@ impl GPTModel {
         generated_tokens: &[usize],
     ) -> Result<(usize, usize)> {
         let mut scratch = SamplingScratch::new(logits.dims().last().copied().unwrap_or(0));
-        Self::sample_token_with_scratch(
+        self.sample_token_with_scratch(
             logits,
             top_k,
             top_p,
@@ -344,6 +353,7 @@ impl GPTModel {
 
     #[allow(clippy::too_many_arguments)]
     fn sample_token_with_scratch(
+        &self,
         logits: &Tensor,
         top_k: usize,
         top_p: f32,
@@ -430,7 +440,7 @@ impl GPTModel {
         }
 
         // 5. Multinomial sample
-        let rand_val = rand::random::<f32>();
+        let rand_val = self.sampling_rng.uniform()?;
         let mut cumsum = 0.0f32;
         let mut best = 0usize;
         let mut best_prob = f32::NEG_INFINITY;
@@ -676,7 +686,7 @@ impl GPTModel {
             let logits = last_hidden.matmul(&self.ar_predict_layer_t)?.squeeze(0)?;
 
             // Sample next token (no prompt tokens for generate_with_features path)
-            let (next_token, _argmax) = Self::sample_token(
+            let (next_token, _argmax) = self.sample_token(
                 &logits,
                 top_k,
                 top_p,
@@ -838,7 +848,7 @@ impl GPTModel {
 
         // First token sampling from prefill logits (step 0 — always mask EOS)
         let logits_for_sampling = logits.narrow(0, 0, audio_vocab_size - 1)?;
-        let (next_token, _argmax) = Self::sample_token_with_scratch(
+        let (next_token, _argmax) = self.sample_token_with_scratch(
             &logits_for_sampling,
             top_k,
             top_p,
@@ -879,7 +889,7 @@ impl GPTModel {
             let logits_for_sampling = logits.narrow(0, 0, effective_vocab)?;
 
             // sample_token returns (sampled, argmax) from a single D2H transfer
-            let (next_token, argmax) = Self::sample_token_with_scratch(
+            let (next_token, argmax) = self.sample_token_with_scratch(
                 &logits_for_sampling,
                 top_k,
                 top_p,
@@ -975,7 +985,7 @@ impl GPTModel {
         let last_hidden = prefill_out.narrow(1, total_prefill - 1, 1)?.squeeze(0)?;
         let logits = last_hidden.matmul(&self.ar_predict_layer_t)?.squeeze(0)?;
         let logits_for_sampling = logits.narrow(0, 0, audio_vocab_size - 1)?;
-        let (next_token, _) = Self::sample_token_with_scratch(
+        let (next_token, _) = self.sample_token_with_scratch(
             &logits_for_sampling,
             top_k,
             top_p,
@@ -1014,7 +1024,7 @@ impl GPTModel {
             };
             let logits_for_sampling = logits.narrow(0, 0, effective_vocab)?;
 
-            let (next_token, argmax) = Self::sample_token_with_scratch(
+            let (next_token, argmax) = self.sample_token_with_scratch(
                 &logits_for_sampling,
                 top_k,
                 top_p,
@@ -1147,7 +1157,7 @@ impl GPTModel {
             // ── First token ───────────────────────────────────────────────────────
             let last_hidden = prefill_out.narrow(1, total_prefill - 1, 1)?.squeeze(0)?;
             let first_logits = last_hidden.matmul(&self.ar_predict_layer_t)?.squeeze(0)?;
-            let (next_token, _) = Self::sample_token_with_scratch(
+            let (next_token, _) = self.sample_token_with_scratch(
                 &first_logits.narrow(0, 0, audio_vocab_size - 1)?,
                 top_k,
                 top_p,
@@ -1371,7 +1381,7 @@ impl GPTModel {
                 } else {
                     audio_vocab_size
                 };
-                let (tok, ag) = Self::sample_token_with_scratch(
+                let (tok, ag) = self.sample_token_with_scratch(
                     &logits.narrow(0, 0, ev)?,
                     top_k,
                     top_p,
@@ -1520,7 +1530,7 @@ impl GPTModel {
                 } else {
                     audio_vocab_size
                 };
-                let (token, argmax) = Self::sample_token_with_scratch(
+                let (token, argmax) = self.sample_token_with_scratch(
                     &expected_capture_logits.narrow(0, 0, effective_vocab)?,
                     top_k,
                     top_p,
@@ -1545,7 +1555,7 @@ impl GPTModel {
                     } else {
                         audio_vocab_size
                     };
-                    let (token, argmax) = Self::sample_token_with_scratch(
+                    let (token, argmax) = self.sample_token_with_scratch(
                         &logits.narrow(0, 0, effective_vocab)?,
                         top_k,
                         top_p,
@@ -1578,7 +1588,7 @@ impl GPTModel {
                 } else {
                     audio_vocab_size
                 };
-                let (tok, ag) = Self::sample_token_with_scratch(
+                let (tok, ag) = self.sample_token_with_scratch(
                     &logits_out.narrow(0, 0, ev)?,
                     top_k,
                     top_p,
@@ -1643,7 +1653,7 @@ impl GPTModel {
                 } else {
                     audio_vocab_size
                 };
-                let (tok, ag) = Self::sample_token_with_scratch(
+                let (tok, ag) = self.sample_token_with_scratch(
                     &logits_out.narrow(0, 0, ev)?,
                     top_k,
                     top_p,
@@ -1782,7 +1792,7 @@ impl GPTModel {
             };
 
             // sample_token returns (sampled, argmax) from a single D2H transfer
-            let (next_token, argmax) = Self::sample_token(
+            let (next_token, argmax) = self.sample_token(
                 &logits_for_sampling,
                 top_k,
                 top_p,

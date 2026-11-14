@@ -54,6 +54,10 @@ fn validate<'a>(
     );
     validate_cases(&capture.cases)?;
     ensure!((1..=10).contains(&capture.repeats), "invalid repeat count");
+    ensure!(
+        capture.seeds.is_empty() || capture.seeds.len() == capture.repeats as usize,
+        "seed count must match repeats"
+    );
     let expected = capture.cases.len() * capture.repeats as usize;
     ensure!(
         capture.samples.len() == expected && report.samples.len() == expected,
@@ -91,6 +95,11 @@ fn validate<'a>(
         for repeat in 1..=capture.repeats {
             let id = format!("{}-r{repeat:02}", case.id);
             ensure!(audio.contains_key(&id), "missing capture {id}");
+            ensure!(
+                audio[&id].request.get("seed").and_then(|v| v.as_u64())
+                    == capture.seeds.get((repeat - 1) as usize).copied(),
+                "seed differs for {id}"
+            );
             let row = asr
                 .get(&id)
                 .with_context(|| format!("missing ASR result {id}"))?;
@@ -121,6 +130,7 @@ fn compare(
             && baseline.repeats == candidate.repeats,
         "voice, corpus, or repeat count differs"
     );
+    ensure!(baseline.seeds == candidate.seeds, "sampling seeds differ");
     ensure!(
         baseline_asr.backend == candidate_asr.backend,
         "ASR backends differ"
@@ -278,5 +288,15 @@ mod tests {
         different.samples[0].request["top_k"] = json!(1);
         assert!(compare(capture(), different, asr(0), asr(0), 0.05, 0.2).is_err());
         assert!(compare(capture(), capture(), asr(0), asr(0), f64::NAN, 0.2).is_err());
+    }
+
+    #[test]
+    fn seeded_evidence_must_match_requests_and_the_other_capture() {
+        let mut seeded = capture();
+        seeded.seeds = vec![0];
+        assert!(validate(&seeded, &asr(0)).is_err());
+        seeded.samples[0].request["seed"] = json!(0);
+        assert!(validate(&seeded, &asr(0)).is_ok());
+        assert!(compare(capture(), seeded, asr(0), asr(0), 0.05, 0.2).is_err());
     }
 }

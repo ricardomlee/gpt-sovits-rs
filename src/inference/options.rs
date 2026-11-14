@@ -14,6 +14,8 @@ pub struct InferenceOptions {
     pub max_tokens: usize,
     pub repetition_penalty: f32,
     pub sv_embedding: Option<PathBuf>,
+    /// Request-local sampling seed. None preserves random synthesis.
+    pub seed: Option<u64>,
 }
 
 impl Default for InferenceOptions {
@@ -27,6 +29,7 @@ impl Default for InferenceOptions {
             max_tokens: 500,
             repetition_penalty: 1.35,
             sv_embedding: None,
+            seed: None,
         }
     }
 }
@@ -47,9 +50,15 @@ pub struct InferenceOptionsBuilder {
     max_tokens: Option<usize>,
     repetition_penalty: Option<f32>,
     sv_embedding: Option<PathBuf>,
+    seed: Option<u64>,
 }
 
 impl InferenceOptionsBuilder {
+    pub fn seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+
     pub fn top_k(mut self, k: usize) -> Self {
         self.top_k = Some(k);
         self
@@ -93,6 +102,7 @@ impl InferenceOptionsBuilder {
             max_tokens: self.max_tokens.unwrap_or(500),
             repetition_penalty: self.repetition_penalty.unwrap_or(1.35),
             sv_embedding: self.sv_embedding,
+            seed: self.seed,
         }
     }
 }
@@ -104,6 +114,7 @@ mod tests {
     #[test]
     fn builder_overrides_only_selected_fields() {
         let options = InferenceOptions::builder()
+            .seed(u64::MAX)
             .top_k(7)
             .temperature(0.6)
             .language(Language::English)
@@ -111,6 +122,9 @@ mod tests {
             .build();
 
         assert_eq!(options.top_k, 7);
+        assert_eq!(options.seed, Some(u64::MAX));
+        assert_eq!(InferenceOptions::default().seed, None);
+        assert_eq!(InferenceOptions::builder().build().seed, None);
         assert_eq!(options.top_p, 0.95);
         assert!((options.temperature - 0.6).abs() < f32::EPSILON);
         assert!((options.speed - 1.0).abs() < f32::EPSILON);

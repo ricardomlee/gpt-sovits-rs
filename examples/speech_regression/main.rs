@@ -30,6 +30,9 @@ enum Command {
         output_dir: PathBuf,
         #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..=10))]
         repeats: u32,
+        /// Fixed seeds, one per repeat; omit for stochastic sampling.
+        #[arg(long, value_delimiter = ',', conflicts_with = "repeats")]
+        seeds: Vec<u64>,
     },
     /// Compare capture.json plus externally produced asr.json in two run directories.
     Compare {
@@ -109,7 +112,14 @@ fn main() -> Result<()> {
             corpus,
             output_dir,
             repeats,
+            seeds,
         } => {
+            ensure!(seeds.len() <= 10, "at most ten seeds per capture");
+            let repeats = if seeds.is_empty() {
+                repeats
+            } else {
+                seeds.len() as u32
+            };
             let cases = serde_json::from_slice::<Vec<Case>>(&fs::read(corpus)?)?;
             validate_cases(&cases)?;
             ensure!(
@@ -122,7 +132,7 @@ fn main() -> Result<()> {
             );
             // Never overwrite prior runs, even if empty or only partially complete.
             fs::create_dir(&output_dir).context("output directory must not already exist")?;
-            capture::run(&url, &voice, &label, &cases, repeats, &output_dir)
+            capture::run(&url, &voice, &label, &cases, repeats, &seeds, &output_dir)
         }
         Command::Compare {
             baseline,
@@ -150,6 +160,30 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fixed_seeds_replace_explicit_repeats() {
+        let args = [
+            "regression",
+            "capture",
+            "--url",
+            "http://localhost:9880",
+            "--voice",
+            "demo",
+            "--label",
+            "test",
+            "--output-dir",
+            "unused",
+            "--seeds",
+            "0,42,18446744073709551615",
+        ];
+        let parsed = Args::try_parse_from(args).unwrap();
+        let Command::Capture { seeds, .. } = parsed.command else {
+            panic!("expected capture")
+        };
+        assert_eq!(seeds, vec![0, 42, u64::MAX]);
+        assert!(Args::try_parse_from(args.into_iter().chain(["--repeats", "3"])).is_err());
+    }
 
     #[test]
     fn corpus_is_valid_and_covers_all_http_audio_endpoints() {

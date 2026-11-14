@@ -7,6 +7,7 @@
 //! → enc_p → flow → decoder
 
 use crate::utils::profiling::{sync_profile_enabled, sync_profile_stage};
+use crate::utils::sampling::SamplingRng;
 use crate::utils::{load_safetensors, Linear, StateDict};
 use crate::{Error, Result};
 use candle_core::{DType, Device, Tensor};
@@ -52,6 +53,7 @@ pub struct SoVITSModel {
     sampling_rate: u32,
     #[allow(dead_code)]
     gin_channels: usize,
+    sampling_rng: SamplingRng,
 }
 
 /// Simple quantizer for semantic tokens
@@ -265,6 +267,7 @@ impl SoVITSModel {
             n_mels: 100,
             sampling_rate: 32000,
             gin_channels,
+            sampling_rng: SamplingRng::default(),
         })
     }
 
@@ -468,8 +471,12 @@ impl SoVITSModel {
         Ok(positive.add(&negative.broadcast_mul(&alpha)?)?)
     }
 
+    pub(crate) fn set_sampling_seed(&self, seed: Option<u64>) -> Result<()> {
+        self.sampling_rng.set_seed(seed)
+    }
+
     fn sample_noise(&self, mean: &Tensor) -> Result<Tensor> {
-        Ok(Tensor::randn(0.0f32, 1.0, mean.dims(), &self.device)?.to_dtype(mean.dtype())?)
+        self.sampling_rng.normal_like(mean)
     }
 
     /// Synthesize audio and return (decoder_input, audio) for debugging

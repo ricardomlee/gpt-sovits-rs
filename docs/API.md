@@ -250,8 +250,24 @@ built-in defaults. For LLM output, send completed sentences in order;
 | `top_p` | `0.95` | GPT nucleus sampling |
 | `temperature` | `0.8` | GPT sampling temperature |
 | `speed` | `1.0` | Speech-speed multiplier |
+| `seed` | Random | Optional unsigned 64-bit integer controlling GPT sampling and SoVITS noise |
 
 The voice field for language is `language`; the request field is `text_language`.
+
+For debugging, pass `"seed": 42` to `/tts`, `/tts/stream`, `/tts/batch`, or
+`/v1/audio/speech`, or use CLI `--seed 42`. Rust callers can use
+`InferenceOptions::builder().seed(42)`. Successful seeded responses include
+`x-tts-seed`; an older service may silently ignore the request field.
+Omitting the seed preserves random synthesis. Seeds are request-local, including
+zero; voice profiles do not set a default seed. Batch items each start with the
+same seed. Sentence chunks use `seed + chunk_index` modulo 2^64, in both buffered
+and streaming synthesis. Keep models, reference audio, text, splitting, parameters,
+decode mode, build and device fixed when replaying a result. Different hardware,
+decode modes or dependency versions can produce different results for the same seed.
+Compare decoded PCM rather than compressed-file bytes; containers such as Ogg
+have independently generated identifiers. Seeded acoustic noise is generated on
+the host and copied to the model device, so measure its cost separately from
+normal unseeded inference.
 The legacy `prompt_language` field is accepted but ignored. Use `auto` when reference
 and target languages differ. Set the decode `mode` in `voice.json`.
 

@@ -99,6 +99,10 @@ pub(crate) struct Args {
     #[arg(long)]
     pub(crate) temperature: Option<f32>,
 
+    /// Request-local sampling seed for reproducible synthesis on the same setup
+    #[arg(long, conflicts_with = "http")]
+    pub(crate) seed: Option<u64>,
+
     /// Speed multiplier
     #[arg(long)]
     pub(crate) speed: Option<f32>,
@@ -476,7 +480,7 @@ pub(crate) fn run() {
             repetition_penalty: args.repetition_penalty,
         },
     );
-    let options = if let Some(path) = sv_embedding {
+    let mut options = if let Some(path) = sv_embedding {
         InferenceOptions {
             sv_embedding: Some(path),
             ..options
@@ -484,6 +488,7 @@ pub(crate) fn run() {
     } else {
         options
     };
+    options.seed = args.seed;
 
     // Run inference
     info!("Running inference...");
@@ -628,5 +633,27 @@ fn inspect_model(path: &PathBuf) {
     for name in st.names() {
         let tensor = st.tensor(name).unwrap();
         println!("  {name:60} {:?}", tensor.shape());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_optional_u64_seed_only_for_cli_synthesis() {
+        assert_eq!(Args::try_parse_from(["gpt-sovits"]).unwrap().seed, None);
+        for value in ["0", "18446744073709551615"] {
+            assert_eq!(
+                Args::try_parse_from(["gpt-sovits", "--seed", value])
+                    .unwrap()
+                    .seed,
+                Some(value.parse().unwrap())
+            );
+        }
+        for value in ["-1", "1.5", "18446744073709551616"] {
+            assert!(Args::try_parse_from(["gpt-sovits", "--seed", value]).is_err());
+        }
+        assert!(Args::try_parse_from(["gpt-sovits", "--http", "--seed", "1"]).is_err());
     }
 }
