@@ -178,13 +178,15 @@ impl Pipeline {
 
         let bert_start = Instant::now();
         let target_bert_aligned = if let Some(bert) = bert_model.as_mut() {
-            bert.extract(&normalized_text)
-                .ok()
-                .and_then(|f| f.to_device(device).ok().or(Some(f)))
-                .and_then(|tb| {
-                    gpt.project_and_align_bert(&tb, &target_word2ph, target_phoneme_ids.len())
-                        .ok()
-                })
+            Some(extract_bert_features(
+                bert,
+                gpt,
+                &normalized_text,
+                &target_word2ph,
+                target_phoneme_ids.len(),
+                device,
+                "Target",
+            )?)
         } else {
             None
         };
@@ -201,7 +203,9 @@ impl Pipeline {
             ref_feats.ref_bert_aligned.as_ref(),
             target_bert_aligned.as_ref(),
         ) {
-            (Some(ra), Some(ta)) => Tensor::cat(&[ra, ta], 1).ok(),
+            (Some(ra), Some(ta)) => Some(Tensor::cat(&[ra, ta], 1).map_err(|e| {
+                Error::InferenceError(format!("BERT reference/target concatenation failed: {e}"))
+            })?),
             (None, Some(ta)) => Some(ta.clone()),
             _ => None,
         };
@@ -237,41 +241,38 @@ impl Pipeline {
             (vec![], vec![], String::new())
         };
 
-        let (prompt_tokens, hubert_features) = if let Some(hubert) = hubert_model {
-            match hubert.extract(ref_audio) {
-                Ok(features) => {
-                    let features = features.to_device(device).unwrap_or(features);
-                    tracing::info!("Extracted Hubert features: {:?}", features.dims());
-                    let tokens = if let Some(tokenizer) = semantic_tokenizer {
-                        let hf_t = features.transpose(1, 2)?.to_device(device)?;
-                        tokenizer.extract(&hf_t).ok().inspect(|t| {
-                            tracing::debug!("Prompt tokens: {}", t.len());
-                        })
-                    } else {
-                        None
-                    };
-                    (tokens.unwrap_or_default(), Some(features))
-                }
-                Err(e) => {
-                    tracing::warn!("HuBERT extraction failed: {}", e);
-                    (vec![], None)
-                }
-            }
+        let prompt_tokens = if let Some(hubert) = hubert_model {
+            let features = hubert.extract(ref_audio).map_err(|e| {
+                Error::InferenceError(format!("Reference HuBERT extraction failed: {e}"))
+            })?;
+            let features = features.to_device(device).map_err(|e| {
+                Error::InferenceError(format!("Reference HuBERT device transfer failed: {e}"))
+            })?;
+            tracing::info!("Extracted Hubert features: {:?}", features.dims());
+            let tokenizer = semantic_tokenizer.as_ref().ok_or_else(|| {
+                Error::ModelLoadError("Semantic tokenizer not loaded for HuBERT features".into())
+            })?;
+            let tokens = tokenizer.extract(&features.transpose(1, 2)?).map_err(|e| {
+                Error::InferenceError(format!("Reference semantic token extraction failed: {e}"))
+            })?;
+            tracing::debug!("Prompt tokens: {}", tokens.len());
+            tokens
         } else {
-            (vec![], None)
+            vec![]
         };
-        let _ = hubert_features;
 
         let ref_bert_aligned = if let (Some(bert), Some(gpt), false) =
             (bert_model.as_mut(), gpt_model, ref_phoneme_ids.is_empty())
         {
-            bert.extract(&normalized_ref_text)
-                .ok()
-                .and_then(|f| f.to_device(device).ok().or(Some(f)))
-                .and_then(|rb| {
-                    gpt.project_and_align_bert(&rb, &ref_word2ph, ref_phoneme_ids.len())
-                        .ok()
-                })
+            Some(extract_bert_features(
+                bert,
+                gpt,
+                &normalized_ref_text,
+                &ref_word2ph,
+                ref_phoneme_ids.len(),
+                device,
+                "Reference",
+            )?)
         } else {
             None
         };
@@ -289,6 +290,25 @@ impl Pipeline {
             ref_bert_aligned,
         })
     }
+}
+
+fn extract_bert_features(
+    bert: &mut BertModel,
+    gpt: &GPTModel,
+    text: &str,
+    word2ph: &[usize],
+    n_phones: usize,
+    device: &Device,
+    stage: &str,
+) -> Result<Tensor> {
+    let features = bert
+        .extract(text)
+        .map_err(|e| Error::InferenceError(format!("{stage} BERT extraction failed: {e}")))?;
+    let features = features
+        .to_device(device)
+        .map_err(|e| Error::InferenceError(format!("{stage} BERT device transfer failed: {e}")))?;
+    gpt.project_and_align_bert(&features, word2ph, n_phones)
+        .map_err(|e| Error::InferenceError(format!("{stage} BERT alignment failed: {e}")))
 }
 
 fn load_sv_embedding(path: &Path, device: &Device) -> Result<Tensor> {

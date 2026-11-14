@@ -142,4 +142,90 @@ fn real_model_inference_smoke_when_enabled() {
             "Seed {seed} replayed after other seeded and unseeded requests; max error {max_error}"
         );
     }
+
+    options.max_tokens = 4;
+    let assert_feature_error = |pipeline: &mut Pipeline,
+                                text: &str,
+                                audio: &std::path::Path,
+                                prompt: &str,
+                                stage: &str| {
+        let error = pipeline
+            .inference_with_mode("kv", text, audio, prompt, &options)
+            .expect_err("configured feature failures must stop inference");
+        assert!(error.to_string().contains(stage), "{error}");
+        eprintln!("Expected feature error: {error}");
+    };
+    if pipeline.bert_model().is_some() {
+        let oversized = if language == Language::English {
+            "hello ".repeat(600)
+        } else {
+            "你好".repeat(300)
+        };
+        assert_feature_error(
+            &mut pipeline,
+            &oversized,
+            &reference_audio,
+            reference_text,
+            "Target BERT",
+        );
+        assert_feature_error(
+            &mut pipeline,
+            &text,
+            &reference_audio,
+            &oversized,
+            "Reference BERT",
+        );
+    }
+    if pipeline.hubert_model().is_some() {
+        let truncated = tempfile::NamedTempFile::new().unwrap();
+        let mut bytes = gpt_sovits_rs::AudioBuffer::new(vec![0.0; 16000], 16000, 1)
+            .to_wav_bytes()
+            .unwrap();
+        bytes.pop();
+        std::fs::write(truncated.path(), bytes).unwrap();
+        assert_feature_error(
+            &mut pipeline,
+            &text,
+            truncated.path(),
+            reference_text,
+            "Reference HuBERT",
+        );
+
+        let incompatible = tempfile::NamedTempFile::new().unwrap();
+        let cpu = &candle_core::Device::Cpu;
+        let dtype = candle_core::DType::F32;
+        let weights = std::collections::HashMap::from([
+            (
+                "ssl_proj.weight",
+                candle_core::Tensor::zeros((1, 1, 1), dtype, cpu).unwrap(),
+            ),
+            (
+                "ssl_proj.bias",
+                candle_core::Tensor::zeros(1, dtype, cpu).unwrap(),
+            ),
+            (
+                "quantizer.vq.layers.0._codebook.embed",
+                candle_core::Tensor::zeros((2, 1), dtype, cpu).unwrap(),
+            ),
+        ]);
+        candle_core::safetensors::save(&weights, incompatible.path()).unwrap();
+        pipeline
+            .load_semantic_tokenizer(incompatible.path())
+            .unwrap();
+        pipeline.clear_speaker_cache();
+        for _ in 0..2 {
+            assert_feature_error(
+                &mut pipeline,
+                &text,
+                &reference_audio,
+                reference_text,
+                "Reference semantic token",
+            );
+        }
+        pipeline.load_semantic_tokenizer(&paths.sovits).unwrap();
+        let recovered = pipeline
+            .inference_with_mode("kv", &text, &reference_audio, reference_text, &options)
+            .expect("failed features must not poison the speaker cache");
+        assert!(!recovered.is_empty());
+    }
 }
