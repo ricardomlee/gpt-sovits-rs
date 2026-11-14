@@ -327,10 +327,16 @@ Chinese pronunciation annotations can be embedded directly in `text` for polypho
 
 The service removes the bracketed markers before BERT/G2P alignment and forces the marked character to use that pinyin. Use tone `1`-`5`; `5` is neutral tone.
 
-Starting with 1.2.2, Chinese numbers such as `50%`, `3.140`, and `-3.5` are expanded
+Chinese numbers such as `50%`, `3.140`, and `-3.5` are expanded
 before G2P. Fullwidth digits work too; annotations remain bound to the original
-characters. Dates, currency, phone numbers,
-and English numbers still need caller-supplied spoken forms when exact reading matters.
+characters.
+
+English text expands `123` to "one hundred twenty three", `12.5%` to
+"twelve point five percent", and `21st` to "twenty first". Leading-zero codes and
+digits attached to letters are read individually: `007` becomes "zero zero seven",
+and `v12` becomes "v one two". Pure numeric input in `auto` defaults to Chinese;
+set `text_language: "en"` for an English reading. Dates, times, prices, and phone
+numbers still need caller-supplied spoken forms when exact reading matters.
 
 The response includes metadata headers such as:
 
