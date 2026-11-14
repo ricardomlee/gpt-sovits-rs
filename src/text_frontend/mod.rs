@@ -130,7 +130,16 @@ impl TextFrontend {
             // Numeric literals and punctuation do not identify a language. Detect
             // the source script before expansion; number-only input defaults to Chinese.
             let script: String = clean_text.chars().filter(|ch| ch.is_alphabetic()).collect();
-            self.language_detector.detect(&script)?
+            // Chinese G2P preserves ASCII words; English G2P can discard Han characters.
+            if script.chars().any(is_cjk)
+                && script
+                    .chars()
+                    .all(|ch| is_cjk(ch) || ch.is_ascii_alphabetic())
+            {
+                Language::Chinese
+            } else {
+                self.language_detector.detect(&script)?
+            }
         } else {
             language
         };
@@ -233,6 +242,68 @@ impl Default for TextFrontend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_keeps_chinese_phones_even_when_english_is_the_majority() {
+        let frontend = TextFrontend::new().unwrap();
+        for text in [
+            "API可用。",
+            "HTTP API已就绪。",
+            "GPU CPU都正常。",
+            "Rust API能用吗？",
+            "HTTP API访问银行[hang2]。",
+        ] {
+            let automatic = frontend
+                .process_with_word2ph_and_text(text, Language::Auto)
+                .unwrap();
+            let expected = frontend
+                .process_with_word2ph_and_text(text, Language::Chinese)
+                .unwrap();
+            assert_eq!(
+                automatic, expected,
+                "{text}: auto must keep both scripts' phonemes"
+            );
+            assert_eq!(automatic.1.iter().sum::<usize>(), automatic.0.len());
+            assert!(!automatic.1.is_empty());
+            for (ch, count) in automatic.2.chars().zip(&automatic.1) {
+                if is_cjk(ch) {
+                    assert!(*count > 0, "{text}: missing phones for {ch}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mixed_auto_routing_preserves_explicit_languages_and_other_scripts() {
+        let frontend = TextFrontend::new().unwrap();
+        for (text, language) in [
+            ("The API is ready.", Language::English),
+            ("服务已经就绪。", Language::Chinese),
+            ("APIこんにちは", Language::Japanese),
+            ("API안녕하세요", Language::Korean),
+        ] {
+            assert_eq!(
+                frontend
+                    .process_with_word2ph_and_text(text, Language::Auto)
+                    .unwrap(),
+                frontend
+                    .process_with_word2ph_and_text(text, language)
+                    .unwrap(),
+                "{text}"
+            );
+        }
+        let text = "HTTP API已就绪。";
+        let explicit = frontend
+            .process_with_word2ph_and_text(text, Language::English)
+            .unwrap();
+        assert!(explicit.1.is_empty());
+        assert_ne!(
+            explicit,
+            frontend
+                .process_with_word2ph_and_text(text, Language::Auto)
+                .unwrap()
+        );
+    }
 
     #[test]
     fn test_chinese_alignment_uses_normalized_punctuation() {
