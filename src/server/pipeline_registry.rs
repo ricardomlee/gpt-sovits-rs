@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{Mutex, OwnedMutexGuard};
-use tracing::{error, info};
+use tracing::info;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PipelineKey {
@@ -139,15 +139,15 @@ impl PipelineRegistry {
         let mut default_pipeline = load_pipeline(config.clone(), &defaults, None)?;
         if let Some(path) = bert_model {
             info!("Loading shared BERT model from {:?}", path);
-            if let Err(e) = default_pipeline.load_bert(path) {
-                error!("Failed to load BERT model (continuing without it): {}", e);
-            }
+            default_pipeline
+                .load_bert(path)
+                .map_err(|e| format!("Failed to load BERT model: {e}"))?;
         }
         if let Some(path) = hubert_model {
             info!("Loading shared HuBERT model from {:?}", path);
-            if let Err(e) = default_pipeline.load_hubert(path) {
-                error!("Failed to load HuBERT model (continuing without it): {}", e);
-            }
+            default_pipeline
+                .load_hubert(path)
+                .map_err(|e| format!("Failed to load HuBERT model: {e}"))?;
         }
         Ok(Self::new(
             config,
@@ -307,6 +307,43 @@ fn load_pipeline(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_feature_models_must_load_successfully() {
+        let corrupt = tempfile::NamedTempFile::new().unwrap();
+        for (bert, hubert, name) in [
+            (Some(corrupt.path()), None, "BERT"),
+            (None, Some(corrupt.path()), "HuBERT"),
+        ] {
+            let result = PipelineRegistry::load(
+                Config::builder().with_device("cpu").build(),
+                None,
+                None,
+                None,
+                bert,
+                hubert,
+                1,
+            );
+            let error = result
+                .err()
+                .expect("configured corrupt model must prevent startup");
+            assert!(error.contains(name), "{error}");
+        }
+    }
+
+    #[test]
+    fn unconfigured_feature_models_remain_optional() {
+        assert!(PipelineRegistry::load(
+            Config::builder().with_device("cpu").build(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            1,
+        )
+        .is_ok());
+    }
 
     fn empty_pipeline() -> Pipeline {
         Pipeline::new(Config::builder().with_device("cpu").build()).unwrap()

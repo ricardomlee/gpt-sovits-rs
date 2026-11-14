@@ -416,6 +416,7 @@ pub(crate) fn run() {
         info!("Loading BERT model...");
         if let Err(e) = pipeline.load_bert(bert_path) {
             error!("Failed to load BERT model: {}", e);
+            std::process::exit(1);
         }
     } else {
         info!("BERT model not specified, skipping (quality may be reduced)");
@@ -426,6 +427,7 @@ pub(crate) fn run() {
         info!("Loading Hubert model...");
         if let Err(e) = pipeline.load_hubert(hubert_path) {
             error!("Failed to load Hubert model: {}", e);
+            std::process::exit(1);
         }
     } else {
         info!("Hubert model not specified, skipping (quality may be reduced)");

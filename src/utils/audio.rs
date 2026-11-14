@@ -154,36 +154,44 @@ impl AudioBuffer {
 
     /// Load from WAV file
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path = path.as_ref();
         let mut reader =
-            hound::WavReader::open(path.as_ref()).map_err(|e| Error::AudioError(e.to_string()))?;
+            hound::WavReader::open(path).map_err(|e| Error::AudioError(e.to_string()))?;
 
         let spec = reader.spec();
         let sample_rate = spec.sample_rate;
         let channels = spec.channels;
+        if sample_rate == 0 || channels == 0 {
+            return Err(Error::AudioError(
+                "WAV sample rate and channel count must be positive".into(),
+            ));
+        }
 
-        let samples: Vec<f32> = match spec.sample_format {
+        let samples = match spec.sample_format {
             hound::SampleFormat::Int => {
                 let bits = spec.bits_per_sample;
-                if bits <= 16 {
-                    reader
-                        .samples::<i16>()
-                        .filter_map(|s| s.ok())
-                        .map(|s: i16| s as f32 / i16::MAX as f32)
-                        .collect()
-                } else {
-                    reader
-                        .samples::<i32>()
-                        .filter_map(|s| s.ok())
-                        .map(|s: i32| s as f32 / i32::MAX as f32)
-                        .collect()
+                if !matches!(bits, 8 | 16 | 24 | 32) {
+                    return Err(Error::AudioError(format!("Unsupported PCM width: {bits}")));
                 }
+                let max = ((1u64 << (bits - 1)) - 1) as f32;
+                reader
+                    .samples::<i32>()
+                    .map(|sample| sample.map(|value| value as f32 / max))
+                    .collect::<std::result::Result<Vec<_>, _>>()
             }
             hound::SampleFormat::Float => reader
                 .samples::<f32>()
-                .filter_map(|s| s.ok())
-                .map(|s: f32| s)
-                .collect(),
-        };
+                .collect::<std::result::Result<Vec<_>, _>>(),
+        }
+        .map_err(|e| Error::AudioError(format!("Failed to decode WAV {}: {e}", path.display())))?;
+        if !samples.len().is_multiple_of(channels as usize) {
+            return Err(Error::AudioError(
+                "WAV contains an incomplete channel frame".into(),
+            ));
+        }
+        if samples.iter().any(|sample| !sample.is_finite()) {
+            return Err(Error::AudioError("WAV contains non-finite samples".into()));
+        }
 
         Ok(Self::new(samples, sample_rate, channels))
     }
@@ -227,6 +235,90 @@ impl AudioBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pcm_widths_use_their_own_full_scale() {
+        for bits in [8, 16, 24, 32] {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let spec = WavSpec {
+                channels: 1,
+                sample_rate: 16000,
+                bits_per_sample: bits,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let max = ((1i64 << (bits - 1)) - 1) as i32;
+            let values = [max / 2, 0, -max / 2];
+            let mut writer = WavWriter::create(file.path(), spec).unwrap();
+            for value in values {
+                writer.write_sample(value).unwrap();
+            }
+            writer.finalize().unwrap();
+            let audio = AudioBuffer::load(file.path()).unwrap();
+            let expected: Vec<_> = values
+                .iter()
+                .map(|value| *value as f32 / max as f32)
+                .collect();
+            assert_eq!(audio.samples, expected, "{bits}-bit PCM");
+            assert_eq!((audio.sample_rate, audio.channels), (16000, 1));
+        }
+    }
+
+    #[test]
+    fn truncated_wav_samples_are_not_silently_discarded() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        AudioBuffer::new(vec![0.25; 16], 16000, 1)
+            .save(file.path())
+            .unwrap();
+        let len = file.as_file().metadata().unwrap().len();
+        file.as_file().set_len(len - 1).unwrap();
+        assert!(matches!(
+            AudioBuffer::load(file.path()),
+            Err(Error::AudioError(_))
+        ));
+    }
+
+    #[test]
+    fn nonfinite_float_wav_samples_are_rejected() {
+        for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let file = tempfile::NamedTempFile::new().unwrap();
+            let mut writer = WavWriter::create(
+                file.path(),
+                WavSpec {
+                    channels: 1,
+                    sample_rate: 16000,
+                    bits_per_sample: 32,
+                    sample_format: hound::SampleFormat::Float,
+                },
+            )
+            .unwrap();
+            writer.write_sample(value).unwrap();
+            writer.finalize().unwrap();
+            assert!(matches!(
+                AudioBuffer::load(file.path()),
+                Err(Error::AudioError(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn float_stereo_wav_preserves_samples_and_metadata() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let spec = WavSpec {
+            channels: 2,
+            sample_rate: 48000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let samples = [0.25f32, -0.5, 0.0, 1.0];
+        let mut writer = WavWriter::create(file.path(), spec).unwrap();
+        for sample in samples {
+            writer.write_sample(sample).unwrap();
+        }
+        writer.finalize().unwrap();
+        let audio = AudioBuffer::load(file.path()).unwrap();
+        assert_eq!(audio.samples, samples);
+        assert_eq!((audio.sample_rate, audio.channels), (48000, 2));
+    }
 
     #[test]
     fn fade_in_matches_the_original_gain_curve_including_empty_and_short_buffers() {

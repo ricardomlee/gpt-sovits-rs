@@ -1,6 +1,6 @@
 //! HuBERT feature extractor — pure candle (Wav2Vec2) implementation.
 
-use crate::Result;
+use crate::{AudioBuffer, Error, Result};
 use candle_core::{Device, Tensor};
 use std::path::Path;
 use std::sync::Arc;
@@ -60,51 +60,29 @@ impl HubertModel {
     }
 
     fn load_audio<P: AsRef<Path>>(&self, path: P) -> Result<Vec<f32>> {
-        use hound::WavReader;
-
-        let mut reader = WavReader::open(path)
-            .map_err(|e| crate::Error::AudioError(format!("Failed to open audio: {}", e)))?;
-
-        let spec = reader.spec();
-        tracing::debug!(
-            "HuBERT load_audio sr={}, channels={}, bits={}",
-            spec.sample_rate,
-            spec.channels,
-            spec.bits_per_sample
-        );
-
-        let all_samples: Vec<f32> = match spec.sample_format {
-            hound::SampleFormat::Int => match spec.bits_per_sample {
-                32 => reader
-                    .samples::<i32>()
-                    .filter_map(|s| s.ok())
-                    .map(|s| s as f32 / i32::MAX as f32)
-                    .collect(),
-                _ => reader
-                    .samples::<i16>()
-                    .filter_map(|s| s.ok())
-                    .map(|s| s as f32 / i16::MAX as f32)
-                    .collect(),
-            },
-            hound::SampleFormat::Float => reader.samples::<f32>().filter_map(|s| s.ok()).collect(),
-        };
-
-        let channels = spec.channels as usize;
+        let audio = AudioBuffer::load(path)?;
+        if audio.is_empty() {
+            return Err(Error::AudioError(
+                "Reference audio must contain samples".into(),
+            ));
+        }
+        let channels = audio.channels as usize;
         let samples: Vec<f32> = if channels > 1 {
-            all_samples
+            audio
+                .samples
                 .chunks_exact(channels)
                 .map(|ch| ch.iter().sum::<f32>() / channels as f32)
                 .collect()
         } else {
-            all_samples
+            audio.samples
         };
 
         // Python always appends 0.3s at 32kHz (= 9600 samples) as a zero-pad,
         // which at 16kHz is equivalent to 0.6s. Match this exactly.
         let pad = (self.sampling_rate as f32 * 0.6) as usize;
-        if spec.sample_rate != self.sampling_rate {
+        if audio.sample_rate != self.sampling_rate {
             let mut resampled =
-                self.resample_sinc(&samples, spec.sample_rate, self.sampling_rate)?;
+                self.resample_sinc(&samples, audio.sample_rate, self.sampling_rate)?;
             resampled.resize(resampled.len() + pad, 0.0);
             Ok(resampled)
         } else {
