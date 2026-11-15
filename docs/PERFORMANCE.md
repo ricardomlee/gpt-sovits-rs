@@ -67,6 +67,11 @@ target/release/examples/gpu_benchmark \
 
 ## 已记录的测量
 
+[1.3.1 与 1.3.0 的 Sun CUDA 对照](benchmarks/v1.3.1-sun-cuda.md)：
+A/B/A 三轮各 12 项、每项测量 5 次，252 段波形检查通过。
+候选热推理 RTF 中位数为 0.1351–0.1671；ASR 对照通过原定门槛，
+小数和中英混读的识别偏差保留在报告中，仍需试听。
+
 [1.3.0 Sun v2Pro + SV / RTX 4060 Ti](benchmarks/v1.3.0-sun-cuda.md)：
 提交 `c58324d`，12 项各测量 5 次，热推理 RTF 中位数 0.1213–0.1487。
 发布前候选镜像通过 ASR 阈值和用户试听。正式镜像复验的混合句触发单项阈值；

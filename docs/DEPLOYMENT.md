@@ -111,7 +111,8 @@ CUDA_IMAGE_TAG=local-cuda-sm80 docker compose -f compose.cuda.yml \
 
 ## Binary
 
-[Release](https://github.com/ricardomlee/gpt-sovits-rs/releases/latest) 中的 Linux x86_64 包携带 `libsoxr`，解压后可直接运行。
+[Release](https://github.com/ricardomlee/gpt-sovits-rs/releases/latest) 中的 Linux x86_64 包携带 `libsoxr` 和 `libmp3lame`。
+干净运行环境的验收使用 Ubuntu 24.04，安装系统运行库 `libstdc++6` 和 `libgomp1`，无需 Python 或 Rust 工具链。
 1.3.0 的发布包还携带 MP3 编码所需的 `libmp3lame`，Opus 编码器编入程序。
 Docker 镜像包含相同的编码能力。第三方库说明见 [Audio Codec Notices](../THIRD_PARTY.md)。
 
