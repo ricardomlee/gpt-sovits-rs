@@ -191,6 +191,7 @@ fn benchmark(args: &Args, report: &mut Report) -> Result<()> {
         report.metadata["inputs"]["sv_embedding"] = hash_file(sv)?;
     }
     report.metadata["settings"] = json!({"voice": args.voice, "mode": mode, "language": defaults.language,
+        "prompt_language": format!("{:?}", options.prompt_language),
         "dtype": "F32", "top_k": options.top_k, "top_p": options.top_p, "temperature": options.temperature,
         "repetition_penalty": options.repetition_penalty, "max_tokens": options.max_tokens, "speed": options.speed,
         "sv_embedding": options.sv_embedding.is_some(), "split_sentences": defaults.split_sentences,

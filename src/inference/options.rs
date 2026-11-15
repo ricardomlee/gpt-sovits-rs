@@ -11,6 +11,8 @@ pub struct InferenceOptions {
     pub temperature: f32,
     pub speed: f32,
     pub language: Language,
+    /// Language of the reference transcript, detected independently by default.
+    pub prompt_language: Language,
     pub max_tokens: usize,
     pub repetition_penalty: f32,
     pub sv_embedding: Option<PathBuf>,
@@ -26,6 +28,7 @@ impl Default for InferenceOptions {
             temperature: 0.8,
             speed: 1.0,
             language: Language::Chinese,
+            prompt_language: Language::Auto,
             max_tokens: 500,
             repetition_penalty: 1.35,
             sv_embedding: None,
@@ -47,6 +50,7 @@ pub struct InferenceOptionsBuilder {
     temperature: Option<f32>,
     speed: Option<f32>,
     language: Option<Language>,
+    prompt_language: Option<Language>,
     max_tokens: Option<usize>,
     repetition_penalty: Option<f32>,
     sv_embedding: Option<PathBuf>,
@@ -79,6 +83,10 @@ impl InferenceOptionsBuilder {
         self.language = Some(lang);
         self
     }
+    pub fn prompt_language(mut self, lang: Language) -> Self {
+        self.prompt_language = Some(lang);
+        self
+    }
     pub fn max_tokens(mut self, n: usize) -> Self {
         self.max_tokens = Some(n);
         self
@@ -99,6 +107,7 @@ impl InferenceOptionsBuilder {
             temperature: self.temperature.unwrap_or(0.8),
             speed: self.speed.unwrap_or(1.0),
             language: self.language.unwrap_or(Language::Chinese),
+            prompt_language: self.prompt_language.unwrap_or(Language::Auto),
             max_tokens: self.max_tokens.unwrap_or(500),
             repetition_penalty: self.repetition_penalty.unwrap_or(1.35),
             sv_embedding: self.sv_embedding,
@@ -118,6 +127,7 @@ mod tests {
             .top_k(7)
             .temperature(0.6)
             .language(Language::English)
+            .prompt_language(Language::Chinese)
             .max_tokens(42)
             .build();
 
@@ -129,6 +139,12 @@ mod tests {
         assert!((options.temperature - 0.6).abs() < f32::EPSILON);
         assert!((options.speed - 1.0).abs() < f32::EPSILON);
         assert_eq!(options.language, Language::English);
+        assert_eq!(options.prompt_language, Language::Chinese);
+        assert_eq!(InferenceOptions::default().prompt_language, Language::Auto);
+        assert_eq!(
+            InferenceOptions::builder().build().prompt_language,
+            Language::Auto
+        );
         assert_eq!(options.max_tokens, 42);
         assert!((options.repetition_penalty - 1.35).abs() < f32::EPSILON);
     }

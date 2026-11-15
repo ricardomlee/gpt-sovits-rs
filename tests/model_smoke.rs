@@ -235,7 +235,15 @@ fn real_model_inference_smoke_when_enabled() {
         // Chinese folds "..." into one symbol; English retains all three tokens.
         let boundary_reference = "a...".repeat(150);
         pipeline
-            .preload_speaker(&reference_audio, &boundary_reference, Language::Chinese)
+            .preload_speaker_with_options(
+                &reference_audio,
+                &boundary_reference,
+                &InferenceOptions {
+                    language: Language::English,
+                    prompt_language: Language::Chinese,
+                    ..Default::default()
+                },
+            )
             .unwrap();
         let hot = pipeline
             .preload_speaker(&reference_audio, &boundary_reference, Language::English)

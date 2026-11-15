@@ -79,9 +79,13 @@ pub(crate) struct Args {
     #[arg(long)]
     pub(crate) sv_embedding: Option<PathBuf>,
 
-    /// Language of reference audio
+    /// Language of target text
     #[arg(long)]
     pub(crate) language: Option<String>,
+
+    /// Language of reference text (default: voice profile or auto)
+    #[arg(long, conflicts_with = "http", value_parser = parse_prompt_language)]
+    pub(crate) prompt_language: Option<Language>,
 
     /// Output WAV file path
     #[arg(short, long, default_value = "output.wav")]
@@ -491,12 +495,14 @@ pub(crate) fn run() {
         options
     };
     options.seed = args.seed;
+    options.prompt_language = args.prompt_language.unwrap_or(options.prompt_language);
 
     // Run inference
     info!("Running inference...");
     info!("  Text: {}", text);
     info!("  Reference: {:?}", reference_audio);
     info!("  Language: {:?}", language);
+    info!("  Reference language: {:?}", options.prompt_language);
 
     let result = if split_sentences {
         run_split_inference(
@@ -638,9 +644,35 @@ fn inspect_model(path: &PathBuf) {
     }
 }
 
+fn parse_prompt_language(value: &str) -> std::result::Result<Language, String> {
+    Language::parse(value).ok_or_else(|| format!("unsupported prompt language: {value}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_reference_language_separately_from_target() {
+        let args = Args::try_parse_from([
+            "gpt-sovits",
+            "--language",
+            "en",
+            "--prompt-language",
+            "中文",
+        ])
+        .unwrap();
+        assert_eq!(args.language.as_deref(), Some("en"));
+        assert_eq!(args.prompt_language, Some(Language::Chinese));
+        assert_eq!(
+            Args::try_parse_from(["gpt-sovits"])
+                .unwrap()
+                .prompt_language,
+            None
+        );
+        assert!(Args::try_parse_from(["gpt-sovits", "--prompt-language", "xx"]).is_err());
+        assert!(Args::try_parse_from(["gpt-sovits", "--http", "--prompt-language", "en"]).is_err());
+    }
 
     #[test]
     fn accepts_optional_u64_seed_only_for_cli_synthesis() {

@@ -16,6 +16,7 @@ pub struct VoiceProfile {
     #[serde(alias = "bigvganModel")]
     pub bigvgan_model: Option<String>,
     pub language: Option<String>,
+    pub prompt_language: Option<String>,
     pub mode: Option<String>,
     pub split_sentences: Option<bool>,
     pub split_method: Option<String>,
@@ -60,6 +61,14 @@ impl LoadedVoiceProfile {
             if Language::parse(language).is_none() {
                 return Err(format!(
                     "Invalid language '{}' in voice profile {:?}; expected zh, en, ja, ko, yue, or auto",
+                    language, path
+                ));
+            }
+        }
+        if let Some(language) = profile.prompt_language.as_deref() {
+            if Language::parse(language).is_none() {
+                return Err(format!(
+                    "Invalid prompt_language '{}' in voice profile {:?}; expected zh, en, ja, ko, yue, or auto",
                     language, path
                 ));
             }
@@ -202,6 +211,7 @@ pub fn validate_mode(mode: &str) -> Result<(), String> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct VoiceDefaults {
     pub language: String,
+    pub prompt_language: Language,
     pub mode: String,
     pub split_sentences: bool,
     pub split_method: SplitMethod,
@@ -232,6 +242,10 @@ impl VoiceDefaults {
             language: profile
                 .and_then(|p| p.language.clone())
                 .unwrap_or_else(|| "zh".to_string()),
+            prompt_language: profile
+                .and_then(|p| p.prompt_language.as_deref())
+                .and_then(Language::parse)
+                .unwrap_or(Language::Auto),
             mode: profile
                 .and_then(|p| p.mode.clone())
                 .unwrap_or_else(|| "auto".to_string()),
@@ -263,6 +277,7 @@ impl VoiceDefaults {
             .temperature(overrides.temperature.unwrap_or(self.temperature))
             .speed(overrides.speed.unwrap_or(self.speed))
             .language(language)
+            .prompt_language(self.prompt_language)
             .max_tokens(overrides.max_tokens.unwrap_or(self.max_tokens))
             .repetition_penalty(
                 overrides
@@ -278,9 +293,32 @@ mod tests {
     use super::*;
 
     #[test]
+    fn rejects_invalid_reference_language() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("demo");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("voice.json"), r#"{"prompt_language":"xx"}"#).unwrap();
+        let error = LoadedVoiceProfile::load("demo", temp.path()).unwrap_err();
+        assert!(error.contains("Invalid prompt_language 'xx'"));
+    }
+
+    #[test]
+    fn reference_language_flows_from_profile_into_options() {
+        let profile = VoiceProfile {
+            prompt_language: Some("en".into()),
+            ..Default::default()
+        };
+        let options = VoiceDefaults::from_profile(Some(&profile))
+            .to_inference_options(Language::Chinese, InferenceOptionOverrides::default());
+        assert_eq!(options.language, Language::Chinese);
+        assert_eq!(options.prompt_language, Language::English);
+    }
+
+    #[test]
     fn defaults_fill_missing_values() {
         let defaults = VoiceDefaults::from_profile(None);
         assert_eq!(defaults.language, "zh");
+        assert_eq!(defaults.prompt_language, Language::Auto);
         assert_eq!(defaults.mode, "auto");
         assert!(defaults.split_sentences);
         assert_eq!(defaults.split_method, SplitMethod::Sentence);
@@ -297,6 +335,7 @@ mod tests {
     fn profile_overrides_defaults() {
         let profile = VoiceProfile {
             language: Some("en".to_string()),
+            prompt_language: Some("zh".to_string()),
             mode: Some("kv".to_string()),
             split_sentences: Some(true),
             top_p: Some(0.8),
@@ -305,6 +344,7 @@ mod tests {
         };
         let defaults = VoiceDefaults::from_profile(Some(&profile));
         assert_eq!(defaults.language, "en");
+        assert_eq!(defaults.prompt_language, Language::Chinese);
         assert_eq!(defaults.mode, "kv");
         assert!(defaults.split_sentences);
         assert_eq!(defaults.top_p, 0.8);

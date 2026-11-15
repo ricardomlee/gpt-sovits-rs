@@ -179,6 +179,10 @@ hermes config set tts.provider sovits
 带前导零或紧邻英文字母的编号按位读：`007` 读“zero zero seven”，`v12` 读“v one two”。
 
 纯数字的 `auto` 默认中文，英文读法需要指定 `text_language: "en"`。
+`text_language` 控制待朗读文字，`prompt_language` 控制参考录音的转写，默认独立识别。
+中文参考音色读英文时，可同时传 `text_language: "en"` 和 `prompt_language: "zh"`。
+也可以在音色配置里固定 `prompt_language`，Agent 继续只传音色名和文字。
+1.3.1 及更早的服务会忽略 `prompt_language`；跨语言调用这些版本时使用 `text_language: "auto"`。
 混合语言需要确定读法时也应显式指定 `text_language`。
 日期、时间、金额和电话仍需 Agent 按上下文转换。
 Agent 可先输出希望读出的文字，例如“二零二六年十月二十五日”“下午三点半”。

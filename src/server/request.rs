@@ -26,7 +26,6 @@ pub(super) struct TtsRequest {
     pub(super) prompt_text: Option<String>,
     #[serde(alias = "svEmbedding", alias = "speakerEmbedding")]
     pub(super) sv_embedding: Option<String>,
-    #[allow(dead_code)]
     pub(super) prompt_language: Option<String>,
     pub(super) top_k: Option<usize>,
     pub(super) top_p: Option<f32>,
@@ -50,6 +49,7 @@ pub(super) struct TtsRequest {
 
 #[derive(Deserialize)]
 pub(super) struct OpenAiSpeechRequest {
+    pub(super) prompt_language: Option<String>,
     pub(super) seed: Option<u64>,
     #[allow(dead_code)]
     pub(super) model: Option<String>,
@@ -89,6 +89,7 @@ pub(super) struct OpenAiSpeechRequest {
 /// Results stream back as NDJSON (one JSON line per item) as each completes.
 #[derive(Deserialize)]
 pub(super) struct TtsBatchRequest {
+    pub(super) prompt_language: Option<String>,
     pub(super) seed: Option<u64>,
     /// List of texts to synthesize (processed sequentially on GPU).
     #[serde(alias = "inputs")]
@@ -149,6 +150,7 @@ pub(super) struct RequestPathPolicy {
 
 #[derive(Default)]
 pub(super) struct SynthesisOverrides {
+    pub(super) prompt_language: Option<String>,
     pub(super) seed: Option<u64>,
     pub(super) top_k: Option<usize>,
     pub(super) top_p: Option<f32>,
@@ -167,6 +169,7 @@ pub(super) struct SynthesisOverrides {
 impl SynthesisOverrides {
     pub(super) fn from_tts(req: &TtsRequest) -> Self {
         Self {
+            prompt_language: req.prompt_language.clone(),
             seed: req.seed,
             top_k: req.top_k,
             top_p: req.top_p,
@@ -185,6 +188,7 @@ impl SynthesisOverrides {
 
     pub(super) fn from_openai(req: &OpenAiSpeechRequest) -> Self {
         Self {
+            prompt_language: req.prompt_language.clone(),
             seed: req.seed,
             speed: req.speed,
             max_tokens: req.max_tokens,
@@ -201,6 +205,7 @@ impl SynthesisOverrides {
 
     pub(super) fn from_batch(req: &TtsBatchRequest) -> Self {
         Self {
+            prompt_language: req.prompt_language.clone(),
             seed: req.seed,
             top_k: req.top_k,
             top_p: req.top_p,
@@ -257,6 +262,12 @@ pub(super) fn resolve_synthesis(
         .unwrap_or(&defaults.language);
     let language = Language::parse(language_text)
         .ok_or_else(|| format!("unsupported text_language: {language_text}"))?;
+    let prompt_language = match overrides.prompt_language.as_deref().map(str::trim) {
+        None | Some("") => defaults.prompt_language,
+        Some(text) => {
+            Language::parse(text).ok_or_else(|| format!("unsupported prompt_language: {text}"))?
+        }
+    };
 
     let refer_path = match refer_wav_path {
         Some(path) => {
@@ -325,6 +336,7 @@ pub(super) fn resolve_synthesis(
         options
     };
     options.seed = overrides.seed;
+    options.prompt_language = prompt_language;
     let split_method = match overrides.split_method.as_deref().map(str::trim) {
         Some("") | None => defaults.split_method,
         Some(method) => SplitMethod::parse(method)
@@ -479,12 +491,101 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolved.language, Language::Chinese);
+        assert_eq!(resolved.options.prompt_language, Language::Auto);
         assert_eq!(resolved.refer_path, ref_path.to_string_lossy());
         assert_eq!(resolved.prompt_text, "prompt");
         assert_eq!(resolved.options.top_k, 20);
         assert!((resolved.options.top_p - 0.9).abs() < 0.001);
         assert!((resolved.options.temperature - 0.7).abs() < 0.001);
         assert!((resolved.options.speed - 1.1).abs() < 0.001);
+    }
+
+    #[test]
+    fn all_request_variants_keep_reference_language_separate() {
+        let tts: TtsRequest =
+            serde_json::from_str(r#"{"text":"你好","prompt_language":"en"}"#).unwrap();
+        let speech: OpenAiSpeechRequest =
+            serde_json::from_str(r#"{"input":"你好","voice":"demo","prompt_language":"en"}"#)
+                .unwrap();
+        let batch: TtsBatchRequest =
+            serde_json::from_str(r#"{"texts":["你好"],"prompt_language":"en"}"#).unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let reference = temp.path().join("ref.wav");
+        write_ref_audio(&reference);
+        for overrides in [
+            SynthesisOverrides::from_tts(&tts),
+            SynthesisOverrides::from_openai(&speech),
+            SynthesisOverrides::from_batch(&batch),
+        ] {
+            let resolved = resolve_synthesis(
+                None,
+                Some("zh"),
+                Some(reference.to_string_lossy().into_owned()),
+                Some("hello".into()),
+                overrides,
+                temp.path(),
+                temp.path(),
+                RequestPathPolicy::default(),
+            )
+            .unwrap();
+            assert_eq!(resolved.options.language, Language::Chinese);
+            assert_eq!(resolved.options.prompt_language, Language::English);
+        }
+    }
+
+    #[test]
+    fn reference_language_request_overrides_profile_without_changing_target() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("demo");
+        std::fs::create_dir(&dir).unwrap();
+        write_ref_audio(&dir.join("ref.wav"));
+        std::fs::write(dir.join("voice.json"),
+            r#"{"reference_audio":"ref.wav","reference_text":"hello","language":"zh","prompt_language":"en"}"#,
+        ).unwrap();
+        for (request, expected) in [
+            (None, Language::English),
+            (Some(""), Language::English),
+            (Some(" auto "), Language::Auto),
+            (Some("zh"), Language::Chinese),
+        ] {
+            let resolved = resolve_synthesis(
+                Some("demo"),
+                Some("en"),
+                None,
+                None,
+                SynthesisOverrides {
+                    prompt_language: request.map(str::to_string),
+                    ..Default::default()
+                },
+                temp.path(),
+                temp.path(),
+                RequestPathPolicy::default(),
+            )
+            .unwrap();
+            assert_eq!(resolved.options.language, Language::English);
+            assert_eq!(resolved.options.prompt_language, expected);
+        }
+    }
+
+    #[test]
+    fn invalid_reference_language_is_rejected_before_file_access() {
+        let temp = tempfile::tempdir().unwrap();
+        let error = resolve_synthesis(
+            None,
+            None,
+            None,
+            None,
+            SynthesisOverrides {
+                prompt_language: Some("xx".into()),
+                ..Default::default()
+            },
+            temp.path(),
+            temp.path(),
+            RequestPathPolicy::default(),
+        )
+        .err()
+        .unwrap();
+        assert_eq!(error, "unsupported prompt_language: xx");
     }
 
     #[test]
@@ -564,6 +665,7 @@ mod tests {
             Some("request prompt".to_string()),
             SynthesisOverrides {
                 seed: Some(0),
+                prompt_language: Some("zh".into()),
                 top_k: Some(33),
                 top_p: Some(0.7),
                 temperature: Some(0.5),
@@ -587,6 +689,7 @@ mod tests {
         assert_eq!(resolved.refer_path, request_ref.to_string_lossy());
         assert_eq!(resolved.prompt_text, "request prompt");
         assert_eq!(resolved.options.seed, Some(0));
+        assert_eq!(resolved.options.prompt_language, Language::Chinese);
         assert_eq!(resolved.options.top_k, 33);
         assert!((resolved.options.top_p - 0.7).abs() < 0.001);
         assert!((resolved.options.temperature - 0.5).abs() < 0.001);
