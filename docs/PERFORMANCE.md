@@ -1,12 +1,17 @@
 # 推理性能
 
-本文描述 1.3.1 的推理路径和测量方法。版本差异见 [文档入口](README.md)。
+本页提供复测方法和已保存的报告。结果以每份报告记录的提交、模型、设备和输入为准。
+
+最近发布基线是 [1.3.1 与 1.3.0 的 Sun CUDA 对照](benchmarks/v1.3.1-sun-cuda.md)：
+RTX 4060 Ti、Sun v2Pro + SV、12 项输入、每项测量 5 次，
+1.3.1 候选的热推理 RTF 中位数范围为 0.1351–0.1671。
+后续源码改动需要按下述流程重新测量。
 
 ## 当前推理路径
 
 - GPT 和 SoVITS 使用 F32。`--half` 目前不会启用完整半精度推理。
 - `--mode auto` 在 CUDA F32 上选择 `cuda-graph`，其他设备选择 `kv`。
-  `GPT_SOVITS_DISABLE_CUDA_GRAPH=1` 可让 auto 选择 KV；不存在旧文档中的实验启用开关。
+  `GPT_SOVITS_DISABLE_CUDA_GRAPH=1` 可让 auto 选择 KV。
 - Graph 的前 32 个生成步骤走 eager/static KV；较短生成可能不触发 capture。
   首次 replay 有校验和回退保护，Graph 在每次生成中创建。
 - 服务复用常驻模型和参考特征缓存。多音色缓存容量、队列及预加载见 [HTTP API](API.md)。
@@ -83,27 +88,15 @@ cargo bench --locked --bench inference_bench -- text_frontend
 
 ## 已记录的测量
 
-[1.3.1 与 1.3.0 的 Sun CUDA 对照](benchmarks/v1.3.1-sun-cuda.md)：
-A/B/A 三轮各 12 项、每项测量 5 次，252 段波形检查通过。
-候选热推理 RTF 中位数为 0.1351–0.1671；ASR 对照通过原定门槛，
-小数和中英混读的识别偏差保留在报告中，仍需试听。
+以下 GPU 报告均使用 Sun v2Pro + SV 和 RTX 4060 Ti。各次采样及验收条件见原报告：
 
-[1.3.0 Sun v2Pro + SV / RTX 4060 Ti](benchmarks/v1.3.0-sun-cuda.md)：
-提交 `c58324d`，12 项各测量 5 次，热推理 RTF 中位数 0.1213–0.1487。
-发布前候选镜像通过 ASR 阈值和用户试听。正式镜像复验的混合句触发单项阈值；
-追加每版 32 段对照后，旧版与正式版 MER 分别为 36.67% 和 36.04%，详见报告。
-
-[SoVITS 通道归一化修复验证](benchmarks/v1.2.2-layer-norm-fix.md)：
-提交 `46b7455`，热推理 RTF 中位数 0.1268–0.1537，完整 HTTP 回归通过原定 ASR 阈值。
-95/96/97-token 对照验证了长度边界修复；中英混合句仍有错误，报告列出了待试听项。
-
-[1.2.2 Sun v2Pro + SV / RTX 4060 Ti](benchmarks/v1.2.2-sun-cuda.md)：
-提交 `53c4fbf`，12 项各测量 5 次，热推理 RTF 中位数为 0.1285–0.1558。
-独立的 HTTP 版本对照未通过语音验收，其中一段已由用户确认乱读；报告保留失败结果。
-
-[2026-11-06 Sun v2Pro + SV / RTX 4060 Ti](benchmarks/2026-11-06-sun-cuda.md)：
-release、12 项、每项预热 2 次和测量 5 次。84 次波形检查通过，ASR 异常待试听确认。
-报告包含逐项耗时、输入哈希和识别结果。
+| 报告 | 记录 |
+| --- | --- |
+| [1.3.1 / 1.3.0 对照](benchmarks/v1.3.1-sun-cuda.md) | A/B/A 共 252 段波形检查通过，ASR 对照通过预设门槛；保留小数和混读偏差 |
+| [1.3.0](benchmarks/v1.3.0-sun-cuda.md) | 候选验收及正式镜像复验；混读单项超限后追加对照，保留全部结果 |
+| [SoVITS 通道归一化修复](benchmarks/v1.2.2-layer-norm-fix.md) | 95/96/97-token 边界与完整 HTTP 回归，保留待试听项 |
+| [1.2.2 初次验收](benchmarks/v1.2.2-sun-cuda.md) | 失败记录：HTTP 语音对照未通过，用户确认一段乱读 |
+| [2026-11-06](benchmarks/2026-11-06-sun-cuda.md) | 早期 84 次波形检查，ASR 异常待试听确认 |
 
 ## 定位瓶颈
 

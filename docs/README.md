@@ -1,43 +1,35 @@
-# 文档导航与版本范围
+# 文档
 
-本文档对应 1.3.1。下载入口见 [Releases](https://github.com/ricardomlee/gpt-sovits-rs/releases)。
+GPT-SoVITS-RS 将已有音色变成本地 HTTP 语音服务。先跑出声音，再配置自己的音色，
+最后接入应用；模型和参考录音保存在服务所在机器。
 
-## 先选你的版本
+## 开始使用
 
-| 版本 | 功能 |
+| 你要做什么 | 从这里开始 |
 | --- | --- |
-| [1.3.1](releases/v1.3.1.md) | 中文音素与英文数字修复、参考缓存一致性、固定 seed、特征错误处理和流式日志脱敏 |
-| [1.3.0](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.0) | HTTP 返回 MP3/Ogg Opus，Hermes 内置 provider 直接接入 |
-| [1.2.2](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.2.2) | SoVITS 长度边界乱读修复、中文数字与注音处理、HTTP 客户端、Hermes 接入和本地 GPU 基准报告 |
-| [1.2.1](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.2.1) | v2/v2Pro、SV 文件、HTTP、分句流式和多模型缓存；独立二进制默认监听本机 |
+| 先听效果 | [在线试听](https://ricardomlee.github.io/gpt-sovits-rs/) |
+| 没有模型，生成第一段语音 | [Docker 首次运行](FIRST_RUN.zh-CN.md) |
+| 使用已有或微调的 v2 / v2Pro 模型 | [下载与转换模型](MODELS.md) |
+| 长期运行 CPU / CUDA 服务，配置音色和升级 | [部署](DEPLOYMENT.md) |
+| 接入 Hermes 或自己的 Agent | [Agent 接入](AGENT_INTEGRATION.md) |
+| 查 HTTP 字段、CLI 选项或 Rust 调用 | [API](API.md) |
+| 从 shell 调用已有服务 | [HTTP 命令行客户端](../client/README.md) |
+| 调整分段、停顿和语速 | [韵律与分段](PROSODY.md) |
 
-首次体验脚本固定使用已验证的 `1.3.0` 镜像。
-报告问题和性能时，同时提供源码提交、构建 features/profile 或镜像 digest。
-下载旧版用户应阅读[该 tag 下的文档](https://github.com/ricardomlee/gpt-sovits-rs/tree/v1.2.1/docs)。
+首次体验使用 **9881** 端口和 `demo` 音色；正式部署及 API 示例使用 **9880**。
+接入时先查询 `GET /voices`，将示例中的音色名换成自己的配置。
 
-## 使用与维护
+## 开发与维护
 
-| 任务 | 文档 |
+| 主题 | 文档 |
 | --- | --- |
-| 没有模型，先跑出声音 | [首次运行](FIRST_RUN.zh-CN.md) |
-| 下载、转换自己的模型和 SV | [模型](MODELS.md) |
-| 配置 Docker、二进制、音色和升级 | [部署](DEPLOYMENT.md) |
-| HTTP、CLI、Rust 调用 | [API](API.md)、[HTTP 客户端](../client/README.md) |
-| 接入助手、句子播放、读音控制 | [Agent 接入](AGENT_INTEGRATION.md)、[韵律与分段](PROSODY.md) |
-| 理解当前推理和缓存 | [实现说明](../IMPLEMENTATION.md) |
-| 构建、测试与代码目录 | [开发](DEVELOPMENT.md) |
-| 性能测量、自动报告、旧实验 | [性能](PERFORMANCE.md) |
-| 发版前验收与回滚 | [发布验收](RELEASE_ACCEPTANCE.md) |
-| 项目范围与优先级 | [产品目标](PRODUCT_GOAL.md) |
+| 推理流程图、模型条件和缓存职责 | [实现说明](../IMPLEMENTATION.md) |
+| 编译、代码目录、测试和 CI | [开发](DEVELOPMENT.md) |
+| 测量方法、GPU 自动报告和历史结果 | [性能](PERFORMANCE.md) |
+| 发版验收、语音回归和回滚 | [发布验收](RELEASE_ACCEPTANCE.md) |
+| 项目范围与工程原则 | [产品目标](PRODUCT_GOAL.md) |
 
-`releases/` 保留各版本发布说明。
-`history/` 和 [cuda-oxide 实验](CUDA_OXIDE_EXPERIMENT.md)保存历史测量及当时的环境。
-
-## 维护约定
-
-- 改 CLI、HTTP 字段、默认值或模型格式时，同一个 PR 更新对应文档和示例。
-- 功能说明标注具体版本；首次体验的固定镜像在下载和运行验收通过后更新。
-- 每次发布前在本地 GPU 上运行[基准报告](PERFORMANCE.md)，保存提交、构建、硬件、
-  模型/音色配置、输入、预热、重复次数和原始数据，以此建立版本基线。
-- 日常 CI 检查本地 Markdown 链接、JSON 示例、Bash 语法和 CLI 选项。
-  语义正确性、外链状态和真实模型效果仍需人工核对及实际运行。
+文档随仓库代码维护。使用固定版本时，从[对应 tag](https://github.com/ricardomlee/gpt-sovits-rs/tags)
+进入该版本的文档；变更记录见 [Releases](https://github.com/ricardomlee/gpt-sovits-rs/releases)。
+[历史测量](history/performance-2026-07.md)和 [cuda-oxide 实验](CUDA_OXIDE_EXPERIMENT.md)
+保留当时的环境与结论，当前测量入口在性能指南。
