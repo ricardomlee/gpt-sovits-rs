@@ -614,16 +614,4 @@ impl crate::models::Model for BigVGAN {
             Device::Metal(_) => "mps",
         }
     }
-
-    fn to_device(&mut self, device: &str) -> Result<()> {
-        let new_device = match device {
-            "cuda" => Device::new_cuda_with_stream(0),
-            "mps" => Device::new_metal(0),
-            _ => Ok(Device::Cpu),
-        }
-        .map_err(|e| Error::ModelLoadError(e.to_string()))?;
-
-        self.device = new_device;
-        Ok(())
-    }
 }
