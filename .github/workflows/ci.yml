@@ -10,6 +10,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
@@ -18,8 +22,26 @@ jobs:
   workflow-lint:
     name: Validate workflows
     runs-on: ubuntu-24.04
+    outputs:
+      container: ${{ steps.container.outputs.required }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+
+      - name: Select container acceptance
+        id: container
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          required=true
+          if [[ "$EVENT_NAME" == pull_request ]]; then
+            if git diff --no-renames --name-only -z "$PR_BASE_SHA" HEAD > "$RUNNER_TEMP/ci-changes"; then
+              required=$(bash .github/container-needed.sh < "$RUNNER_TEMP/ci-changes")
+            fi
+          fi
+          echo "required=$required" >> "$GITHUB_OUTPUT"
 
       - name: Run actionlint
         uses: rhysd/actionlint@v1.7.9
@@ -193,6 +215,8 @@ jobs:
 
   docker:
     name: Build and smoke test CPU container
+    needs: workflow-lint
+    if: needs.workflow-lint.outputs.container == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
