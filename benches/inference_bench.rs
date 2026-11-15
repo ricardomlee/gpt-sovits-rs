@@ -2,7 +2,40 @@
 
 use candle_core::{DType, Device, Tensor};
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use gpt_sovits_rs::AudioBuffer;
+use gpt_sovits_rs::{text_frontend::TextFrontend, AudioBuffer, Language};
+
+fn text_frontend_benchmark(c: &mut Criterion) {
+    c.bench_function("text_frontend_init", |b| {
+        b.iter(|| black_box(TextFrontend::new().unwrap()))
+    });
+
+    let frontend = TextFrontend::new().unwrap();
+    for (name, text, language) in [
+        (
+            "chinese",
+            "今天下午三点，我们一起测试语音合成。",
+            Language::Chinese,
+        ),
+        (
+            "english",
+            "Hello, this is a local speech synthesis benchmark.",
+            Language::English,
+        ),
+        (
+            "mixed",
+            "这个 API 用 Rust 实现，版本是 1.3.1。",
+            Language::Auto,
+        ),
+    ] {
+        c.bench_function(&format!("text_frontend_process/{name}"), |b| {
+            b.iter(|| {
+                frontend
+                    .process_with_word2ph_and_text(black_box(text), language)
+                    .unwrap()
+            })
+        });
+    }
+}
 
 fn audio_benchmark(c: &mut Criterion) {
     // Audio buffer benchmark
@@ -114,6 +147,7 @@ fn feature_fusion_benchmark(c: &mut Criterion) {
 }
 
 fn criterion_benchmark(c: &mut Criterion) {
+    text_frontend_benchmark(c);
     audio_benchmark(c);
     tensor_benchmark(c);
     feature_fusion_benchmark(c);
