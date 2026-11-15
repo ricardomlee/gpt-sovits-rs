@@ -54,7 +54,7 @@ curl --fail-with-body http://127.0.0.1:9880/tts \
 {"model":"tts-1","voice":"demo","input":"你好，今天有什么安排？","text_language":"auto","response_format":"wav"}
 ```
 
-1.3.0 支持 `wav`、`pcm`、`mp3` 和 `opus`，省略格式时仍返回 WAV。
+从 1.3.0 起支持 `wav`、`pcm`、`mp3` 和 `opus`，省略格式时仍返回 WAV。
 Opus 使用 Ogg 容器，输出 48 kHz 单声道；当前 WAV/PCM 为 32 kHz、单声道、16-bit little-endian。
 `model` 和 `instructions` 字段当前忽略；模型随音色配置选择。
 兼容字段和错误响应见 [speech API](API.md#post-v1audiospeech)。
@@ -67,7 +67,7 @@ Opus 使用 Ogg 容器，输出 48 kHz 单声道；当前 WAV/PCM 为 32 kHz、�
 
 ## Hermes
 
-1.3.0 服务可直接使用 Hermes 内置的 OpenAI TTS provider：
+从 1.3.0 起，服务可直接使用 Hermes 内置的 OpenAI TTS provider：
 
 ```text
 Hermes text_to_speech -> POST /v1/audio/speech -> 常驻推理服务

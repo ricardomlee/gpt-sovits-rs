@@ -1,6 +1,6 @@
 # API
 
-This page describes version 1.3.0. See [version differences](README.md#先选你的版本)
+This page describes version 1.3.1. See [version differences](README.md#先选你的版本)
 when using an older binary or image.
 
 GPT-SoVITS-RS exposes three integration surfaces:

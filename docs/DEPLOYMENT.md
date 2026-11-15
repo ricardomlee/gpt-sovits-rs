@@ -27,7 +27,7 @@ cp .env.example .env
 
 ```env
 GPT_SOVITS_PORT=127.0.0.1:9880
-GPT_SOVITS_IMAGE_TAG=1.3.0
+GPT_SOVITS_IMAGE_TAG=1.3.1
 ```
 
 路径按配置位置解析：
@@ -76,7 +76,7 @@ docker compose -f compose.cpu.yml up -d --wait --wait-timeout 900
 docker compose -f compose.cpu.yml ps
 ```
 
-CPU 固定版本镜像为 `ghcr.io/ricardomlee/gpt-sovits-rs:1.3.0`。
+CPU 固定版本镜像为 `ghcr.io/ricardomlee/gpt-sovits-rs:1.3.1`。
 
 ## CUDA
 
@@ -84,10 +84,10 @@ CPU 固定版本镜像为 `ghcr.io/ricardomlee/gpt-sovits-rs:1.3.0`。
 里设置 `CUDA_IMAGE_TAG`：
 
 ```text
-RTX 20: 1.3.0-cuda-sm75
-RTX 30: 1.3.0-cuda-sm86
-RTX 40: 1.3.0-cuda-sm89
-H100:   1.3.0-cuda-sm90
+RTX 20: 1.3.1-cuda-sm75
+RTX 30: 1.3.1-cuda-sm86
+RTX 40: 1.3.1-cuda-sm89
+H100:   1.3.1-cuda-sm90
 ```
 
 ```bash
@@ -113,7 +113,7 @@ CUDA_IMAGE_TAG=local-cuda-sm80 docker compose -f compose.cuda.yml \
 
 [Release](https://github.com/ricardomlee/gpt-sovits-rs/releases/latest) 中的 Linux x86_64 包携带 `libsoxr` 和 `libmp3lame`。
 干净运行环境的验收使用 Ubuntu 24.04，安装系统运行库 `libstdc++6` 和 `libgomp1`，无需 Python 或 Rust 工具链。
-1.3.0 的发布包还携带 MP3 编码所需的 `libmp3lame`，Opus 编码器编入程序。
+从 1.3.0 起，发布包还携带 MP3 编码所需的 `libmp3lame`，Opus 编码器编入程序。
 Docker 镜像包含相同的编码能力。第三方库说明见 [Audio Codec Notices](../THIRD_PARTY.md)。
 
 | 程序 | 用途 |
@@ -122,18 +122,18 @@ Docker 镜像包含相同的编码能力。第三方库说明见 [Audio Codec No
 | `gpt-sovits-convert` | 模型和 SV 文件转换 |
 | `gpt-sovits-client`（1.2.2 起） | 调用已有 HTTP 服务，适用于脚本和 Agent |
 
-以下使用 1.3.0 包演示服务启动；客户端用法见 [HTTP 客户端](../client/README.md)。
+以下使用 1.3.1 包演示服务启动；客户端用法见 [HTTP 客户端](../client/README.md)。
 
 ```bash
-tar -xzf gpt-sovits-1.3.0-linux-x86_64.tar.gz
-cd gpt-sovits-1.3.0-linux-x86_64
+tar -xzf gpt-sovits-1.3.1-linux-x86_64.tar.gz
+cd gpt-sovits-1.3.1-linux-x86_64
 ./gpt-sovits-convert --version
 ./gpt-sovits --models-dir /path/to/models \
   --voices-dir /path/to/voices \
   --http --port 9880
 ```
 
-macOS 包同时携带对应的 `libsoxr.0.dylib`；1.3.0 还包含 `libmp3lame.0.dylib`。首次运行若被 Gatekeeper 阻止，需要在
+macOS 包同时携带对应的 `libsoxr.0.dylib`；从 1.3.0 起还包含 `libmp3lame.0.dylib`。首次运行若被 Gatekeeper 阻止，需要在
 系统设置中确认允许该二进制。
 
 已发布的 Linux/macOS 二进制是 CPU 构建；macOS 构建未启用 Metal，`--device mps`
