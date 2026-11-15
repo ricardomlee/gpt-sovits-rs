@@ -15,6 +15,48 @@ fn diagnostics(output: &Output) -> String {
 }
 
 #[test]
+fn invalid_effective_settings_fail_before_loading_models() {
+    let dir = tempfile::tempdir().unwrap();
+    let gpt = dir.path().join("gpt.safetensors");
+    let sovits = dir.path().join("sovits.safetensors");
+    std::fs::write(&gpt, b"not a model").unwrap();
+    std::fs::write(&sovits, b"not a model").unwrap();
+    for (flag, value) in [
+        ("--max-tokens", "0"),
+        ("--max-tokens", "2049"),
+        ("--speed", "0.01"),
+        ("--temperature", "NaN"),
+        ("--sentence-gap-ms", "4294967295"),
+        ("--sentence-fade-ms", "1001"),
+    ] {
+        let output = cli()
+            .current_dir(dir.path())
+            .arg("--gpt-model")
+            .arg(&gpt)
+            .arg("--sovits-model")
+            .arg(&sovits)
+            .args([
+                "--device",
+                "cpu",
+                "--text",
+                "hello",
+                "--reference-audio",
+                "ref.wav",
+                "--reference-text",
+                "hello",
+                flag,
+                value,
+            ])
+            .output()
+            .unwrap();
+        let logs = diagnostics(&output);
+        assert_eq!(output.status.code(), Some(1), "{logs}");
+        assert!(logs.contains("Invalid synthesis settings"), "{logs}");
+        assert!(!logs.contains("Loading models"), "{logs}");
+    }
+}
+
+#[test]
 fn help_documents_loopback_default_and_environment_variable() {
     let output = cli().arg("--help").output().unwrap();
     assert!(output.status.success());

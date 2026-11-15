@@ -1,5 +1,6 @@
 //! HTTP request models and request-to-inference resolution.
 
+use gpt_sovits_rs::inference::validate_sentence_timing;
 use gpt_sovits_rs::voice::{
     InferenceOptionOverrides, LoadedVoiceProfile, VoiceDefaults, VoiceModelPaths,
 };
@@ -351,7 +352,7 @@ pub(super) fn resolve_synthesis(
     validate_optional_model_path("SoVITS", models.sovits.as_deref())?;
     validate_optional_model_path("BigVGAN", models.bigvgan.as_deref())?;
 
-    Ok(ResolvedSynthesis {
+    let resolved = ResolvedSynthesis {
         voice: voice.map(|v| v.name),
         models,
         mode: defaults.mode,
@@ -372,7 +373,11 @@ pub(super) fn resolve_synthesis(
             .unwrap_or(defaults.sentence_fade_ms),
         refer_path,
         prompt_text,
-    })
+    };
+    resolved.options.validate().map_err(|e| e.to_string())?;
+    validate_sentence_timing(resolved.sentence_gap_ms, resolved.sentence_fade_ms)
+        .map_err(|e| e.to_string())?;
+    Ok(resolved)
 }
 
 fn validate_request_file_path(
@@ -425,6 +430,92 @@ pub(super) fn validate_text(text: &str, field: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unsafe_numeric_settings_fail_after_resolution() {
+        let temp = tempfile::tempdir().unwrap();
+        let reference = temp.path().join("ref.wav");
+        write_ref_audio(&reference);
+        for (field, value) in [
+            ("max_tokens", serde_json::json!(0)),
+            ("max_tokens", serde_json::json!(2049)),
+            ("max_tokens", serde_json::json!(usize::MAX)),
+            ("speed", serde_json::json!(0.0)),
+            ("speed", serde_json::json!(0.24)),
+            ("speed", serde_json::json!(4.1)),
+            ("top_p", serde_json::json!(-0.1)),
+            ("top_p", serde_json::json!(1.1)),
+            ("temperature", serde_json::json!(0.0)),
+            ("temperature", serde_json::json!(-1.0)),
+            ("repetition_penalty", serde_json::json!(0.0)),
+            ("repetition_penalty", serde_json::json!(-1.0)),
+            ("sentence_gap_ms", serde_json::json!(10_001)),
+            ("sentence_gap_ms", serde_json::json!(u32::MAX)),
+            ("sentence_fade_ms", serde_json::json!(1001)),
+        ] {
+            let mut body = serde_json::json!({"voice":"demo","text":"hello","texts":["hello"]});
+            body[field] = value;
+            let tts: TtsRequest = serde_json::from_value(body.clone()).unwrap();
+            let batch: TtsBatchRequest = serde_json::from_value(body.clone()).unwrap();
+            let mut overrides = vec![
+                SynthesisOverrides::from_tts(&tts),
+                SynthesisOverrides::from_batch(&batch),
+            ];
+            if !matches!(field, "top_p" | "temperature") {
+                let speech: OpenAiSpeechRequest = serde_json::from_value(body).unwrap();
+                overrides.push(SynthesisOverrides::from_openai(&speech));
+            }
+            for overrides in overrides {
+                let error = resolve_synthesis(
+                    None,
+                    None,
+                    Some(reference.to_string_lossy().into_owned()),
+                    Some("hello".into()),
+                    overrides,
+                    temp.path(),
+                    temp.path(),
+                    RequestPathPolicy::default(),
+                )
+                .err()
+                .expect("unsafe effective settings must be rejected");
+                assert!(error.contains(field), "{field}: {error}");
+            }
+        }
+    }
+
+    #[test]
+    fn validation_uses_effective_settings_including_voice_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        let dir = temp.path().join("demo");
+        std::fs::create_dir(&dir).unwrap();
+        write_ref_audio(&dir.join("ref.wav"));
+        std::fs::write(
+            dir.join("voice.json"),
+            r#"{"reference_audio":"ref.wav","reference_text":"hello","speed":0,"sentence_gap_ms":4294967295}"#,
+        )
+        .unwrap();
+        let resolve = |overrides| {
+            resolve_synthesis(
+                Some("demo"),
+                None,
+                None,
+                None,
+                overrides,
+                temp.path(),
+                temp.path(),
+                RequestPathPolicy::default(),
+            )
+        };
+        assert!(resolve(SynthesisOverrides::default()).is_err());
+        let resolved = resolve(SynthesisOverrides {
+            speed: Some(1.0),
+            sentence_gap_ms: Some(120),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(resolved.options.speed, 1.0);
+        assert_eq!(resolved.sentence_gap_ms, 120);
+    }
 
     #[test]
     fn seed_is_optional_and_must_be_an_unsigned_integer_on_every_endpoint() {

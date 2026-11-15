@@ -93,6 +93,7 @@ impl Pipeline {
         ref_text: &str,
         options: &InferenceOptions,
     ) -> Result<()> {
+        options.validate()?;
         self.get_ref_features(ref_audio, ref_text, options)
             .map(|_| ())
     }
