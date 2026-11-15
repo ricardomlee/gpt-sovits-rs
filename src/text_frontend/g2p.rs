@@ -8,6 +8,7 @@ use crate::{Error, Language, Result};
 use jieba_rs::Jieba;
 use pinyin::ToPinyin;
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PinyinOverride {
@@ -495,10 +496,10 @@ const CMUDICT_TXT: &str = include_str!("cmudict.txt");
 /// G2P Converter for multiple languages
 pub struct G2PConverter {
     pinyin_map: HashMap<&'static str, (&'static str, &'static str)>,
-    jieba: Jieba,
+    jieba: &'static Jieba,
     tone_sandhi: ToneSandhi,
     /// CMU Pronouncing Dictionary: UPPERCASE_WORD → space-separated ARPABET phonemes
-    cmudict: HashMap<String, String>,
+    cmudict: &'static HashMap<&'static str, &'static str>,
 }
 
 impl std::fmt::Debug for G2PConverter {
@@ -511,20 +512,23 @@ impl std::fmt::Debug for G2PConverter {
 
 impl G2PConverter {
     pub fn new() -> Result<Self> {
-        let cmudict = Self::load_cmudict();
+        // Immutable dictionaries are shared across voices and remain resident until exit.
+        static JIEBA: LazyLock<Jieba> = LazyLock::new(Jieba::new);
+        static CMUDICT: LazyLock<HashMap<&'static str, &'static str>> =
+            LazyLock::new(G2PConverter::load_cmudict);
         Ok(Self {
             pinyin_map: pinyin_split(),
-            jieba: Jieba::new(),
+            jieba: &JIEBA,
             tone_sandhi: ToneSandhi::new(),
-            cmudict,
+            cmudict: &CMUDICT,
         })
     }
 
-    fn load_cmudict() -> HashMap<String, String> {
+    fn load_cmudict() -> HashMap<&'static str, &'static str> {
         let mut map = HashMap::with_capacity(125_000);
         for line in CMUDICT_TXT.lines() {
             if let Some((word, phones)) = line.split_once('\t') {
-                map.insert(word.to_string(), phones.to_string());
+                map.insert(word, phones);
             }
         }
         map
@@ -535,7 +539,7 @@ impl G2PConverter {
     fn cmudict_lookup(&self, word: &str) -> Option<&str> {
         let upper = word.to_uppercase();
         // Direct lookup
-        if let Some(ph) = self.cmudict.get(&upper) {
+        if let Some(ph) = self.cmudict.get(upper.as_str()) {
             return Some(ph);
         }
         // Strip trailing punctuation
@@ -711,7 +715,7 @@ impl G2PConverter {
                 .map(|opt| opt.as_ref().map(|(_, t)| *t).unwrap_or(0))
                 .collect();
             self.tone_sandhi
-                .modified_tone(word, pos, &mut tones, &self.jieba);
+                .modified_tone(word, pos, &mut tones, self.jieba);
             for (i, opt) in char_data.iter().enumerate() {
                 if locked_tones[i] {
                     if let Some((_, explicit_tone)) = opt {
@@ -916,6 +920,43 @@ impl Default for G2PConverter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn concurrent_converters_share_read_only_dictionaries() {
+        use std::sync::Barrier;
+
+        let barrier = Barrier::new(4);
+        let converters = std::thread::scope(|scope| {
+            let threads: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        G2PConverter::new().unwrap()
+                    })
+                })
+                .collect();
+            threads
+                .into_iter()
+                .map(|thread| thread.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        let first = &converters[0];
+        for converter in &converters {
+            assert!(std::ptr::eq(first.jieba, converter.jieba));
+            assert!(std::ptr::eq(
+                first.cmudict.get("HELLO").unwrap(),
+                converter.cmudict.get("HELLO").unwrap()
+            ));
+            assert_eq!(
+                converter.convert("你好", Language::Chinese).unwrap(),
+                "n i2 h ao3"
+            );
+            assert_eq!(
+                converter.cmudict_lookup("Hello"),
+                first.cmudict_lookup("HELLO")
+            );
+        }
+    }
 
     #[test]
     fn chinese_phones_match_upstream_opencpop() {

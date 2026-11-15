@@ -65,6 +65,19 @@ target/release/examples/gpu_benchmark \
 比较版本时固定 profile、模型、SV、语料、采样和设备。随机采样会改变 token 数及音频长度，
 应结合输出完整性、音频时长和多次测量的时延、RTF 判断变化。
 
+## 文本前端微基准
+
+```bash
+cargo bench --locked --bench inference_bench -- text_frontend
+```
+
+`text_frontend_init` 测量词典已初始化后的前端构建与释放；三个
+`text_frontend_process/*` 分别测量中文、英文和中英混读的规范化、G2P、音素编码及
+`word2ph` 对齐。首次词典初始化、模型加载和语音推理单独测量。
+
+中文分词器和英文发音词典按进程共享，首次创建前端时初始化，直到进程退出才释放。
+后续音色管线复用词典；各前端仍保留独立的规范化、符号表和变调规则。
+
 ## 已记录的测量
 
 [1.3.1 与 1.3.0 的 Sun CUDA 对照](benchmarks/v1.3.1-sun-cuda.md)：
@@ -105,7 +118,7 @@ GPT_SOVITS_SYNC_PROFILE=1 target/release/gpt-sovits \
 | --- | --- |
 | `kv_cache_bench` | 解码路径对照，使用自有贪心参数和参考音频配置，未加载 voice 的 SV |
 | `gpt_dtype_bench` | GPT 阶段的精度实验，依赖本地固定模型和参考素材 |
-| `inference_bench` | 合成张量微基准，记录主机调用耗时；CUDA 操作异步执行 |
+| `inference_bench` | 文本前端、音频及合成张量微基准；CUDA 张量操作异步执行 |
 | `profile_kv_cache` / `e2e_quick` | 开发调试例子，依赖各自硬编码素材 |
 | `conv1d_cpu_bench` | CPU Conv1d 微基准 |
 

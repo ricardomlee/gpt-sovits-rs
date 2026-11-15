@@ -15,6 +15,7 @@ const SYMBOLS_JSON: &str = include_str!("symbols_v2.json");
 pub struct SymbolTable {
     symbol_to_id: HashMap<String, usize>,
     id_to_symbol: Vec<String>,
+    max_symbol_bytes: usize,
 }
 
 impl SymbolTable {
@@ -30,6 +31,7 @@ impl SymbolTable {
             .collect();
 
         Self {
+            max_symbol_bytes: symbols.iter().map(String::len).max().unwrap_or(0),
             symbol_to_id,
             id_to_symbol: symbols,
         }
@@ -40,45 +42,25 @@ impl SymbolTable {
     /// Spaces are skipped. Uses longest-match-first for multi-char symbols.
     pub fn encode(&self, phonemes: &str) -> Result<Vec<usize>> {
         let mut ids = Vec::new();
-        let chars: Vec<char> = phonemes.chars().collect();
-        let mut pos = 0;
-
-        while pos < chars.len() {
-            // Skip spaces
-            if chars[pos] == ' ' {
-                pos += 1;
+        let mut remaining = phonemes;
+        while !remaining.is_empty() {
+            if let Some(rest) = remaining.strip_prefix(' ') {
+                remaining = rest;
                 continue;
             }
-
-            let mut matched = false;
-
-            // Try longest symbols first (sorted by length descending)
-            // We iterate through all symbols and pick the longest match
-            let remaining: String = chars[pos..].iter().collect();
-            let mut best_match: Option<(&str, usize)> = None;
-
-            for (symbol, &id) in &self.symbol_to_id {
-                if remaining.starts_with(symbol.as_str()) {
-                    if let Some((prev_sym, _)) = best_match {
-                        if symbol.len() > prev_sym.len() {
-                            best_match = Some((symbol, id));
-                        }
-                    } else {
-                        best_match = Some((symbol, id));
-                    }
-                }
-            }
-
-            if let Some((symbol, id)) = best_match {
+            let best_match = (1..=remaining.len().min(self.max_symbol_bytes))
+                .rev()
+                .find_map(|len| {
+                    let symbol = remaining.get(..len)?;
+                    self.symbol_to_id.get(symbol).map(|&id| (len, id))
+                });
+            let consumed = if let Some((len, id)) = best_match {
                 ids.push(id);
-                pos += symbol.chars().count();
-                matched = true;
-            }
-
-            if !matched {
-                // Unknown symbol - skip
-                pos += 1;
-            }
+                len
+            } else {
+                remaining.chars().next().unwrap().len_utf8()
+            };
+            remaining = &remaining[consumed..];
         }
 
         Ok(ids)
@@ -125,6 +107,64 @@ impl Default for SymbolTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_symbol_encodes_to_its_trained_id() {
+        let table = SymbolTable::new();
+        for (id, symbol) in table.id_to_symbol.iter().enumerate() {
+            assert_eq!(table.encode(symbol).unwrap(), vec![id], "{symbol}");
+        }
+    }
+
+    #[test]
+    fn greedy_encoding_matches_full_vocabulary_scan() {
+        use rand::{rngs::StdRng, Rng, SeedableRng};
+
+        let table = SymbolTable::new();
+        let full_scan = |input: &str| {
+            let chars: Vec<_> = input.chars().collect();
+            let mut pos = 0;
+            let mut ids = Vec::new();
+            while pos < chars.len() {
+                if chars[pos] == ' ' {
+                    pos += 1;
+                    continue;
+                }
+                let remaining: String = chars[pos..].iter().collect();
+                let best = table
+                    .symbol_to_id
+                    .iter()
+                    .filter(|(symbol, _)| remaining.starts_with(symbol.as_str()))
+                    .max_by_key(|(symbol, _)| symbol.len());
+                if let Some((symbol, &id)) = best {
+                    ids.push(id);
+                    pos += symbol.chars().count();
+                } else {
+                    pos += 1;
+                }
+            }
+            ids
+        };
+        for input in [
+            String::new(),
+            table.id_to_symbol.join(" "),
+            table.id_to_symbol.concat(),
+            "sh ao3\t🙂你好\n\0a\u{301}".into(),
+        ] {
+            assert_eq!(table.encode(&input).unwrap(), full_scan(&input), "{input}");
+        }
+        let mut rng = StdRng::seed_from_u64(42);
+        for _ in 0..256 {
+            let mut input = String::new();
+            for _ in 0..16 {
+                input.push_str(&table.id_to_symbol[rng.random_range(0..table.len())]);
+                input.push_str(
+                    ["", " ", "\t", "\n", "🙂", "你", "\0", "\u{301}"][rng.random_range(0..8)],
+                );
+            }
+            assert_eq!(table.encode(&input).unwrap(), full_scan(&input), "{input}");
+        }
+    }
 
     #[test]
     fn test_encode_chinese() {
