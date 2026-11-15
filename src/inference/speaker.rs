@@ -30,7 +30,7 @@ pub(super) struct CachedSpeaker {
 pub(super) struct SpeakerCacheKey {
     audio: PathBuf,
     text: String,
-    language: Language,
+    prompt_language: Language,
     sv_embedding: Option<PathBuf>,
 }
 
@@ -39,7 +39,7 @@ impl SpeakerCacheKey {
         Self {
             audio: audio.to_owned(),
             text: text.to_owned(),
-            language: options.language,
+            prompt_language: options.prompt_language,
             sv_embedding: options.sv_embedding.clone(),
         }
     }
@@ -79,7 +79,7 @@ impl Pipeline {
         language: Language,
     ) -> Result<()> {
         let options = InferenceOptions {
-            language,
+            prompt_language: language,
             ..InferenceOptions::default()
         };
         self.preload_speaker_with_options(ref_audio, ref_text, &options)
@@ -131,7 +131,7 @@ impl Pipeline {
             self.gpt_model.as_ref(),
             ref_audio.as_ref(),
             ref_text,
-            options.language,
+            options.prompt_language,
             &self.device,
             sr,
             n_mels,
@@ -340,6 +340,25 @@ mod tests {
     }
 
     #[test]
+    fn target_language_does_not_change_cached_reference() {
+        let mut pipeline = cached_pipeline();
+        let options = InferenceOptions {
+            language: Language::English,
+            ..Default::default()
+        };
+        assert_eq!(
+            pipeline
+                .get_ref_features("missing.wav", "你好", &options)
+                .expect("changing only target language must reuse reference features")
+                .prompt_tokens,
+            vec![42]
+        );
+        pipeline
+            .preload_speaker_with_options("missing.wav", "你好", &options)
+            .unwrap();
+    }
+
+    #[test]
     fn reference_language_is_part_of_cache_identity() {
         let mut pipeline = cached_pipeline();
         let mut options = InferenceOptions::default();
@@ -353,7 +372,7 @@ mod tests {
         pipeline
             .preload_speaker_with_options("missing.wav", "你好", &options)
             .unwrap();
-        options.language = Language::English;
+        options.prompt_language = Language::English;
         assert!(pipeline
             .get_ref_features("missing.wav", "你好", &options)
             .is_err());

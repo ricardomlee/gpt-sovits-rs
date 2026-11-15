@@ -14,7 +14,8 @@ For shell scripts and agent command providers, the standalone
 
 Examples use the deployment default `http://127.0.0.1:9880` and a configured `demo` voice.
 For the [first-run demo](FIRST_RUN.zh-CN.md), use port **9881**. Its reference is English;
-`text_language: "auto"` detects reference and target languages independently.
+`text_language: "auto"` detects the target language. Reference text has its own
+`prompt_language`, which defaults to `auto` independently.
 Create your own voice with the [deployment guide](DEPLOYMENT.md#准备目录和音色).
 
 ## CLI
@@ -35,7 +36,8 @@ Useful options for one-shot synthesis:
 | `--voice <name>` | Load `voices/<name>/voice.json`. |
 | `--voices-dir <dir>` | Directory containing voice profiles; defaults to `voices`. |
 | `--models-dir <dir>` | Search a custom model directory. |
-| `--language <language>` | Use the voice's language by default; `auto` detects reference and target languages independently. |
+| `--language <language>` | Target text language; defaults to the voice's `language`. |
+| `--prompt-language <language>` | Reference text language; defaults to the voice's `prompt_language`, or `auto`. |
 | `--device <device>` | `auto`, `cuda`, `cpu`, or `mps`; acceleration requires a build with that backend. Published macOS binaries are CPU-only. |
 | `--mode <mode>` | `auto` (default), `plain`, `kv`, or `cuda-graph`. Auto selects CUDA Graph for CUDA F32 unless disabled, and KV otherwise. |
 | `--split-sentences` | Split long text and concatenate chunks. |
@@ -108,6 +110,11 @@ Decode methods:
 synthesize one chunk; `inference_split_with_method()` provides splitting and concatenation.
 For v2Pro, also set `options.sv_embedding` and use `preload_speaker_with_options()`
 when preloading a reference. See the [implementation and cache notes](../IMPLEMENTATION.md).
+
+Reference text is detected independently by default. Use
+`.prompt_language(Language::Chinese)` to force a Chinese reference while keeping
+`.language(Language::English)` for English output. Direct `InferenceOptions`
+struct literals must include `prompt_language` or use `..Default::default()`.
 
 All three methods use the same SoVITS synthesis path, so audio quality should match for the same generated semantic tokens.
 
@@ -210,7 +217,8 @@ Model paths are relative to `--models-dir`; reference audio and SV embedding pat
 the voice directory. Model pairs use a bounded LRU cache (two entries by default), while BERT and
 HuBERT are shared between pipelines. Change the limit with `--max-cached-pipelines`.
 
-Reference features are cached by audio path, reference text, language, and SV path.
+Reference features are cached by audio path, reference text, reference language, and SV path.
+Changing only the target language reuses the same reference features.
 Rust `Pipeline` model loads and mutable model/frontend access invalidate this cache;
 failed loads preserve the existing models and cache. Call `clear_speaker_cache()`
 after replacing reference files in place. Preloading uses the same cache as inference.
@@ -250,17 +258,21 @@ built-in defaults. For LLM output, send completed sentences in order;
 
 | Field | Default when absent from the voice | Purpose |
 | --- | --- | --- |
-| `text_language` | `zh` | `auto` detects each text's language; `zh` and `en` force Chinese or English |
+| `text_language` | `zh` | Target text language; `auto` detects it, `zh` and `en` force Chinese or English |
+| `prompt_language` | `auto` | Reference text language, independent of `text_language` |
 | `top_k` | `15` | GPT top-k sampling |
 | `top_p` | `0.95` | GPT nucleus sampling |
 | `temperature` | `0.8` | GPT sampling temperature |
 | `speed` | `1.0` | Speech-speed multiplier |
 | `seed` | Random | Optional unsigned 64-bit integer controlling GPT sampling and SoVITS noise |
 
-The voice field for language is `language`; the request field is `text_language`.
+The voice field for target language is `language`; the request field is `text_language`.
+Both voice profiles and requests use `prompt_language` for the reference transcript.
+An explicit request overrides the corresponding voice default. To force the same
+language for both texts, set both fields to that language.
 For Chinese mixed with ASCII words or abbreviations, `auto` uses the mixed Chinese
 G2P path even when Latin letters are the majority, so Chinese phones are retained.
-An explicit language selection keeps its existing behavior.
+Explicit target language selection affects only the target text.
 
 For debugging, pass `"seed": 42` to `/tts`, `/tts/stream`, `/tts/batch`, or
 `/v1/audio/speech`, or use CLI `--seed 42`. Rust callers can use
@@ -276,8 +288,9 @@ Compare decoded PCM rather than compressed-file bytes; containers such as Ogg
 have independently generated identifiers. Seeded acoustic noise is generated on
 the host and copied to the model device, so measure its cost separately from
 normal unseeded inference.
-The legacy `prompt_language` field is accepted but ignored. Use `auto` when reference
-and target languages differ. Set the decode `mode` in `voice.json`.
+`prompt_language` works on `/tts`, `/tts/stream`, `/tts/batch`, and `/v1/audio/speech`.
+Older versions through 1.3.1 ignore it; use `text_language: "auto"` with those servers
+when the reference and target languages differ. Set the decode `mode` in `voice.json`.
 
 Common aliases are accepted for easier client integration:
 

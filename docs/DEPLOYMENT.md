@@ -53,11 +53,15 @@ cat > voices/demo/voice.json <<'JSON'
   "reference_audio": "ref.wav",
   "reference_text": "参考音频里逐字对应的文字",
   "language": "zh",
+  "prompt_language": "zh",
   "mode": "auto",
   "split_sentences": true
 }
 JSON
 ```
+
+`language` 是待朗读文字的默认语言，`prompt_language` 是参考转写的语言，省略时独立识别。
+HTTP 请求可以分别覆盖这两个设置。
 
 v2Pro 还需[转换匹配的 SV](MODELS.md#v2pro-sv)，放在 `voices/demo/ref_sv.safetensors`，
 并在 JSON 中加入 `"sv_embedding": "ref_sv.safetensors"`。Compose 挂载整个音色目录。
