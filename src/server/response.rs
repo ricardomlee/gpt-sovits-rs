@@ -21,17 +21,6 @@ pub(super) fn json_error(status: StatusCode, message: impl AsRef<str>) -> Respon
         .unwrap()
 }
 
-pub(super) fn language_code(language: Language) -> &'static str {
-    match language {
-        Language::Chinese => "zh",
-        Language::English => "en",
-        Language::Japanese => "ja",
-        Language::Korean => "ko",
-        Language::Cantonese => "yue",
-        Language::Auto => "auto",
-    }
-}
-
 fn safe_header_value(value: &str) -> String {
     value
         .chars()
@@ -53,7 +42,7 @@ pub(super) fn add_synthesis_headers(
     seed: Option<u64>,
 ) -> axum::http::response::Builder {
     builder = builder
-        .header("x-tts-language", language_code(language))
+        .header("x-tts-language", language.code())
         .header("x-tts-text-chars", text_chars.to_string());
 
     if let Some(voice) = voice {
@@ -110,6 +99,25 @@ impl SpeechOutputFormat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn synthesis_language_codes_remain_stable() {
+        for (language, code) in [
+            (Language::Chinese, "zh"),
+            (Language::English, "en"),
+            (Language::Japanese, "ja"),
+            (Language::Korean, "ko"),
+            (Language::Cantonese, "yue"),
+            (Language::Auto, "auto"),
+        ] {
+            assert_eq!(language.code(), code);
+            assert_eq!(Language::parse(code), Some(language));
+            let response = add_synthesis_headers(Response::builder(), None, language, 1, None)
+                .body(Body::empty())
+                .unwrap();
+            assert_eq!(response.headers()["x-tts-language"], code);
+        }
+    }
 
     #[test]
     fn reports_only_explicit_sampling_seeds() {

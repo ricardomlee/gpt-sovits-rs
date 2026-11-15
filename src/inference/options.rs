@@ -4,7 +4,7 @@ use crate::{Error, Language, Result};
 use std::path::PathBuf;
 
 /// Inference options
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct InferenceOptions {
     pub top_k: usize,
     pub top_p: f32,
@@ -88,80 +88,83 @@ pub fn validate_sentence_timing(gap_ms: u32, fade_ms: u32) -> Result<()> {
 
 #[derive(Default)]
 pub struct InferenceOptionsBuilder {
-    top_k: Option<usize>,
-    top_p: Option<f32>,
-    temperature: Option<f32>,
-    speed: Option<f32>,
-    language: Option<Language>,
-    prompt_language: Option<Language>,
-    max_tokens: Option<usize>,
-    repetition_penalty: Option<f32>,
-    sv_embedding: Option<PathBuf>,
-    seed: Option<u64>,
+    options: InferenceOptions,
 }
 
 impl InferenceOptionsBuilder {
     pub fn seed(mut self, seed: u64) -> Self {
-        self.seed = Some(seed);
+        self.options.seed = Some(seed);
         self
     }
 
     pub fn top_k(mut self, k: usize) -> Self {
-        self.top_k = Some(k);
+        self.options.top_k = k;
         self
     }
     pub fn top_p(mut self, p: f32) -> Self {
-        self.top_p = Some(p);
+        self.options.top_p = p;
         self
     }
     pub fn temperature(mut self, t: f32) -> Self {
-        self.temperature = Some(t);
+        self.options.temperature = t;
         self
     }
     pub fn speed(mut self, s: f32) -> Self {
-        self.speed = Some(s);
+        self.options.speed = s;
         self
     }
     pub fn language(mut self, lang: Language) -> Self {
-        self.language = Some(lang);
+        self.options.language = lang;
         self
     }
     pub fn prompt_language(mut self, lang: Language) -> Self {
-        self.prompt_language = Some(lang);
+        self.options.prompt_language = lang;
         self
     }
     pub fn max_tokens(mut self, n: usize) -> Self {
-        self.max_tokens = Some(n);
+        self.options.max_tokens = n;
         self
     }
     pub fn repetition_penalty(mut self, p: f32) -> Self {
-        self.repetition_penalty = Some(p);
+        self.options.repetition_penalty = p;
         self
     }
     pub fn sv_embedding<P: Into<PathBuf>>(mut self, path: P) -> Self {
-        self.sv_embedding = Some(path.into());
+        self.options.sv_embedding = Some(path.into());
         self
     }
 
     pub fn build(self) -> InferenceOptions {
-        InferenceOptions {
-            top_k: self.top_k.unwrap_or(15),
-            top_p: self.top_p.unwrap_or(0.95),
-            temperature: self.temperature.unwrap_or(0.8),
-            speed: self.speed.unwrap_or(1.0),
-            language: self.language.unwrap_or(Language::Chinese),
-            prompt_language: self.prompt_language.unwrap_or(Language::Auto),
-            max_tokens: self.max_tokens.unwrap_or(500),
-            repetition_penalty: self.repetition_penalty.unwrap_or(1.35),
-            sv_embedding: self.sv_embedding,
-            seed: self.seed,
-        }
+        self.options
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn builder_uses_the_canonical_defaults_and_keeps_explicit_zero_values() {
+        assert_eq!(
+            InferenceOptions::builder().build(),
+            InferenceOptions::default()
+        );
+        assert_eq!(
+            InferenceOptions::builder()
+                .top_k(0)
+                .top_p(0.0)
+                .seed(0)
+                .sv_embedding("speaker.safetensors")
+                .build(),
+            InferenceOptions {
+                top_k: 0,
+                top_p: 0.0,
+                seed: Some(0),
+                sv_embedding: Some("speaker.safetensors".into()),
+                ..Default::default()
+            }
+        );
+    }
 
     #[test]
     fn validates_numeric_boundaries_without_changing_valid_settings() {

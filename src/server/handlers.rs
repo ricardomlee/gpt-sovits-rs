@@ -4,7 +4,7 @@ use super::request::{
     resolve_synthesis, validate_text, BatchItemResult, OpenAiSpeechRequest, ResolvedSynthesis,
     SynthesisOverrides, TtsBatchRequest, TtsRequest,
 };
-use super::response::{add_synthesis_headers, json_error, language_code, SpeechOutputFormat};
+use super::response::{add_synthesis_headers, json_error, SpeechOutputFormat};
 use super::state::AppState;
 use axum::{
     body::Body,
@@ -14,7 +14,7 @@ use axum::{
     Json,
 };
 use base64::Engine as _;
-use gpt_sovits_rs::{AudioBuffer, InferenceOptions, Language, SplitMethod};
+use gpt_sovits_rs::{AudioBuffer, Pipeline};
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt as _};
 use tracing::{error, info, warn};
@@ -31,68 +31,42 @@ fn validate_request_text(text: &str, field: &str, max_chars: usize) -> Result<()
     }
 }
 
-struct BufferedInferenceJob {
-    text: String,
-    mode: String,
-    refer_path: String,
-    prompt_text: String,
-    options: InferenceOptions,
-    split_sentences: bool,
-    split_method: SplitMethod,
-    min_sentence_chars: usize,
-    sentence_gap_ms: u32,
-    sentence_fade_ms: u32,
-}
-
-fn into_buffered_job(
-    text: String,
-    resolved: ResolvedSynthesis,
-) -> (BufferedInferenceJob, Option<String>, Language) {
-    let voice = resolved.voice;
-    let language = resolved.language;
-    let job = BufferedInferenceJob {
-        text,
-        mode: resolved.mode,
-        refer_path: resolved.refer_path,
-        prompt_text: resolved.prompt_text,
-        options: resolved.options,
-        split_sentences: resolved.split_sentences,
-        split_method: resolved.split_method,
-        min_sentence_chars: resolved.min_sentence_chars,
-        sentence_gap_ms: resolved.sentence_gap_ms,
-        sentence_fade_ms: resolved.sentence_fade_ms,
-    };
-    (job, voice, language)
+fn synthesize(
+    pipeline: &mut Pipeline,
+    text: &str,
+    settings: &ResolvedSynthesis,
+) -> gpt_sovits_rs::Result<AudioBuffer> {
+    if settings.split_sentences {
+        pipeline.inference_split_with_method(
+            text,
+            &settings.refer_path,
+            &settings.prompt_text,
+            &settings.options,
+            &settings.mode,
+            settings.min_sentence_chars,
+            settings.sentence_gap_ms,
+            settings.sentence_fade_ms,
+            settings.split_method,
+        )
+    } else {
+        pipeline.inference_with_mode(
+            &settings.mode,
+            text,
+            &settings.refer_path,
+            &settings.prompt_text,
+            &settings.options,
+        )
+    }
 }
 
 async fn run_buffered_inference(
     lease: PipelineLease,
-    job: BufferedInferenceJob,
+    text: String,
+    settings: ResolvedSynthesis,
 ) -> Result<Result<AudioBuffer, String>, StatusCode> {
     lease
         .spawn(move |pipeline| {
-            let result = if job.split_sentences {
-                pipeline.inference_split_with_method(
-                    &job.text,
-                    &job.refer_path,
-                    &job.prompt_text,
-                    &job.options,
-                    &job.mode,
-                    job.min_sentence_chars,
-                    job.sentence_gap_ms,
-                    job.sentence_fade_ms,
-                    job.split_method,
-                )
-            } else {
-                pipeline.inference_with_mode(
-                    &job.mode,
-                    &job.text,
-                    &job.refer_path,
-                    &job.prompt_text,
-                    &job.options,
-                )
-            };
-            result.map_err(|e| format!("Inference failed: {e}"))
+            synthesize(pipeline, &text, &settings).map_err(|e| format!("Inference failed: {e}"))
         })
         .await
         .map_err(|e| {
@@ -142,8 +116,9 @@ pub(super) async fn openai_speech_handler(
     };
     let text = req.input;
     let text_chars = text.chars().count();
-    let (job, voice, language) = into_buffered_job(text, resolved);
-    let result = run_buffered_inference(lease, job).await?;
+    let voice = resolved.voice.clone();
+    let language = resolved.language;
+    let result = run_buffered_inference(lease, text, resolved).await?;
 
     match result {
         Ok(audio) => {
@@ -228,38 +203,34 @@ pub(super) async fn tts_stream_handler(
     };
     let text = req.text;
     let text_chars = text.chars().count();
-    let voice = resolved.voice;
-    let mode = resolved.mode;
+    let voice = resolved.voice.clone();
     let language = resolved.language;
-    let refer_path = resolved.refer_path;
-    let prompt_text = resolved.prompt_text;
-    let options = resolved.options;
-    let split_method = resolved.split_method;
-    let min_sentence_chars = resolved.min_sentence_chars;
-    let sentence_gap_ms = resolved.sentence_gap_ms;
-    let sentence_fade_ms = resolved.sentence_fade_ms;
     let (tx, rx) = mpsc::channel::<Result<Vec<u8>, String>>(8);
 
     lease.spawn(move |pipeline| {
-        if let Err(e) = pipeline.preload_speaker_with_options(&refer_path, &prompt_text, &options) {
+        if let Err(e) = pipeline.preload_speaker_with_options(
+            &resolved.refer_path,
+            &resolved.prompt_text,
+            &resolved.options,
+        ) {
             warn!("Failed to preload speaker: {e}");
         }
 
         let mut header_sent = false;
         for result in pipeline.inference_sentences_with_method(
             &text,
-            &refer_path,
-            &prompt_text,
-            &options,
-            &mode,
-            min_sentence_chars,
-            split_method,
+            &resolved.refer_path,
+            &resolved.prompt_text,
+            &resolved.options,
+            &resolved.mode,
+            resolved.min_sentence_chars,
+            resolved.split_method,
         ) {
             match result {
                 Ok(mut audio) => {
-                    if sentence_fade_ms > 0 {
-                        audio.fade_in(sentence_fade_ms);
-                        audio.fade_out(sentence_fade_ms);
+                    if resolved.sentence_fade_ms > 0 {
+                        audio.fade_in(resolved.sentence_fade_ms);
+                        audio.fade_out(resolved.sentence_fade_ms);
                     }
                     if !header_sent {
                         let header = streaming_wav_header(audio.sample_rate, audio.channels);
@@ -269,8 +240,8 @@ pub(super) async fn tts_stream_handler(
                         header_sent = true;
                     }
                     let mut samples = audio.samples;
-                    let gap_samples = (sentence_gap_ms as f32 * audio.sample_rate as f32 / 1000.0)
-                        as usize
+                    let gap_samples = (resolved.sentence_gap_ms as f32 * audio.sample_rate as f32
+                        / 1000.0) as usize
                         * audio.channels as usize;
                     samples.resize(samples.len() + gap_samples, 0.0);
                     if tx.blocking_send(Ok(samples_to_pcm(&samples))).is_err() {
@@ -335,8 +306,9 @@ pub(super) async fn tts_handler(
     };
     let text = req.text;
     let text_chars = text.chars().count();
-    let (job, voice, language) = into_buffered_job(text, resolved);
-    let result = run_buffered_inference(lease, job).await?;
+    let voice = resolved.voice.clone();
+    let language = resolved.language;
+    let result = run_buffered_inference(lease, text, resolved).await?;
 
     match result {
         Ok(audio) => {
@@ -422,42 +394,22 @@ pub(super) async fn tts_batch_handler(
         Err(e) => return Ok(json_error(StatusCode::SERVICE_UNAVAILABLE, e)),
     };
 
-    let refer_path = resolved.refer_path;
-    let prompt_text = resolved.prompt_text;
-    let language_code = language_code(resolved.language);
-    let voice = resolved.voice;
-    let mode = resolved.mode;
-    let options = resolved.options;
-    let split_sentences = resolved.split_sentences;
-    let split_method = resolved.split_method;
-    let min_sentence_chars = resolved.min_sentence_chars;
-    let sentence_gap_ms = resolved.sentence_gap_ms;
-    let sentence_fade_ms = resolved.sentence_fade_ms;
+    let language_code = resolved.language.code();
     let texts = req.texts;
     let (tx, rx) = mpsc::channel::<Vec<u8>>(2);
 
     lease.spawn(move |pipeline| {
-        if let Err(e) = pipeline.preload_speaker_with_options(&refer_path, &prompt_text, &options) {
+        if let Err(e) = pipeline.preload_speaker_with_options(
+            &resolved.refer_path,
+            &resolved.prompt_text,
+            &resolved.options,
+        ) {
             warn!("Speaker preload failed: {e}");
         }
 
         for (idx, text) in texts.iter().enumerate() {
             let started = std::time::Instant::now();
-            let inference_result = if split_sentences {
-                pipeline.inference_split_with_method(
-                    text,
-                    &refer_path,
-                    &prompt_text,
-                    &options,
-                    &mode,
-                    min_sentence_chars,
-                    sentence_gap_ms,
-                    sentence_fade_ms,
-                    split_method,
-                )
-            } else {
-                pipeline.inference_with_mode(&mode, text, &refer_path, &prompt_text, &options)
-            };
+            let inference_result = synthesize(pipeline, text, &resolved);
             let inference_ms = started.elapsed().as_millis() as u64;
 
             let item = match inference_result {
@@ -467,7 +419,7 @@ pub(super) async fn tts_batch_handler(
                     match audio.to_wav_bytes() {
                         Ok(wav_bytes) => BatchItemResult {
                             index: idx,
-                            voice: voice.clone(),
+                            voice: resolved.voice.clone(),
                             language: language_code,
                             text_chars: text.chars().count(),
                             wav_base64: Some(
@@ -480,7 +432,7 @@ pub(super) async fn tts_batch_handler(
                         },
                         Err(e) => BatchItemResult {
                             index: idx,
-                            voice: voice.clone(),
+                            voice: resolved.voice.clone(),
                             language: language_code,
                             text_chars: text.chars().count(),
                             wav_base64: None,
@@ -493,7 +445,7 @@ pub(super) async fn tts_batch_handler(
                 }
                 Err(e) => BatchItemResult {
                     index: idx,
-                    voice: voice.clone(),
+                    voice: resolved.voice.clone(),
                     language: language_code,
                     text_chars: text.chars().count(),
                     wav_base64: None,
@@ -538,7 +490,45 @@ pub(super) async fn tts_batch_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::validate_request_text;
+    use super::*;
+
+    #[test]
+    fn shared_synthesis_preserves_mode_split_and_option_dispatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let reference = temp.path().join("ref.wav");
+        std::fs::write(&reference, b"resolution only checks file existence").unwrap();
+        let mut settings = resolve_synthesis(
+            None,
+            None,
+            Some(reference.to_string_lossy().into_owned()),
+            Some("hello".into()),
+            SynthesisOverrides::default(),
+            temp.path(),
+            temp.path(),
+            Default::default(),
+        )
+        .unwrap();
+        settings.mode = "plain".into();
+        let mut pipeline =
+            Pipeline::new(gpt_sovits_rs::Config::builder().with_device("cpu").build()).unwrap();
+        for (split, expected) in [
+            (false, "GPT model not loaded"),
+            (true, "SoVITS model not loaded"),
+        ] {
+            settings.split_sentences = split;
+            let error = synthesize(&mut pipeline, "hello", &settings).unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+        settings.sentence_gap_ms = 10_001;
+        let error = synthesize(&mut pipeline, "hello", &settings).unwrap_err();
+        assert!(error.to_string().contains("sentence_gap_ms"));
+        settings.options.max_tokens = 0;
+        for split in [false, true] {
+            settings.split_sentences = split;
+            let error = synthesize(&mut pipeline, "hello", &settings).unwrap_err();
+            assert!(error.to_string().contains("max_tokens"));
+        }
+    }
 
     #[test]
     fn text_limit_counts_unicode_characters() {

@@ -59,6 +59,17 @@ pub enum Language {
 }
 
 impl Language {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Chinese => "zh",
+            Self::English => "en",
+            Self::Japanese => "ja",
+            Self::Korean => "ko",
+            Self::Cantonese => "yue",
+            Self::Auto => "auto",
+        }
+    }
+
     pub fn parse(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "zh" | "zh-cn" | "chinese" | "中文" => Some(Language::Chinese),
