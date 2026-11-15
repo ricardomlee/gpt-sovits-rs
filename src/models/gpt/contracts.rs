@@ -1,0 +1,293 @@
+use super::*;
+use std::collections::HashMap;
+
+fn model() -> GPTModel {
+    let device = &Device::Cpu;
+    let mut weights = HashMap::new();
+    for (key, rows, offset) in [
+        ("model.ar_text_embedding.word_embeddings.weight", 8, 0.0),
+        ("model.ar_audio_embedding.word_embeddings.weight", 7, 8.0),
+    ] {
+        let values: Vec<f32> = (0..rows * 16)
+            .map(|i| {
+                if i % 16 == 0 {
+                    128.0 + offset
+                } else {
+                    (i / 16) as f32 / 8.0 + offset
+                }
+            })
+            .collect();
+        weights.insert(
+            key.to_owned(),
+            Tensor::from_vec(values, (rows, 16), device).unwrap(),
+        );
+    }
+    for (key, rows, cols) in [
+        ("model.h.layers.0.self_attn.in_proj_weight", 48, 16),
+        ("model.h.layers.0.self_attn.out_proj.weight", 16, 16),
+        ("model.h.layers.0.linear1.weight", 32, 16),
+        ("model.h.layers.0.linear2.weight", 16, 32),
+    ] {
+        weights.insert(
+            key.to_owned(),
+            Tensor::zeros((rows, cols), DType::F32, device).unwrap(),
+        );
+    }
+    for (key, len) in [
+        ("model.h.layers.0.self_attn.in_proj_bias", 48),
+        ("model.h.layers.0.self_attn.out_proj.bias", 16),
+        ("model.h.layers.0.linear1.bias", 32),
+        ("model.h.layers.0.linear2.bias", 16),
+        ("model.h.layers.0.norm1.bias", 16),
+        ("model.h.layers.0.norm2.bias", 16),
+    ] {
+        weights.insert(
+            key.to_owned(),
+            Tensor::zeros(len, DType::F32, device).unwrap(),
+        );
+    }
+    for key in [
+        "model.h.layers.0.norm1.weight",
+        "model.h.layers.0.norm2.weight",
+    ] {
+        weights.insert(
+            key.to_owned(),
+            Tensor::ones(16, DType::F32, device).unwrap(),
+        );
+    }
+    let mut output = vec![0.0f32; 7 * 16];
+    // EOS is always the raw argmax; masking must keep the first eleven steps alive.
+    output[6 * 16] = 100.0;
+    weights.insert(
+        "model.ar_predict_layer.weight".into(),
+        Tensor::from_vec(output, (7, 16), device).unwrap(),
+    );
+    let mut projection = vec![0.0f32; 16 * 1024];
+    for i in 0..16 {
+        projection[i * 1024 + i] = 1.0;
+    }
+    weights.insert(
+        "model.bert_proj.weight".into(),
+        Tensor::from_vec(projection, (16, 1024), device).unwrap(),
+    );
+    weights.insert(
+        "model.bert_proj.bias".into(),
+        Tensor::from_vec((0..16).map(|i| i as f32 / 16.0).collect(), 16, device).unwrap(),
+    );
+    for (key, alpha) in [
+        ("model.ar_text_position.alpha", 1.25f32),
+        ("model.ar_audio_position.alpha", 0.75),
+    ] {
+        weights.insert(key.to_owned(), Tensor::new(&[alpha], device).unwrap());
+    }
+    let file = tempfile::NamedTempFile::new().unwrap();
+    candle_core::safetensors::save(&weights, file.path()).unwrap();
+    GPTModel::load(file.path().to_str().unwrap()).unwrap()
+}
+
+fn generate(model: &GPTModel, mode: &str, max_tokens: usize) -> Vec<usize> {
+    let phones = &[1, 3, 2];
+    let prompt = &[2, 4];
+    let bert = Tensor::full(0.125f32, (1, 3, 16), &Device::Cpu).unwrap();
+    match mode {
+        "plain" => model.generate_with_prompts_aligned_bert(
+            phones,
+            prompt,
+            Some(&bert),
+            0,
+            1.0,
+            0.8,
+            1.0,
+            max_tokens,
+        ),
+        "kv" => model.generate_with_prompts_aligned_bert_kv_cache(
+            phones,
+            prompt,
+            Some(&bert),
+            0,
+            1.0,
+            0.8,
+            1.0,
+            max_tokens,
+        ),
+        "static" => model.generate_with_static_kv(
+            phones,
+            prompt,
+            Some(&bert),
+            0,
+            1.0,
+            0.8,
+            1.0,
+            max_tokens,
+            64,
+        ),
+        "graph-fallback" => model.generate_with_cuda_graph(
+            phones,
+            prompt,
+            Some(&bert),
+            0,
+            1.0,
+            0.8,
+            1.0,
+            max_tokens,
+            64,
+        ),
+        _ => unreachable!(),
+    }
+    .unwrap()
+}
+
+#[test]
+fn conditioned_decoders_preserve_seeded_sampling_eos_and_token_budgets() {
+    let model = model();
+    for seed in [0, 42] {
+        for max_tokens in [1, 8, 11, 16] {
+            model.set_sampling_seed(Some(seed)).unwrap();
+            let expected = generate(&model, "plain", max_tokens);
+            assert_eq!(expected.len(), max_tokens.min(11));
+            assert!(expected.iter().all(|&token| token < 6));
+            for mode in ["kv", "static", "graph-fallback"] {
+                model.set_sampling_seed(Some(seed)).unwrap();
+                assert_eq!(
+                    generate(&model, mode, max_tokens),
+                    expected,
+                    "{mode}, seed={seed}, max_tokens={max_tokens}"
+                );
+            }
+            if seed == 42 && max_tokens == 16 {
+                assert_eq!(expected, vec![0, 3, 1, 3, 5, 3, 5, 2, 5, 0, 3]);
+            }
+        }
+    }
+}
+
+#[test]
+fn legacy_generator_keeps_its_distinct_eos_behavior() {
+    let model = model();
+    model.set_sampling_seed(Some(42)).unwrap();
+    assert!(model
+        .generate(&[1, 2], 1, 1.0, 0.8, 1.0, 16)
+        .unwrap()
+        .is_empty());
+}
+
+#[test]
+fn hybrid_mask_keeps_text_bidirectional_and_audio_causal() {
+    let mask = model()
+        .create_hybrid_mask(2, 5)
+        .unwrap()
+        .to_vec2::<f32>()
+        .unwrap();
+    assert_eq!(
+        mask,
+        vec![
+            vec![0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 1.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 1.0, 1.0],
+            vec![0.0, 0.0, 0.0, 0.0, 1.0],
+            vec![0.0, 0.0, 0.0, 0.0, 0.0],
+        ]
+    );
+}
+
+#[test]
+fn bert_projection_removes_special_tokens_and_preserves_word2ph() {
+    let model = model();
+    let values: Vec<f32> = [99.0, 10.0, 20.0, 88.0]
+        .into_iter()
+        .flat_map(|value| std::iter::repeat_n(value, 1024))
+        .collect();
+    let raw = Tensor::from_vec(values, (1, 4, 1024), &Device::Cpu).unwrap();
+    for input in [&raw, &raw.transpose(1, 2).unwrap()] {
+        for (word2ph, expected) in [
+            (vec![1, 2], vec![10.0, 20.0, 20.0]),
+            (vec![0, 3], vec![20.0, 20.0, 20.0]),
+            (vec![], vec![10.0, 10.0, 20.0]),
+        ] {
+            let actual = model.project_and_align_bert(input, &word2ph, 3).unwrap();
+            let expected: Vec<f32> = expected
+                .into_iter()
+                .flat_map(|value| (0..16).map(move |i| value + i as f32 / 16.0))
+                .collect();
+            assert_eq!(actual.dims(), &[1, 3, 16]);
+            assert_eq!(
+                actual.flatten_all().unwrap().to_vec1::<f32>().unwrap(),
+                expected
+            );
+        }
+    }
+}
+
+#[test]
+fn embedding_vocabularies_and_positional_ranges_remain_distinct() {
+    let model = model();
+    let ids = Tensor::new(&[1i64, 2], &Device::Cpu)
+        .unwrap()
+        .unsqueeze(0)
+        .unwrap();
+    let text = model.lookup_text_tokens(&ids, 2).unwrap();
+    let audio = model.lookup_audio_tokens(&ids, 2).unwrap();
+    assert_eq!(text.dims(), &[1, 2, 16]);
+    assert_eq!(audio.dims(), &[1, 2, 16]);
+    assert_eq!(
+        text.flatten_all().unwrap().to_vec1::<f32>().unwrap()[1],
+        0.125
+    );
+    assert_eq!(
+        audio.flatten_all().unwrap().to_vec1::<f32>().unwrap()[1],
+        8.125
+    );
+    let zero = Tensor::zeros((1, 1, 16), DType::F32, &Device::Cpu).unwrap();
+    let text = model
+        .add_sine_positional_pub(&zero, "text")
+        .unwrap()
+        .flatten_all()
+        .unwrap()
+        .to_vec1::<f32>()
+        .unwrap();
+    let audio = model
+        .add_sine_positional_pub(&zero, "audio")
+        .unwrap()
+        .flatten_all()
+        .unwrap()
+        .to_vec1::<f32>()
+        .unwrap();
+    assert_eq!(text[1], 1.25);
+    assert_eq!(audio[1], 0.75);
+    assert!(model.lookup_audio_token(7).is_err());
+    assert!(model.add_sine_positional_at(&zero, 2048).is_err());
+}
+
+#[test]
+fn sampling_penalizes_each_history_token_once_and_reports_raw_argmax() {
+    let model = model();
+    let logits = Tensor::new(&[8.0f32, 3.0, -5.0], &Device::Cpu).unwrap();
+    assert_eq!(
+        model
+            .sample_token(&logits, 1, 1.0, 1.0, 2.0, &[0, 0], &[0])
+            .unwrap(),
+        (0, 0)
+    );
+    let logits = Tensor::new(&[-1.0f32, -1.5, -5.0], &Device::Cpu).unwrap();
+    assert_eq!(
+        model
+            .sample_token(&logits, 1, 1.0, 1.0, 2.0, &[0], &[])
+            .unwrap(),
+        (1, 0)
+    );
+}
+
+#[test]
+fn nucleus_filter_runs_before_temperature_scaling() {
+    let model = model();
+    model.set_sampling_seed(Some(42)).unwrap();
+    let logits = Tensor::new(&[2.0f32, 1.0, 0.0], &Device::Cpu).unwrap();
+    for _ in 0..32 {
+        assert_eq!(
+            model
+                .sample_token(&logits, 0, 0.65, 50.0, 1.0, &[], &[])
+                .unwrap(),
+            (0, 0)
+        );
+    }
+}

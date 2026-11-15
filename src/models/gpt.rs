@@ -2187,6 +2187,10 @@ impl crate::models::Model for GPTModel {
 }
 
 #[cfg(test)]
+#[path = "gpt/contracts.rs"]
+mod contract_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::Model;
