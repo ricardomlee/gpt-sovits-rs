@@ -136,6 +136,13 @@ missing shared libraries. Readiness and audio quality are checked in real-model 
 For a CUDA image, also set `GPT_SOVITS_SMOKE_GPUS=all` on a GPU host.
 CI retains v1.2.0 as a compatibility baseline.
 
+Every PR runs packaged-binary conversion, HTTP synthesis and offline acceptance.
+The full CPU-container job also runs for build, dependency, Compose, CLI/startup,
+and acceptance-script changes, selected by
+[the path policy](../.github/container-needed.sh). Other PRs skip that
+duplicate build. Pushes to `master` and manual CI runs always include it; newer
+commits cancel superseded CI runs on the same PR.
+
 ## Incremental CUDA Work
 
 `dev-gpu` uses lower optimization cost than `release`; label results separately.

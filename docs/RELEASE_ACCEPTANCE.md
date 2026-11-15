@@ -25,7 +25,11 @@ the image ID, configuration, headers, and logs. Its exit trap removes only its o
 container/network, including on failures. Downloaded models stay in the demo directory.
 Do not rerun preparation on a production voice directory.
 
-The main CI's CPU-container job runs this against its newly built image. The
+The main CI's CPU-container job runs this against its newly built image on `master`,
+manual runs, and deployment-related PRs. Before tagging, require a passing full CI
+run for the exact candidate commit. Reuse an existing `master` run; for another
+pushed candidate branch, run
+`gh workflow run ci.yml --ref "$(git branch --show-current)"` from that branch. The
 separate first-run workflow verifies published 1.3.0 and keeps 1.2.0 as a
 compatibility baseline. Local GPU and speech checks follow below.
 

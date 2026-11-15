@@ -238,31 +238,37 @@ pub struct InferenceOptionOverrides {
 
 impl VoiceDefaults {
     pub fn from_profile(profile: Option<&VoiceProfile>) -> Self {
+        let empty = VoiceProfile::default();
+        let profile = profile.unwrap_or(&empty);
+        let defaults = InferenceOptions::default();
         Self {
             language: profile
-                .and_then(|p| p.language.clone())
-                .unwrap_or_else(|| "zh".to_string()),
+                .language
+                .clone()
+                .unwrap_or_else(|| defaults.language.code().to_string()),
             prompt_language: profile
-                .and_then(|p| p.prompt_language.as_deref())
+                .prompt_language
+                .as_deref()
                 .and_then(Language::parse)
-                .unwrap_or(Language::Auto),
-            mode: profile
-                .and_then(|p| p.mode.clone())
-                .unwrap_or_else(|| "auto".to_string()),
-            split_sentences: profile.and_then(|p| p.split_sentences).unwrap_or(true),
+                .unwrap_or(defaults.prompt_language),
+            mode: profile.mode.clone().unwrap_or_else(|| "auto".to_string()),
+            split_sentences: profile.split_sentences.unwrap_or(true),
             split_method: profile
-                .and_then(|p| p.split_method.as_deref())
+                .split_method
+                .as_deref()
                 .and_then(SplitMethod::parse)
                 .unwrap_or_default(),
-            min_sentence_chars: profile.and_then(|p| p.min_sentence_chars).unwrap_or(12),
-            sentence_gap_ms: profile.and_then(|p| p.sentence_gap_ms).unwrap_or(120),
-            sentence_fade_ms: profile.and_then(|p| p.sentence_fade_ms).unwrap_or(8),
-            top_k: profile.and_then(|p| p.top_k).unwrap_or(15),
-            top_p: profile.and_then(|p| p.top_p).unwrap_or(0.95),
-            temperature: profile.and_then(|p| p.temperature).unwrap_or(0.8),
-            speed: profile.and_then(|p| p.speed).unwrap_or(1.0),
-            max_tokens: profile.and_then(|p| p.max_tokens).unwrap_or(500),
-            repetition_penalty: profile.and_then(|p| p.repetition_penalty).unwrap_or(1.35),
+            min_sentence_chars: profile.min_sentence_chars.unwrap_or(12),
+            sentence_gap_ms: profile.sentence_gap_ms.unwrap_or(120),
+            sentence_fade_ms: profile.sentence_fade_ms.unwrap_or(8),
+            top_k: profile.top_k.unwrap_or(defaults.top_k),
+            top_p: profile.top_p.unwrap_or(defaults.top_p),
+            temperature: profile.temperature.unwrap_or(defaults.temperature),
+            speed: profile.speed.unwrap_or(defaults.speed),
+            max_tokens: profile.max_tokens.unwrap_or(defaults.max_tokens),
+            repetition_penalty: profile
+                .repetition_penalty
+                .unwrap_or(defaults.repetition_penalty),
         }
     }
 
@@ -271,20 +277,19 @@ impl VoiceDefaults {
         language: Language,
         overrides: InferenceOptionOverrides,
     ) -> InferenceOptions {
-        InferenceOptions::builder()
-            .top_k(overrides.top_k.unwrap_or(self.top_k))
-            .top_p(overrides.top_p.unwrap_or(self.top_p))
-            .temperature(overrides.temperature.unwrap_or(self.temperature))
-            .speed(overrides.speed.unwrap_or(self.speed))
-            .language(language)
-            .prompt_language(self.prompt_language)
-            .max_tokens(overrides.max_tokens.unwrap_or(self.max_tokens))
-            .repetition_penalty(
-                overrides
-                    .repetition_penalty
-                    .unwrap_or(self.repetition_penalty),
-            )
-            .build()
+        InferenceOptions {
+            top_k: overrides.top_k.unwrap_or(self.top_k),
+            top_p: overrides.top_p.unwrap_or(self.top_p),
+            temperature: overrides.temperature.unwrap_or(self.temperature),
+            speed: overrides.speed.unwrap_or(self.speed),
+            language,
+            prompt_language: self.prompt_language,
+            max_tokens: overrides.max_tokens.unwrap_or(self.max_tokens),
+            repetition_penalty: overrides
+                .repetition_penalty
+                .unwrap_or(self.repetition_penalty),
+            ..Default::default()
+        }
     }
 }
 
@@ -329,6 +334,39 @@ mod tests {
         assert_eq!(defaults.top_p, 0.95);
         assert_eq!(defaults.temperature, 0.8);
         assert_eq!(defaults.max_tokens, 500);
+    }
+
+    #[test]
+    fn voice_inherits_canonical_options_and_preserves_partial_overrides() {
+        let defaults = InferenceOptions::default();
+        for profile in [None, Some(VoiceProfile::default())] {
+            assert_eq!(
+                VoiceDefaults::from_profile(profile.as_ref())
+                    .to_inference_options(defaults.language, Default::default()),
+                defaults
+            );
+        }
+        let profile = VoiceProfile {
+            top_k: Some(0),
+            speed: Some(1.2),
+            ..Default::default()
+        };
+        assert_eq!(
+            VoiceDefaults::from_profile(Some(&profile)).to_inference_options(
+                Language::English,
+                InferenceOptionOverrides {
+                    top_p: Some(0.0),
+                    ..Default::default()
+                }
+            ),
+            InferenceOptions {
+                top_k: 0,
+                speed: 1.2,
+                language: Language::English,
+                top_p: 0.0,
+                ..defaults
+            }
+        );
     }
 
     #[test]
