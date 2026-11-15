@@ -78,6 +78,9 @@ cargo bench --locked --bench inference_bench -- text_frontend
 中文分词器和英文发音词典按进程共享，首次创建前端时初始化，直到进程退出才释放。
 后续音色管线复用词典；各前端仍保留独立的规范化、符号表和变调规则。
 
+[2026-11-15 文本前端对照](benchmarks/2026-11-15-text-frontend.md)
+记录首次初始化、多管线内存和热文本处理的测量条件及结果。
+
 ## 已记录的测量
 
 [1.3.1 与 1.3.0 的 Sun CUDA 对照](benchmarks/v1.3.1-sun-cuda.md)：
