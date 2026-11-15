@@ -98,6 +98,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+Choose the device before loading, through `Config` for a pipeline or a standalone
+model's `load_with_device()` constructor. `Model::to_device()` accepts the current
+`Model::device()` name as a case-insensitive no-op; other names return
+`ConfigError`. Reload the model's weights to change devices.
+
 Decode methods:
 
 | Method | GPT strategy | Typical use |

@@ -2184,23 +2184,46 @@ impl crate::models::Model for GPTModel {
             Device::Metal(_) => "mps",
         }
     }
-
-    fn to_device(&mut self, device: &str) -> Result<()> {
-        let new_device = match device {
-            "cuda" => Device::new_cuda_with_stream(0),
-            "mps" => Device::new_metal(0),
-            _ => Ok(Device::Cpu),
-        }
-        .map_err(|e| Error::ModelLoadError(e.to_string()))?;
-
-        self.device = new_device;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::Model;
+
+    #[test]
+    fn device_requests_leave_loaded_weights_on_their_original_device() {
+        // Device-policy checks do not need transformer layers.
+        let weights: std::collections::HashMap<_, _> = [
+            "model.ar_text_embedding.word_embeddings.weight",
+            "model.ar_audio_embedding.word_embeddings.weight",
+            "model.h.layers.0.linear1.weight",
+            "model.ar_predict_layer.weight",
+        ]
+        .into_iter()
+        .map(|name| {
+            (
+                name.to_owned(),
+                Tensor::zeros((16, 16), DType::F32, &Device::Cpu).unwrap(),
+            )
+        })
+        .collect();
+        let file = tempfile::NamedTempFile::new().unwrap();
+        candle_core::safetensors::save(&weights, file.path()).unwrap();
+        let mut model = GPTModel::load(file.path().to_str().unwrap()).unwrap();
+        model.to_device("cpu").unwrap();
+        model.to_device("CPU").unwrap();
+        for requested in ["invalid", "auto", "cuda", "mps", "cuda:1"] {
+            let error = model
+                .to_device(requested)
+                .expect_err("runtime migration must be rejected");
+            assert!(matches!(error, Error::ConfigError(_)), "{error}");
+            assert_eq!(model.device(), "cpu");
+            assert!(model.text_embedding.device().is_cpu());
+            assert!(model.audio_embedding.device().is_cpu());
+            assert!(model.ar_predict_layer.device().is_cpu());
+        }
+    }
 
     #[test]
     fn precomputes_scaled_sine_positions() {

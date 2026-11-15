@@ -132,8 +132,4 @@ impl crate::models::Model for HubertModel {
     fn device(&self) -> &str {
         self.device
     }
-
-    fn to_device(&mut self, _device: &str) -> Result<()> {
-        Ok(())
-    }
 }
