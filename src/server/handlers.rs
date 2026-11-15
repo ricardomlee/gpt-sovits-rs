@@ -69,37 +69,36 @@ async fn run_buffered_inference(
     lease: PipelineLease,
     job: BufferedInferenceJob,
 ) -> Result<Result<AudioBuffer, String>, StatusCode> {
-    tokio::task::spawn_blocking(move || {
-        let rt = tokio::runtime::Handle::current();
-        let mut pipeline = rt.block_on(lease.pipeline.lock());
-        let result = if job.split_sentences {
-            pipeline.inference_split_with_method(
-                &job.text,
-                &job.refer_path,
-                &job.prompt_text,
-                &job.options,
-                &job.mode,
-                job.min_sentence_chars,
-                job.sentence_gap_ms,
-                job.sentence_fade_ms,
-                job.split_method,
-            )
-        } else {
-            pipeline.inference_with_mode(
-                &job.mode,
-                &job.text,
-                &job.refer_path,
-                &job.prompt_text,
-                &job.options,
-            )
-        };
-        result.map_err(|e| format!("Inference failed: {e}"))
-    })
-    .await
-    .map_err(|e| {
-        error!("spawn_blocking join error: {e}");
-        StatusCode::INTERNAL_SERVER_ERROR
-    })
+    lease
+        .spawn(move |pipeline| {
+            let result = if job.split_sentences {
+                pipeline.inference_split_with_method(
+                    &job.text,
+                    &job.refer_path,
+                    &job.prompt_text,
+                    &job.options,
+                    &job.mode,
+                    job.min_sentence_chars,
+                    job.sentence_gap_ms,
+                    job.sentence_fade_ms,
+                    job.split_method,
+                )
+            } else {
+                pipeline.inference_with_mode(
+                    &job.mode,
+                    &job.text,
+                    &job.refer_path,
+                    &job.prompt_text,
+                    &job.options,
+                )
+            };
+            result.map_err(|e| format!("Inference failed: {e}"))
+        })
+        .await
+        .map_err(|e| {
+            error!("spawn_blocking join error: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })
 }
 
 pub(super) async fn openai_speech_handler(
@@ -241,9 +240,7 @@ pub(super) async fn tts_stream_handler(
     let sentence_fade_ms = resolved.sentence_fade_ms;
     let (tx, rx) = mpsc::channel::<Result<Vec<u8>, String>>(8);
 
-    tokio::task::spawn_blocking(move || {
-        let rt = tokio::runtime::Handle::current();
-        let mut pipeline = rt.block_on(lease.pipeline.lock());
+    lease.spawn(move |pipeline| {
         if let Err(e) = pipeline.preload_speaker_with_options(&refer_path, &prompt_text, &options) {
             warn!("Failed to preload speaker: {e}");
         }
@@ -439,9 +436,7 @@ pub(super) async fn tts_batch_handler(
     let texts = req.texts;
     let (tx, rx) = mpsc::channel::<Vec<u8>>(2);
 
-    tokio::task::spawn_blocking(move || {
-        let rt = tokio::runtime::Handle::current();
-        let mut pipeline = rt.block_on(lease.pipeline.lock());
+    lease.spawn(move |pipeline| {
         if let Err(e) = pipeline.preload_speaker_with_options(&refer_path, &prompt_text, &options) {
             warn!("Speaker preload failed: {e}");
         }

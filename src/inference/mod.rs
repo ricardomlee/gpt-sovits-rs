@@ -17,7 +17,7 @@ mod ref_audio;
 mod speaker;
 mod split;
 
-pub use options::{InferenceOptions, InferenceOptionsBuilder};
+pub use options::{validate_sentence_timing, InferenceOptions, InferenceOptionsBuilder};
 use speaker::{CachedSpeaker, PreparedTarget, SpeakerCacheKey};
 use split::split_text;
 pub use split::{
@@ -400,6 +400,8 @@ impl Pipeline {
         fade_ms: u32,
         split_method: SplitMethod,
     ) -> Result<AudioBuffer> {
+        options.validate()?;
+        validate_sentence_timing(gap_ms, fade_ms)?;
         let chunks = split_text(text, min_chars, options.language, split_method);
         log_split_plan(
             "buffered",
@@ -577,6 +579,7 @@ impl Pipeline {
         reference_text: &str,
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
+        options.validate()?;
         self.configure_sampling(options.seed)?;
         // Plain mode historically validates models before accessing reference features.
         if matches!(backend, DecodeBackend::Plain) {
@@ -841,6 +844,36 @@ fn chunk_text_logging_enabled() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invalid_options_and_timing_fail_before_models_or_reference_access() {
+        let mut pipeline = Pipeline::new(Config::builder().with_device("cpu").build()).unwrap();
+        let invalid = InferenceOptions {
+            max_tokens: 0,
+            ..Default::default()
+        };
+        for mode in ["plain", "kv", "cuda-graph"] {
+            let error = pipeline
+                .inference_with_mode(mode, "hello", "missing.wav", "hello", &invalid)
+                .unwrap_err();
+            assert!(matches!(error, Error::ConfigError(_)), "{mode}: {error}");
+        }
+        let error = pipeline
+            .inference_split_with_method(
+                "hello",
+                "missing.wav",
+                "hello",
+                &InferenceOptions::default(),
+                "kv",
+                12,
+                u32::MAX,
+                8,
+                SplitMethod::Sentence,
+            )
+            .unwrap_err();
+        assert!(matches!(error, Error::ConfigError(_)));
+        assert!(error.to_string().contains("sentence_gap_ms"));
+    }
 
     #[test]
     fn automatic_mode_uses_kv_on_cpu_without_loaded_models() {

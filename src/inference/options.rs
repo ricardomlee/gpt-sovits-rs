@@ -1,6 +1,6 @@
 //! Inference option defaults and builder.
 
-use crate::Language;
+use crate::{Error, Language, Result};
 use std::path::PathBuf;
 
 /// Inference options
@@ -41,6 +41,49 @@ impl InferenceOptions {
     pub fn builder() -> InferenceOptionsBuilder {
         InferenceOptionsBuilder::default()
     }
+
+    /// Check sampling domains and bound per-chunk generation and duration expansion.
+    pub fn validate(&self) -> Result<()> {
+        if !(1..=2048).contains(&self.max_tokens) {
+            return Err(Error::ConfigError("max_tokens must be in 1..=2048".into()));
+        }
+        if !(0.25..=4.0).contains(&self.speed) {
+            return Err(Error::ConfigError(
+                "speed must be finite and in 0.25..=4.0".into(),
+            ));
+        }
+        if !(0.0..=1.0).contains(&self.top_p) {
+            return Err(Error::ConfigError(
+                "top_p must be finite and in 0..=1".into(),
+            ));
+        }
+        for (name, value) in [
+            ("temperature", self.temperature),
+            ("repetition_penalty", self.repetition_penalty),
+        ] {
+            if !value.is_finite() || value <= 0.0 {
+                return Err(Error::ConfigError(format!(
+                    "{name} must be finite and positive"
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Bound silence allocation and fades for buffered and streaming synthesis.
+pub fn validate_sentence_timing(gap_ms: u32, fade_ms: u32) -> Result<()> {
+    if gap_ms > 10_000 {
+        return Err(Error::ConfigError(
+            "sentence_gap_ms must be in 0..=10000".into(),
+        ));
+    }
+    if fade_ms > 1000 {
+        return Err(Error::ConfigError(
+            "sentence_fade_ms must be in 0..=1000".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -119,6 +162,44 @@ impl InferenceOptionsBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_numeric_boundaries_without_changing_valid_settings() {
+        for (speed, top_p, max_tokens) in [(0.25, 0.0, 1), (1.0, 0.95, 500), (4.0, 1.0, 2048)] {
+            InferenceOptions {
+                speed,
+                top_p,
+                max_tokens,
+                ..Default::default()
+            }
+            .validate()
+            .unwrap();
+        }
+        for (gap, fade) in [(0, 0), (120, 8), (10_000, 1000)] {
+            validate_sentence_timing(gap, fade).unwrap();
+        }
+        for (gap, fade) in [(10_001, 8), (u32::MAX, 8), (120, 1001)] {
+            assert!(validate_sentence_timing(gap, fade).is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_nonfinite_numeric_settings_from_library_and_cli_callers() {
+        for name in ["speed", "top_p", "temperature", "repetition_penalty"] {
+            for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+                let mut options = InferenceOptions::default();
+                match name {
+                    "speed" => options.speed = value,
+                    "top_p" => options.top_p = value,
+                    "temperature" => options.temperature = value,
+                    _ => options.repetition_penalty = value,
+                }
+                let error = options.validate().unwrap_err();
+                assert!(matches!(error, Error::ConfigError(_)));
+                assert!(error.to_string().contains(name), "{error}");
+            }
+        }
+    }
 
     #[test]
     fn builder_overrides_only_selected_fields() {

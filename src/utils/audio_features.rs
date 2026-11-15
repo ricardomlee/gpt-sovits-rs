@@ -90,8 +90,20 @@ impl SpectrogramExtractor {
         let hop = self.hop_length;
         let win_len = self.win_length;
 
+        if n_fft < 2 || hop == 0 || hop > n_fft {
+            return Err(Error::AudioError(
+                "STFT requires n_fft >= 2 and hop_length in 1..=n_fft".into(),
+            ));
+        }
         // Reflect padding: pad((n_fft-hop)/2, (n_fft-hop)/2)
         let pad = (n_fft - hop) / 2;
+        let minimum = n_fft - 2 * pad;
+        if audio.len() < minimum {
+            return Err(Error::AudioError(format!(
+                "Reference audio is too short for STFT: {} samples; need at least {minimum}",
+                audio.len()
+            )));
+        }
         let padded = reflect_pad(audio, pad);
 
         let n_frames = (padded.len() - n_fft) / hop + 1;
@@ -242,4 +254,36 @@ fn create_mel_basis(sample_rate: f32, n_fft: usize, n_mels: usize) -> Vec<f32> {
     }
 
     mel_basis
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn short_audio_is_an_error_and_the_first_complete_frame_is_valid() {
+        let extractor = SpectrogramExtractor::new(32_000, 2048, 640, 100);
+        for len in [0, 1, 512, 639] {
+            let result = extractor.extract_spectrogram(&vec![0.0; len], &Device::Cpu);
+            assert!(matches!(result, Err(Error::AudioError(_))), "{len}");
+        }
+        for len in [640, 704, 705, 2048] {
+            let spectrum = extractor
+                .extract_spectrogram(&vec![0.0; len], &Device::Cpu)
+                .unwrap();
+            assert_eq!(spectrum.dim(0).unwrap(), 1025);
+            assert!(spectrum.dim(1).unwrap() > 0);
+        }
+    }
+
+    #[test]
+    fn invalid_stft_dimensions_return_errors() {
+        for (n_fft, hop) in [(0, 1), (1, 1), (2048, 0), (2048, 2049)] {
+            let extractor = SpectrogramExtractor::new(32_000, n_fft, hop, 100);
+            assert!(matches!(
+                extractor.extract_spectrogram(&[0.0; 4096], &Device::Cpu),
+                Err(Error::AudioError(_))
+            ));
+        }
+    }
 }

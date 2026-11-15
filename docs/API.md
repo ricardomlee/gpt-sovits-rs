@@ -256,6 +256,12 @@ HTTP synthesis settings use this precedence: request fields, then `voice.json`, 
 built-in defaults. For LLM output, send completed sentences in order;
 [agent integration](AGENT_INTEGRATION.md) covers chunking, playback and cancellation.
 
+Effective settings are validated after overrides are merged: `max_tokens` is 1-2048,
+`speed` is 0.25-4.0, `top_p` is 0-1, and `temperature` and `repetition_penalty` must
+be finite and positive. `sentence_gap_ms` is 0-10000 and `sentence_fade_ms` is 0-1000.
+Invalid settings return HTTP 400 before entering the inference queue. CLI and
+pipeline callers use the same limits; values are rejected, not clamped.
+
 | Field | Default when absent from the voice | Purpose |
 | --- | --- | --- |
 | `text_language` | `zh` | Target text language; `auto` detects it, `zh` and `en` force Chinese or English |

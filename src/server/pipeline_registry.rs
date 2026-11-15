@@ -81,8 +81,22 @@ pub(super) struct PipelineRegistry {
 }
 
 pub(super) struct PipelineLease {
-    pub(super) pipeline: Arc<Mutex<Pipeline>>,
+    pipeline: Arc<Mutex<Pipeline>>,
     _operation: OwnedMutexGuard<()>,
+}
+
+impl PipelineLease {
+    pub(super) fn spawn<R: Send + 'static>(
+        self,
+        work: impl FnOnce(&mut Pipeline) -> R + Send + 'static,
+    ) -> tokio::task::JoinHandle<R> {
+        tokio::task::spawn_blocking(move || {
+            // Capture the entire lease so cancellation cannot release the slot early.
+            let lease = self;
+            let mut pipeline = lease.pipeline.blocking_lock();
+            work(&mut pipeline)
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -231,12 +245,16 @@ impl PipelineRegistry {
         let config = (*self.config).clone();
         let shared_resources = Arc::clone(&self.shared_resources);
         let load_key = key.clone();
-        let loaded = tokio::task::spawn_blocking(move || {
-            load_pipeline(config, &load_key, Some(&shared_resources))
+        let (loaded, operation) = tokio::task::spawn_blocking(move || {
+            // Cold loading must keep the slot even if its async caller is cancelled.
+            (
+                load_pipeline(config, &load_key, Some(&shared_resources)),
+                operation,
+            )
         })
         .await
-        .map_err(|e| format!("Pipeline loader task failed: {e}"))??;
-        let loaded = Arc::new(Mutex::new(loaded));
+        .map_err(|e| format!("Pipeline loader task failed: {e}"))?;
+        let loaded = Arc::new(Mutex::new(loaded?));
 
         self.cache.lock().await.insert(key, Arc::clone(&loaded));
         Ok(PipelineLease {
@@ -355,6 +373,87 @@ mod tests {
             sovits: Some(PathBuf::from(format!("{name}-sovits.safetensors"))),
             bigvgan: None,
         }
+    }
+
+    fn empty_registry() -> PipelineRegistry {
+        PipelineRegistry::new(
+            Config::builder().with_device("cpu").build(),
+            PipelineKey {
+                gpt: None,
+                sovits: None,
+                bigvgan: None,
+            },
+            empty_pipeline(),
+            1,
+        )
+    }
+
+    #[tokio::test]
+    async fn blocking_workers_keep_the_lease_after_the_request_is_cancelled() {
+        for cancel in [false, true] {
+            let registry = empty_registry();
+            let lease = registry
+                .acquire_pipeline(&VoiceModelPaths::default(), Duration::from_secs(1))
+                .await
+                .unwrap();
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+            let request = tokio::spawn(async move {
+                lease
+                    .spawn(move |_| {
+                        started_tx.send(()).unwrap();
+                        finish_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                    })
+                    .await
+                    .unwrap();
+            });
+            started_rx.await.unwrap();
+            if cancel {
+                request.abort();
+            }
+            let busy = registry.status().await.busy;
+            let waiting = registry
+                .acquire_pipeline(&VoiceModelPaths::default(), Duration::from_millis(10))
+                .await;
+            finish_tx.send(()).unwrap();
+            let result = request.await;
+            if cancel {
+                assert!(result.unwrap_err().is_cancelled());
+            } else {
+                result.unwrap();
+            }
+            assert!(busy, "cancel={cancel}: worker lost its lease");
+            assert!(waiting.is_err(), "cancel={cancel}: another request entered");
+            assert_eq!(registry.status().await.queued_requests, 0);
+            registry
+                .acquire_pipeline(&VoiceModelPaths::default(), Duration::from_secs(1))
+                .await
+                .unwrap();
+            assert!(!registry.status().await.busy);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_panicking_worker_releases_the_pipeline_and_operation_locks() {
+        let registry = empty_registry();
+        let lease = registry
+            .acquire_pipeline(&VoiceModelPaths::default(), Duration::from_secs(1))
+            .await
+            .unwrap();
+        let error = lease
+            .spawn(|_| panic!("worker failure probe"))
+            .await
+            .unwrap_err();
+        assert!(error.is_panic());
+        let recovered = registry
+            .acquire_pipeline(&VoiceModelPaths::default(), Duration::from_secs(1))
+            .await
+            .unwrap();
+        recovered
+            .spawn(|pipeline| assert!(!pipeline.is_ready()))
+            .await
+            .unwrap();
+        assert!(!registry.status().await.busy);
     }
 
     #[test]

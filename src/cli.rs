@@ -1,6 +1,7 @@
 //! GPT-SoVITS CLI - Command line interface for TTS inference
 
 use clap::Parser;
+use gpt_sovits_rs::inference::validate_sentence_timing;
 use gpt_sovits_rs::model_paths::{ModelPathOverrides, ModelPaths};
 use gpt_sovits_rs::voice::{
     list_voice_profiles, load_optional_voice_profile, InferenceOptionOverrides, LoadedVoiceProfile,
@@ -107,11 +108,11 @@ pub(crate) struct Args {
     #[arg(long, conflicts_with = "http")]
     pub(crate) seed: Option<u64>,
 
-    /// Speed multiplier
+    /// Speed multiplier (0.25-4.0)
     #[arg(long)]
     pub(crate) speed: Option<f32>,
 
-    /// Maximum semantic tokens to generate. Use higher values for long sentences.
+    /// Maximum semantic tokens per chunk (1-2048)
     #[arg(long)]
     pub(crate) max_tokens: Option<usize>,
 
@@ -139,11 +140,11 @@ pub(crate) struct Args {
     #[arg(long)]
     pub(crate) min_sentence_chars: Option<usize>,
 
-    /// Silence inserted between sentence chunks.
+    /// Silence between sentence chunks in milliseconds (0-10000)
     #[arg(long)]
     pub(crate) sentence_gap_ms: Option<u32>,
 
-    /// Fade in/out each sentence chunk before concatenation.
+    /// Fade duration per sentence in milliseconds (0-1000)
     #[arg(long)]
     pub(crate) sentence_fade_ms: Option<u32>,
 
@@ -371,6 +372,74 @@ pub(crate) fn run() {
 
     let output = args.output;
 
+    // Parse language
+    let voice_defaults = VoiceDefaults::from_profile(voice_profile.as_ref().map(|v| &v.profile));
+    let language_text = args.language.as_deref().unwrap_or(&voice_defaults.language);
+    let language = match Language::parse(language_text) {
+        Some(language) => language,
+        None => {
+            error!(
+                "Unsupported language '{}'; expected zh, en, ja, ko, yue, or auto",
+                language_text
+            );
+            std::process::exit(1);
+        }
+    };
+    let mode = args
+        .mode
+        .clone()
+        .unwrap_or_else(|| voice_defaults.mode.clone());
+    let split_sentences = if args.no_split_sentences {
+        false
+    } else {
+        args.split_sentences || voice_defaults.split_sentences
+    };
+    let min_sentence_chars = args
+        .min_sentence_chars
+        .unwrap_or(voice_defaults.min_sentence_chars);
+    let sentence_gap_ms = args
+        .sentence_gap_ms
+        .unwrap_or(voice_defaults.sentence_gap_ms);
+    let sentence_fade_ms = args
+        .sentence_fade_ms
+        .unwrap_or(voice_defaults.sentence_fade_ms);
+    let split_method = args
+        .split_method
+        .as_deref()
+        .and_then(SplitMethod::parse)
+        .unwrap_or(voice_defaults.split_method);
+
+    // Create inference options
+    let options = voice_defaults.to_inference_options(
+        language,
+        InferenceOptionOverrides {
+            top_k: args.top_k,
+            top_p: args.top_p,
+            temperature: args.temperature,
+            speed: args.speed,
+            max_tokens: args.max_tokens,
+            repetition_penalty: args.repetition_penalty,
+        },
+    );
+    let mut options = if let Some(path) = sv_embedding {
+        InferenceOptions {
+            sv_embedding: Some(path),
+            ..options
+        }
+    } else {
+        options
+    };
+    options.seed = args.seed;
+    options.prompt_language = args.prompt_language.unwrap_or(options.prompt_language);
+
+    if let Err(e) = options
+        .validate()
+        .and_then(|()| validate_sentence_timing(sentence_gap_ms, sentence_fade_ms))
+    {
+        error!("Invalid synthesis settings: {e}");
+        std::process::exit(1);
+    }
+
     info!("Loading models...");
     info!("  GPT model: {:?}", gpt_model);
     info!("  SoVITS model: {:?}", sovits_model);
@@ -436,66 +505,6 @@ pub(crate) fn run() {
     } else {
         info!("Hubert model not specified, skipping (quality may be reduced)");
     }
-
-    // Parse language
-    let voice_defaults = VoiceDefaults::from_profile(voice_profile.as_ref().map(|v| &v.profile));
-    let language_text = args.language.as_deref().unwrap_or(&voice_defaults.language);
-    let language = match Language::parse(language_text) {
-        Some(language) => language,
-        None => {
-            error!(
-                "Unsupported language '{}'; expected zh, en, ja, ko, yue, or auto",
-                language_text
-            );
-            std::process::exit(1);
-        }
-    };
-    let mode = args
-        .mode
-        .clone()
-        .unwrap_or_else(|| voice_defaults.mode.clone());
-    let split_sentences = if args.no_split_sentences {
-        false
-    } else {
-        args.split_sentences || voice_defaults.split_sentences
-    };
-    let min_sentence_chars = args
-        .min_sentence_chars
-        .unwrap_or(voice_defaults.min_sentence_chars);
-    let sentence_gap_ms = args
-        .sentence_gap_ms
-        .unwrap_or(voice_defaults.sentence_gap_ms);
-    let sentence_fade_ms = args
-        .sentence_fade_ms
-        .unwrap_or(voice_defaults.sentence_fade_ms);
-    let split_method = args
-        .split_method
-        .as_deref()
-        .and_then(SplitMethod::parse)
-        .unwrap_or(voice_defaults.split_method);
-
-    // Create inference options
-    let options = voice_defaults.to_inference_options(
-        language,
-        InferenceOptionOverrides {
-            top_k: args.top_k,
-            top_p: args.top_p,
-            temperature: args.temperature,
-            speed: args.speed,
-            max_tokens: args.max_tokens,
-            repetition_penalty: args.repetition_penalty,
-        },
-    );
-    let mut options = if let Some(path) = sv_embedding {
-        InferenceOptions {
-            sv_embedding: Some(path),
-            ..options
-        }
-    } else {
-        options
-    };
-    options.seed = args.seed;
-    options.prompt_language = args.prompt_language.unwrap_or(options.prompt_language);
 
     // Run inference
     info!("Running inference...");

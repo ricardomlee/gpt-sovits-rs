@@ -63,6 +63,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn short_wav_returns_a_recoverable_error() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        AudioBuffer::new(vec![0.0; 512], 32_000, 1)
+            .save(file.path())
+            .unwrap();
+        let error = extract_ref_mel(file.path(), &Device::Cpu, 32_000, 100).unwrap_err();
+        assert!(matches!(error, Error::AudioError(_)));
+        assert!(error.to_string().contains("too short for STFT"));
+        AudioBuffer::new(vec![0.0; 4096], 32_000, 1)
+            .save(file.path())
+            .unwrap();
+        assert!(extract_ref_mel(file.path(), &Device::Cpu, 32_000, 100)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
     fn pcm32_and_float_reference_spectra_match() {
         let pcm = tempfile::NamedTempFile::new().unwrap();
         let float = tempfile::NamedTempFile::new().unwrap();

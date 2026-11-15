@@ -64,19 +64,18 @@ pub(super) async fn warm_voice(state: &AppState, voice: &str) -> Result<(), Stri
         .pipelines
         .acquire_pipeline(&resolved.models, state.queue_timeout)
         .await?;
-    tokio::task::spawn_blocking(move || {
-        let rt = tokio::runtime::Handle::current();
-        let mut pipeline = rt.block_on(lease.pipeline.lock());
-        pipeline
-            .preload_speaker_with_options(
-                &resolved.refer_path,
-                &resolved.prompt_text,
-                &resolved.options,
-            )
-            .map_err(|e| format!("Warmup failed: {e}"))
-    })
-    .await
-    .map_err(|e| format!("Warmup task failed: {e}"))?
+    lease
+        .spawn(move |pipeline| {
+            pipeline
+                .preload_speaker_with_options(
+                    &resolved.refer_path,
+                    &resolved.prompt_text,
+                    &resolved.options,
+                )
+                .map_err(|e| format!("Warmup failed: {e}"))
+        })
+        .await
+        .map_err(|e| format!("Warmup task failed: {e}"))?
 }
 
 pub(super) async fn warmup_handler(
