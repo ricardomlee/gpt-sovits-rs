@@ -48,26 +48,26 @@ pub(crate) fn parse_pinyin_override(value: &str) -> Result<PinyinOverride> {
 /// Matches Python's `text.chinese2.pinyin_to_symbol_map`.
 fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     let mut map = HashMap::new();
-    // Single finals (no initial)
-    map.insert("a", ("", "a"));
-    map.insert("ai", ("", "a"));
-    map.insert("an", ("", "an"));
-    map.insert("ang", ("", "ang"));
-    map.insert("ao", ("", "ao"));
-    map.insert("e", ("", "e"));
-    map.insert("ei", ("", "e"));
-    map.insert("en", ("", "en"));
-    map.insert("eng", ("", "eng"));
-    map.insert("er", ("", "er"));
-    map.insert("o", ("", "o"));
-    map.insert("ou", ("", "o"));
+    // Vowel-initial syllables retain the trained AA/EE/OO onset symbols.
+    map.insert("a", ("AA", "a"));
+    map.insert("ai", ("AA", "ai"));
+    map.insert("an", ("AA", "an"));
+    map.insert("ang", ("AA", "ang"));
+    map.insert("ao", ("AA", "ao"));
+    map.insert("e", ("EE", "e"));
+    map.insert("ei", ("EE", "ei"));
+    map.insert("en", ("EE", "en"));
+    map.insert("eng", ("EE", "eng"));
+    map.insert("er", ("EE", "er"));
+    map.insert("o", ("OO", "o"));
+    map.insert("ou", ("OO", "ou"));
     // b
     map.insert("ba", ("b", "a"));
     map.insert("bai", ("b", "ai"));
     map.insert("ban", ("b", "an"));
     map.insert("bang", ("b", "ang"));
     map.insert("bao", ("b", "ao"));
-    map.insert("bei", ("b", "e"));
+    map.insert("bei", ("b", "ei"));
     map.insert("ben", ("b", "en"));
     map.insert("beng", ("b", "eng"));
     map.insert("bi", ("b", "i"));
@@ -85,10 +85,10 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("cang", ("c", "ang"));
     map.insert("cao", ("c", "ao"));
     map.insert("ce", ("c", "e"));
-    map.insert("cei", ("c", "e"));
+    map.insert("cei", ("c", "ei"));
     map.insert("cen", ("c", "en"));
     map.insert("ceng", ("c", "eng"));
-    map.insert("ci", ("c", "ir"));
+    map.insert("ci", ("c", "i0"));
     map.insert("cong", ("c", "ong"));
     map.insert("cou", ("c", "ou"));
     map.insert("cu", ("c", "u"));
@@ -103,7 +103,7 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("dang", ("d", "ang"));
     map.insert("dao", ("d", "ao"));
     map.insert("de", ("d", "e"));
-    map.insert("dei", ("d", "e"));
+    map.insert("dei", ("d", "ei"));
     map.insert("den", ("d", "en"));
     map.insert("deng", ("d", "eng"));
     map.insert("di", ("d", "i"));
@@ -124,7 +124,7 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("fa", ("f", "a"));
     map.insert("fan", ("f", "an"));
     map.insert("fang", ("f", "ang"));
-    map.insert("fei", ("f", "e"));
+    map.insert("fei", ("f", "ei"));
     map.insert("fen", ("f", "en"));
     map.insert("feng", ("f", "eng"));
     map.insert("fo", ("f", "o"));
@@ -137,7 +137,7 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("gang", ("g", "ang"));
     map.insert("gao", ("g", "ao"));
     map.insert("ge", ("g", "e"));
-    map.insert("gei", ("g", "e"));
+    map.insert("gei", ("g", "ei"));
     map.insert("gen", ("g", "en"));
     map.insert("geng", ("g", "eng"));
     map.insert("gong", ("g", "ong"));
@@ -157,7 +157,7 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("hang", ("h", "ang"));
     map.insert("hao", ("h", "ao"));
     map.insert("he", ("h", "e"));
-    map.insert("hei", ("h", "e"));
+    map.insert("hei", ("h", "ei"));
     map.insert("hen", ("h", "en"));
     map.insert("heng", ("h", "eng"));
     map.insert("hong", ("h", "ong"));
@@ -192,7 +192,7 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("kang", ("k", "ang"));
     map.insert("kao", ("k", "ao"));
     map.insert("ke", ("k", "e"));
-    map.insert("kei", ("k", "e"));
+    map.insert("kei", ("k", "ei"));
     map.insert("ken", ("k", "en"));
     map.insert("keng", ("k", "eng"));
     map.insert("kong", ("k", "ong"));
@@ -212,7 +212,7 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("lang", ("l", "ang"));
     map.insert("lao", ("l", "ao"));
     map.insert("le", ("l", "e"));
-    map.insert("lei", ("l", "e"));
+    map.insert("lei", ("l", "ei"));
     map.insert("leng", ("l", "eng"));
     map.insert("li", ("l", "i"));
     map.insert("lia", ("l", "ia"));
@@ -239,7 +239,7 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("mang", ("m", "ang"));
     map.insert("mao", ("m", "ao"));
     map.insert("me", ("m", "e"));
-    map.insert("mei", ("m", "e"));
+    map.insert("mei", ("m", "ei"));
     map.insert("men", ("m", "en"));
     map.insert("meng", ("m", "eng"));
     map.insert("mi", ("m", "i"));
@@ -259,7 +259,7 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("nang", ("n", "ang"));
     map.insert("nao", ("n", "ao"));
     map.insert("ne", ("n", "e"));
-    map.insert("nei", ("n", "e"));
+    map.insert("nei", ("n", "ei"));
     map.insert("nen", ("n", "en"));
     map.insert("neng", ("n", "eng"));
     map.insert("ni", ("n", "i"));
@@ -285,7 +285,7 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("pan", ("p", "an"));
     map.insert("pang", ("p", "ang"));
     map.insert("pao", ("p", "ao"));
-    map.insert("pei", ("p", "e"));
+    map.insert("pei", ("p", "ei"));
     map.insert("pen", ("p", "en"));
     map.insert("peng", ("p", "eng"));
     map.insert("pi", ("p", "i"));
@@ -337,7 +337,7 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("sei", ("s", "e"));
     map.insert("sen", ("s", "en"));
     map.insert("seng", ("s", "eng"));
-    map.insert("si", ("s", "ir"));
+    map.insert("si", ("s", "i0"));
     map.insert("song", ("s", "ong"));
     map.insert("sou", ("s", "ou"));
     map.insert("su", ("s", "u"));
@@ -352,7 +352,7 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("tang", ("t", "ang"));
     map.insert("tao", ("t", "ao"));
     map.insert("te", ("t", "e"));
-    map.insert("tei", ("t", "e"));
+    map.insert("tei", ("t", "ei"));
     map.insert("teng", ("t", "eng"));
     map.insert("ti", ("t", "i"));
     map.insert("tian", ("t", "ian"));
@@ -371,7 +371,7 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("wai", ("w", "ai"));
     map.insert("wan", ("w", "an"));
     map.insert("wang", ("w", "ang"));
-    map.insert("wei", ("w", "e"));
+    map.insert("wei", ("w", "ei"));
     map.insert("wen", ("w", "en"));
     map.insert("weng", ("w", "eng"));
     map.insert("wo", ("w", "o"));
@@ -393,10 +393,10 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("xun", ("x", "vn"));
     // y
     map.insert("ya", ("y", "a"));
-    map.insert("yan", ("y", "an"));
+    map.insert("yan", ("y", "En"));
     map.insert("yang", ("y", "ang"));
     map.insert("yao", ("y", "ao"));
-    map.insert("ye", ("y", "e"));
+    map.insert("ye", ("y", "E"));
     map.insert("yi", ("y", "i"));
     map.insert("yin", ("y", "in"));
     map.insert("ying", ("y", "ing"));
@@ -413,10 +413,10 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("zang", ("z", "ang"));
     map.insert("zao", ("z", "ao"));
     map.insert("ze", ("z", "e"));
-    map.insert("zei", ("z", "e"));
+    map.insert("zei", ("z", "ei"));
     map.insert("zen", ("z", "en"));
     map.insert("zeng", ("z", "eng"));
-    map.insert("zi", ("z", "ir"));
+    map.insert("zi", ("z", "i0"));
     map.insert("zong", ("z", "ong"));
     map.insert("zou", ("z", "ou"));
     map.insert("zu", ("z", "u"));
@@ -431,7 +431,7 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("zhang", ("zh", "ang"));
     map.insert("zhao", ("zh", "ao"));
     map.insert("zhe", ("zh", "e"));
-    map.insert("zhei", ("zh", "e"));
+    map.insert("zhei", ("zh", "ei"));
     map.insert("zhen", ("zh", "en"));
     map.insert("zheng", ("zh", "eng"));
     map.insert("zhi", ("zh", "ir"));
@@ -472,7 +472,7 @@ fn pinyin_split() -> HashMap<&'static str, (&'static str, &'static str)> {
     map.insert("shang", ("sh", "ang"));
     map.insert("shao", ("sh", "ao"));
     map.insert("she", ("sh", "e"));
-    map.insert("shei", ("sh", "e"));
+    map.insert("shei", ("sh", "ei"));
     map.insert("shen", ("sh", "en"));
     map.insert("sheng", ("sh", "eng"));
     map.insert("shi", ("sh", "ir"));
@@ -915,6 +915,71 @@ impl Default for G2PConverter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chinese_phones_match_upstream_opencpop() {
+        let converter = G2PConverter::new().unwrap();
+        let symbols = crate::text_frontend::symbols::SymbolTable::new();
+        // GPT-SoVITS bf81cdb, text/opencpop-strict.txt: preserve the trained phone vocabulary.
+        let cases = [
+            ("a", "AA a"),
+            ("ai", "AA ai"),
+            ("an", "AA an"),
+            ("ang", "AA ang"),
+            ("ao", "AA ao"),
+            ("e", "EE e"),
+            ("ei", "EE ei"),
+            ("en", "EE en"),
+            ("eng", "EE eng"),
+            ("er", "EE er"),
+            ("o", "OO o"),
+            ("ou", "OO ou"),
+            ("bei", "b ei"),
+            ("cei", "c ei"),
+            ("ci", "c i0"),
+            ("dei", "d ei"),
+            ("fei", "f ei"),
+            ("gei", "g ei"),
+            ("hei", "h ei"),
+            ("kei", "k ei"),
+            ("lei", "l ei"),
+            ("mei", "m ei"),
+            ("nei", "n ei"),
+            ("pei", "p ei"),
+            ("si", "s i0"),
+            ("tei", "t ei"),
+            ("wei", "w ei"),
+            ("yan", "y En"),
+            ("ye", "y E"),
+            ("zei", "z ei"),
+            ("zi", "z i0"),
+            ("zhei", "zh ei"),
+            ("shei", "sh ei"),
+        ];
+        for (base, phones) in cases {
+            for tone in 1..=5 {
+                let overrides = [Some(PinyinOverride {
+                    base: base.into(),
+                    tone,
+                })];
+                let (actual, word2ph) = converter
+                    .convert_chinese_with_word2ph_and_overrides("字", &overrides)
+                    .unwrap();
+                let expected = format!("{phones}{tone}");
+                assert_eq!(actual, expected, "{base}{tone}");
+                let expected_ids: Vec<_> = expected
+                    .split_whitespace()
+                    .map(|phone| symbols.get_id(phone).unwrap())
+                    .collect();
+                assert_eq!(symbols.encode(&actual).unwrap(), expected_ids);
+                assert_eq!(word2ph, vec![expected_ids.len()]);
+            }
+        }
+        assert_eq!(
+            converter.convert("陪你", Language::Chinese).unwrap(),
+            "p ei2 n i3"
+        );
+    }
 
     #[test]
     fn test_g2p_chinese_initials_finals() {
