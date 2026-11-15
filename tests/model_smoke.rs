@@ -210,9 +210,11 @@ fn real_model_inference_smoke_when_enabled() {
         ]);
         candle_core::safetensors::save(&weights, incompatible.path()).unwrap();
         pipeline
+            .preload_speaker_with_options(&reference_audio, reference_text, &options)
+            .expect("populate reference cache before replacing the tokenizer");
+        pipeline
             .load_semantic_tokenizer(incompatible.path())
             .unwrap();
-        pipeline.clear_speaker_cache();
         for _ in 0..2 {
             assert_feature_error(
                 &mut pipeline,
@@ -228,4 +230,21 @@ fn real_model_inference_smoke_when_enabled() {
             .expect("failed features must not poison the speaker cache");
         assert!(!recovered.is_empty());
     }
+
+    pipeline.clear_speaker_cache();
+    let annotated_reference = "你[ni3]好";
+    pipeline
+        .preload_speaker(&reference_audio, annotated_reference, Language::Chinese)
+        .unwrap();
+    let hot = pipeline
+        .preload_speaker(&reference_audio, annotated_reference, Language::English)
+        .expect_err("a Chinese cache entry must not bypass English annotation validation");
+    pipeline.clear_speaker_cache();
+    let cold = pipeline
+        .preload_speaker(&reference_audio, annotated_reference, Language::English)
+        .expect_err("invalid reference language must fail on a cold cache too");
+    assert_eq!(hot.to_string(), cold.to_string());
+    pipeline
+        .preload_speaker(&reference_audio, annotated_reference, Language::Chinese)
+        .unwrap();
 }

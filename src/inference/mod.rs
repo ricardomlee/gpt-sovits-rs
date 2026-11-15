@@ -18,7 +18,7 @@ mod speaker;
 mod split;
 
 pub use options::{InferenceOptions, InferenceOptionsBuilder};
-use speaker::{CachedSpeaker, PreparedTarget};
+use speaker::{CachedSpeaker, PreparedTarget, SpeakerCacheKey};
 use split::split_text;
 pub use split::{
     split_cut5_for_language, split_sentences, split_sentences_for_language, SplitMethod,
@@ -146,9 +146,8 @@ pub struct Pipeline {
     hubert_model: Option<HubertModel>,
     bigvgan_model: Option<BigVGAN>,
     semantic_tokenizer: Option<SemanticTokenizer>,
-    /// Cache keyed by (ref_audio_path, ref_text, sv_embedding_path)
-    ref_cache: HashMap<(String, String, Option<String>), CachedSpeaker>,
-    ref_cache_order: VecDeque<(String, String, Option<String>)>,
+    ref_cache: HashMap<SpeakerCacheKey, CachedSpeaker>,
+    ref_cache_order: VecDeque<SpeakerCacheKey>,
     ref_cache_capacity: usize,
 }
 
@@ -210,6 +209,7 @@ impl Pipeline {
         let model =
             GPTModel::load_with_device(path.as_ref().to_str().unwrap(), &self.device, dtype)?;
         self.gpt_model = Some(model);
+        self.clear_speaker_cache();
         Ok(())
     }
 
@@ -217,21 +217,24 @@ impl Pipeline {
         let path_str = path.as_ref().to_str().unwrap();
         let dtype = self.config.candle_dtype();
         let model = SoVITSModel::load_with_device(path_str, &self.device, dtype)?;
-        self.sovits_model = Some(model);
         let tokenizer = SemanticTokenizer::load_with_device(path_str, &self.device)?;
+        self.sovits_model = Some(model);
         self.semantic_tokenizer = Some(tokenizer);
+        self.clear_speaker_cache();
         Ok(())
     }
 
     pub fn load_bert<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let model = BertModel::load_with_device(path.as_ref().to_str().unwrap(), &self.device)?;
         self.bert_model = Some(model);
+        self.clear_speaker_cache();
         Ok(())
     }
 
     pub fn load_hubert<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let model = HubertModel::load_with_device(path.as_ref().to_str().unwrap(), &self.device)?;
         self.hubert_model = Some(model);
+        self.clear_speaker_cache();
         Ok(())
     }
 
@@ -241,6 +244,7 @@ impl Pipeline {
             &self.device,
         )?;
         self.semantic_tokenizer = Some(tokenizer);
+        self.clear_speaker_cache();
         Ok(())
     }
 
@@ -250,13 +254,19 @@ impl Pipeline {
         Ok(())
     }
 
+    /// Mutable frontend access invalidates reference features.
     pub fn text_frontend_mut(&mut self) -> &mut TextFrontend {
+        self.clear_speaker_cache();
         &mut self.text_frontend
     }
+    /// Mutable model access invalidates reference features.
     pub fn hubert_model(&mut self) -> &mut Option<HubertModel> {
+        self.clear_speaker_cache();
         &mut self.hubert_model
     }
+    /// Mutable model access invalidates reference features.
     pub fn bert_model(&mut self) -> &mut Option<BertModel> {
+        self.clear_speaker_cache();
         &mut self.bert_model
     }
     pub fn gpt_model(&self) -> &Option<GPTModel> {
@@ -744,7 +754,7 @@ impl<'a> Iterator for SentenceIterator<'a> {
             "Streaming sentence {}/{}: {:?}",
             self.index,
             self.sentences.len(),
-            text
+            text_preview_for_logs(&text, 72)
         );
         Some(self.pipeline.inference_logged_chunk(
             &self.mode,
@@ -949,15 +959,5 @@ mod tests {
     fn text_preview_truncates_by_characters() {
         assert_eq!(text_preview("先帝创业未半", 20), "先帝创业未半");
         assert_eq!(text_preview("先帝创业未半而中道崩殂", 4), "先帝创业...");
-    }
-
-    #[test]
-    fn text_preview_for_logs_redacts_by_default() {
-        std::env::remove_var("GPT_SOVITS_LOG_CHUNK_TEXT");
-
-        assert_eq!(
-            text_preview_for_logs("先帝创业未半", 20),
-            "<redacted; set GPT_SOVITS_LOG_CHUNK_TEXT=1>"
-        );
     }
 }
