@@ -1,6 +1,6 @@
 # GPT-SoVITS Rust 实现说明
 
-本文描述 1.2.2 的推理实现。
+本文说明 Rust 推理链路和模块职责。
 发布范围见 [文档入口](docs/README.md)，操作步骤见 [API](docs/API.md) 和 [模型指南](docs/MODELS.md)。
 
 ## 推理流程
@@ -36,7 +36,7 @@ G2P 与 BERT 使用同一份规范化文本，数字展开和读音覆盖通过�
 [ref_audio.rs](src/inference/ref_audio.rs) 计算 SoVITS 频谱（FFT 2048、hop 640）。
 当前参考编码器使用前 704 个频率 bin。
 
-[GPT](src/models/gpt.rs) 对 BERT 特征去除 CLS/SEP，投影到 512 维并根据 `word2ph` 展开。
+[GPT 条件准备](src/models/gpt/conditioning.rs) 对 BERT 特征去除 CLS/SEP，投影到 512 维并根据 `word2ph` 展开。
 非中文及无法直接对齐的情形使用回退处理。
 
 每个 Pipeline 最多缓存 16 组参考特征，键包含参考音频路径、参考文本、参考语言和 SV 路径。
@@ -56,9 +56,15 @@ Graph 前 32 步使用 eager/static KV，短生成可能在 capture 前结束。
 出现不适用情形时有 KV 回退保护。每次生成分别创建 Graph。
 `GPT_SOVITS_DISABLE_CUDA_GRAPH=1` 让自动选择退回 KV；旧的 experimental 开关已删除。
 
-Prefill 使用文本双向、音频因果的 hybrid mask；单步 decode 可看到所有有效历史缓存。
-采样保留最短生成长度的 EOS 屏蔽，以及 argmax 或采样结果为 EOS 时停止的判断。
+各后端共用[输入准备](src/models/gpt/conditioning.rs)：Prefill 使用文本双向、音频因果的
+hybrid mask；单步 decode 可看到所有有效历史缓存。
+[DecoderSampler](src/models/gpt/sampling.rs) 统一前 11 步的 EOS 屏蔽，以及
+argmax 或采样结果为 EOS 时停止的判断，并保持停止前的 RNG 消耗顺序。
 提前结束或漏读的样本通过分段日志、ASR 和试听排查。
+
+`GPTModel` 的公开类型和方法位置保持不变；内部模块职责与独立测试入口见
+[GPT Core](docs/DEVELOPMENT.md#gpt-core)。历史无参考 semantic tokens 的生成器保留在
+`legacy.rs`，Pipeline 进入该兼容路径时记录警告。
 
 ## SoVITS 和 v2Pro
 

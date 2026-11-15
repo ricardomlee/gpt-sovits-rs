@@ -123,6 +123,17 @@ struct literals must include `prompt_language` or use `..Default::default()`.
 
 All three methods use the same SoVITS synthesis path, so audio quality should match for the same generated semantic tokens.
 
+For low-level, reference-conditioned `GPTModel` generation, empty phonemes or a
+zero token budget return an empty sequence. Static KV and CUDA Graph execution
+report insufficient or overflowing KV capacity as `ConfigError`. The higher-level
+`Pipeline` continues to require `max_tokens` in `1..=2048`. On CPU, the Graph entry
+delegates to dynamic KV decoding.
+
+`GPTModel::generate()` and `generate_with_features()` retain the legacy generator
+without reference semantic tokens. A pipeline that enters this compatibility
+path logs a warning. The existing public method signatures are unchanged;
+[GPT core maintenance](DEVELOPMENT.md#gpt-core) describes the private modules and tests.
+
 ## HTTP Server
 
 Use an existing [deployment](DEPLOYMENT.md), or start a source build with prepared models:
