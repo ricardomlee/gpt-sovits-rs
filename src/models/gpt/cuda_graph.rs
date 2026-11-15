@@ -5,7 +5,9 @@ use crate::Result;
 use candle_core::Tensor;
 
 #[cfg(feature = "cuda")]
-use super::sampling::SamplingScratch;
+use super::conditioning::check_kv_capacity;
+#[cfg(feature = "cuda")]
+use super::sampling::DecoderSampler;
 #[cfg(feature = "cuda")]
 use crate::utils::{KvCacheManager, StaticKvManager};
 #[cfg(feature = "cuda")]
@@ -28,7 +30,7 @@ impl GPTModel {
     ///     e. Launch graph (replays ~160 kernels as a single submission).
     ///     f. Sample from the (still-live) logits tensor written by the graph.
     ///
-    /// Falls back to `generate_with_static_kv` on non-CUDA devices.
+    /// Falls back to dynamic KV decoding on non-CUDA devices.
     #[allow(clippy::too_many_arguments)]
     pub fn generate_with_cuda_graph(
         &self,
@@ -42,6 +44,9 @@ impl GPTModel {
         max_new_tokens: usize,
         max_kv_len: usize,
     ) -> Result<Vec<usize>> {
+        if phoneme_ids.is_empty() || max_new_tokens == 0 {
+            return Ok(Vec::new());
+        }
         #[cfg(feature = "cuda")]
         {
             use std::sync::Arc;
@@ -59,12 +64,11 @@ impl GPTModel {
                 );
             };
 
-            let audio_vocab_size = self.ar_predict_layer.dims()[0];
             let text_seq = phoneme_ids.len();
             let prompt_seq = prompt_tokens.len();
             let total_prefill = text_seq + prompt_seq;
             let hidden_size = self.transformer.config.hidden_size;
-            assert!(total_prefill + max_new_tokens <= max_kv_len);
+            check_kv_capacity(total_prefill, max_new_tokens, max_kv_len)?;
 
             // Set memory pool release threshold to never-release BEFORE any allocations.
             // When graph-managed cuMemAllocAsync allocations are freed (cuMemFreeAsync) inside
@@ -89,9 +93,7 @@ impl GPTModel {
             }
 
             // ── Prefill (same as static_kv path) ─────────────────────────────────
-            let phone_ids: Vec<i64> = phoneme_ids.iter().map(|&x| x as i64).collect();
-            let phone_tensor = Tensor::new(phone_ids.as_slice(), &self.device)?.unsqueeze(0)?;
-            let x_emb = self.lookup_tokens(&self.text_embedding, &phone_tensor, text_seq)?;
+            let x_emb = self.embed_phonemes(phoneme_ids)?;
             let x_emb = if let Some(bert) = pre_aligned_bert {
                 let bert_f32 = bert.to_dtype(DType::F32)?;
                 let x_f32 = x_emb.to_dtype(DType::F32)?;
@@ -99,14 +101,7 @@ impl GPTModel {
             } else {
                 x_emb
             };
-            let x_emb = self.add_sine_positional(&x_emb, "text")?;
-
-            let prompt_ids: Vec<i64> = prompt_tokens.iter().map(|&x| x as i64).collect();
-            let prompt_tensor = Tensor::new(prompt_ids.as_slice(), &self.device)?.unsqueeze(0)?;
-            let y_emb = self.lookup_tokens(&self.audio_embedding, &prompt_tensor, prompt_seq)?;
-            let y_pos = self.add_sine_positional(&y_emb, "audio")?;
-
-            let prefill_input = Tensor::cat(&[&x_emb, &y_pos], 1)?;
+            let prefill_input = self.prepare_prefill(&x_emb, prompt_tokens)?;
             let hybrid_mask = self.create_hybrid_mask(text_seq, total_prefill)?;
             let mut dyn_kv = KvCacheManager::new(self.num_layers);
             let prefill_out = self.transformer.forward_from_embedding_kv(
@@ -115,24 +110,15 @@ impl GPTModel {
                 &mut dyn_kv,
             )?;
             let mut static_kv = StaticKvManager::from_dynamic(dyn_kv, max_kv_len)?;
-            let mut sampling_scratch = SamplingScratch::new(audio_vocab_size);
+            let mut sampler =
+                DecoderSampler::new(self, top_k, top_p, temperature, repetition_penalty);
 
             // ── First token ───────────────────────────────────────────────────────
             let last_hidden = prefill_out.narrow(1, total_prefill - 1, 1)?.squeeze(0)?;
             let first_logits = last_hidden.matmul(&self.ar_predict_layer_t)?.squeeze(0)?;
-            let (next_token, _) = self.sample_token_with_scratch(
-                &first_logits.narrow(0, 0, audio_vocab_size - 1)?,
-                top_k,
-                top_p,
-                temperature,
-                repetition_penalty,
-                prompt_tokens,
-                &[],
-                &mut sampling_scratch,
-            )?;
-            if next_token >= audio_vocab_size - 1 {
+            let Some(next_token) = sampler.sample_next(&first_logits, prompt_tokens, &[])? else {
                 return Ok(vec![]);
-            }
+            };
             let mut generated = vec![next_token];
 
             // Acquire the CUDA stream early — needed for raw memcpy helpers below.
@@ -330,7 +316,7 @@ impl GPTModel {
             // The eager steps also prime the stream-ordered allocator pool.
             const EAGER_PREFIX: usize = 32;
             let mut reached_eos = false;
-            for step in 1..=EAGER_PREFIX {
+            for _ in 1..=EAGER_PREFIX {
                 if generated.len() >= max_new_tokens {
                     break;
                 }
@@ -338,26 +324,10 @@ impl GPTModel {
                 let logits = eager_step(&generated, &mut static_kv)?;
                 // Unmask the position that eager_step just appended (uses H2D async on same stream)
                 update_mask_raw(pos_before)?;
-                let is_eos = step < 11;
-                let ev = if is_eos {
-                    audio_vocab_size - 1
-                } else {
-                    audio_vocab_size
-                };
-                let (tok, ag) = self.sample_token_with_scratch(
-                    &logits.narrow(0, 0, ev)?,
-                    top_k,
-                    top_p,
-                    temperature,
-                    repetition_penalty,
-                    prompt_tokens,
-                    &generated,
-                    &mut sampling_scratch,
-                )?;
-                if tok >= audio_vocab_size - 1 || (!is_eos && ag == audio_vocab_size - 1) {
+                let Some(tok) = sampler.sample_next(&logits, prompt_tokens, &generated)? else {
                     reached_eos = true;
                     break;
-                }
+                };
                 generated.push(tok);
             }
             if reached_eos || generated.len() >= max_new_tokens {
@@ -486,53 +456,19 @@ impl GPTModel {
                 tracing::warn!(
                     "[GPT cuda-graph] first graph logits diverged (max_error={max_error:.6e}); continuing with guarded KV"
                 );
-                let step = generated.len();
-                let is_eos_masked = step < 11;
-                let effective_vocab = if is_eos_masked {
-                    audio_vocab_size - 1
-                } else {
-                    audio_vocab_size
-                };
-                let (token, argmax) = self.sample_token_with_scratch(
-                    &expected_capture_logits.narrow(0, 0, effective_vocab)?,
-                    top_k,
-                    top_p,
-                    temperature,
-                    repetition_penalty,
-                    prompt_tokens,
-                    &generated,
-                    &mut sampling_scratch,
-                )?;
-                if token >= audio_vocab_size - 1
-                    || (!is_eos_masked && argmax == audio_vocab_size - 1)
-                {
+                let Some(token) =
+                    sampler.sample_next(&expected_capture_logits, prompt_tokens, &generated)?
+                else {
                     return Ok(generated);
-                }
+                };
                 generated.push(token);
 
-                for step in generated.len()..max_new_tokens {
+                for _ in generated.len()..max_new_tokens {
                     let logits = eager_step(&generated, &mut guard_kv)?;
-                    let is_eos_masked = step < 11;
-                    let effective_vocab = if is_eos_masked {
-                        audio_vocab_size - 1
-                    } else {
-                        audio_vocab_size
-                    };
-                    let (token, argmax) = self.sample_token_with_scratch(
-                        &logits.narrow(0, 0, effective_vocab)?,
-                        top_k,
-                        top_p,
-                        temperature,
-                        repetition_penalty,
-                        prompt_tokens,
-                        &generated,
-                        &mut sampling_scratch,
-                    )?;
-                    if token >= audio_vocab_size - 1
-                        || (!is_eos_masked && argmax == audio_vocab_size - 1)
-                    {
+                    let Some(token) = sampler.sample_next(&logits, prompt_tokens, &generated)?
+                    else {
                         break;
-                    }
+                    };
                     generated.push(token);
                 }
                 tracing::info!(
@@ -544,27 +480,10 @@ impl GPTModel {
             drop(expected_capture_logits);
             drop(guard_kv);
             {
-                let step = generated.len();
-                let is_eos = step < 11;
-                let ev = if is_eos {
-                    audio_vocab_size - 1
-                } else {
-                    audio_vocab_size
-                };
-                let (tok, ag) = self.sample_token_with_scratch(
-                    &logits_out.narrow(0, 0, ev)?,
-                    top_k,
-                    top_p,
-                    temperature,
-                    repetition_penalty,
-                    prompt_tokens,
-                    &generated,
-                    &mut sampling_scratch,
-                )?;
-                if tok >= audio_vocab_size - 1 || (!is_eos && ag == audio_vocab_size - 1) {
+                let Some(tok) = sampler.sample_next(&logits_out, prompt_tokens, &generated)? else {
                     tracing::info!("[GPT cuda-graph] EOS at capture step");
                     return Ok(generated);
-                }
+                };
                 generated.push(tok);
             }
 
@@ -610,25 +529,9 @@ impl GPTModel {
                 static_kv.step();
 
                 // 6. Sample (D2H; logits_out is stable pre-allocated buffer written by graph)
-                let is_eos = step < 11;
-                let ev = if is_eos {
-                    audio_vocab_size - 1
-                } else {
-                    audio_vocab_size
-                };
-                let (tok, ag) = self.sample_token_with_scratch(
-                    &logits_out.narrow(0, 0, ev)?,
-                    top_k,
-                    top_p,
-                    temperature,
-                    repetition_penalty,
-                    prompt_tokens,
-                    &generated,
-                    &mut sampling_scratch,
-                )?;
-                if tok >= audio_vocab_size - 1 || (!is_eos && ag == audio_vocab_size - 1) {
+                let Some(tok) = sampler.sample_next(&logits_out, prompt_tokens, &generated)? else {
                     break;
-                }
+                };
                 generated.push(tok);
             }
 

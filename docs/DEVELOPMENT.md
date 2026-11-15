@@ -57,6 +57,35 @@ do not contain a source-build toolchain. Models and voices are prepared separate
 The [implementation notes](../IMPLEMENTATION.md) explain the runtime paths and
 known limits. Dependency versions live in Cargo.toml/Cargo.lock.
 
+### GPT Core
+
+`GPTModel` keeps its public API in `models::gpt`; private modules under
+`src/models/gpt/` separate the numerical responsibilities:
+
+| Module | Responsibility |
+| --- | --- |
+| `weights.rs` | Safetensors loading and precomputed scaled sine positions |
+| `conditioning.rs` | Token embeddings, BERT alignment, prefill layout, masks and KV capacity checks |
+| `sampling.rs` | Sampling order, reusable scratch, minimum-length EOS masking and stopping policy |
+| `decode.rs` | Reference-conditioned plain, dynamic KV and static KV loops |
+| `cuda_graph.rs` | CUDA capture/replay, stable buffers and guarded KV fallback |
+| `legacy.rs` | Historical generation without reference semantic tokens |
+| `debug.rs` | Existing public numerical-inspection helpers |
+
+Conditioned backends share input preparation and `DecoderSampler`. Static KV and
+Graph retain their F32 BERT-fusion operation order; plain/KV retain their native
+addition. Keep those numerical choices explicit when changing a backend.
+
+`contracts.rs` generates a tiny one-layer model for normal CI. It checks fixed-seed
+token streams, BERT alignment, masks, positional offsets, sampling order, EOS/RNG
+behavior, zero budgets, empty text and invalid KV capacity.
+The controlled fixture tests decoder contracts; real-model comparisons check
+numerical behavior with actual weights.
+
+```bash
+cargo test --locked --features http-api --lib models::gpt
+```
+
 ## Local Checks
 
 ```bash

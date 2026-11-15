@@ -65,6 +65,9 @@ impl DecodeBackend {
         options: &InferenceOptions,
     ) -> Result<Vec<usize>> {
         if ref_feats.prompt_tokens.is_empty() {
+            tracing::warn!(
+                "Reference semantic tokens are missing; using legacy GPT compatibility decoding"
+            );
             return gpt.generate_with_features(
                 &prepared.phoneme_ids,
                 prepared.combined_bert.as_ref(),

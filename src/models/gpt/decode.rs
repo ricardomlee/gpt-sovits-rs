@@ -1,6 +1,7 @@
 //! Reference-conditioned plain, dynamic KV and static KV decoding.
 
-use super::sampling::SamplingScratch;
+use super::conditioning::check_kv_capacity;
+use super::sampling::DecoderSampler;
 use super::GPTModel;
 use crate::utils::{KvCacheManager, StaticKvManager};
 use crate::Result;
@@ -95,35 +96,23 @@ impl GPTModel {
         repetition_penalty: f32,
         max_tokens: usize,
     ) -> Result<Vec<usize>> {
-        if phoneme_ids.is_empty() {
+        if phoneme_ids.is_empty() || max_tokens == 0 {
             return Ok(Vec::new());
         }
 
         let text_seq = phoneme_ids.len();
         let prompt_seq = prompt_tokens.len();
-        let audio_vocab_size = self.ar_predict_layer.dims()[0];
         let max_new_tokens = max_tokens;
 
         // Build text embeddings + BERT fusion (same as non-cached path)
-        let text_ids: Vec<i64> = phoneme_ids.iter().map(|&x| x as i64).collect();
-        let text_tensor = Tensor::new(text_ids.as_slice(), &self.device)?.unsqueeze(0)?;
-        let x_emb = self.lookup_tokens(&self.text_embedding, &text_tensor, text_seq)?;
+        let x_emb = self.embed_phonemes(phoneme_ids)?;
 
         let x_emb = if let Some(aligned) = pre_aligned_bert {
             x_emb.broadcast_add(aligned)?
         } else {
             x_emb
         };
-        let x_emb = self.add_sine_positional(&x_emb, "text")?;
-
-        // Build audio prompt embeddings
-        let prompt_ids: Vec<i64> = prompt_tokens.iter().map(|&x| x as i64).collect();
-        let prompt_tensor = Tensor::new(prompt_ids.as_slice(), &self.device)?.unsqueeze(0)?;
-        let y_emb = self.lookup_tokens(&self.audio_embedding, &prompt_tensor, prompt_seq)?;
-        let y_pos = self.add_sine_positional(&y_emb, "audio")?;
-
-        // Prefill: run the full text+prompt sequence through the transformer, filling KV cache
-        let prefill_input = Tensor::cat(&[&x_emb, &y_pos], 1)?;
+        let prefill_input = self.prepare_prefill(&x_emb, prompt_tokens)?;
         let total_prefill = text_seq + prompt_seq;
         let hybrid_mask = self.create_hybrid_mask(text_seq, total_prefill)?;
 
@@ -139,27 +128,17 @@ impl GPTModel {
         let logits = last_hidden.matmul(&self.ar_predict_layer_t)?.squeeze(0)?;
 
         let mut generated_tokens: Vec<usize> = Vec::new();
-        let mut sampling_scratch = SamplingScratch::new(audio_vocab_size);
+        let mut sampler = DecoderSampler::new(self, top_k, top_p, temperature, repetition_penalty);
 
         // First token sampling from prefill logits (step 0 — always mask EOS)
-        let logits_for_sampling = logits.narrow(0, 0, audio_vocab_size - 1)?;
-        let (next_token, _argmax) = self.sample_token_with_scratch(
-            &logits_for_sampling,
-            top_k,
-            top_p,
-            temperature,
-            repetition_penalty,
-            prompt_tokens,
-            &generated_tokens,
-            &mut sampling_scratch,
-        )?;
-        if next_token >= audio_vocab_size - 1 {
+        let Some(next_token) = sampler.sample_next(&logits, prompt_tokens, &generated_tokens)?
+        else {
             return Ok(generated_tokens);
-        }
+        };
         generated_tokens.push(next_token);
 
         // Autoregressive generation: single token per forward pass
-        for step in 1..max_new_tokens {
+        for _ in 1..max_new_tokens {
             let prev_token = *generated_tokens.last().unwrap();
             let new_emb = self.lookup_audio_token(prev_token)?;
             let audio_pe_pos = prompt_seq + generated_tokens.len() - 1;
@@ -175,31 +154,12 @@ impl GPTModel {
                 .matmul(&self.ar_predict_layer_t)?
                 .squeeze(0)?;
 
-            let is_eos_masked = step < 11;
-            let effective_vocab = if is_eos_masked {
-                audio_vocab_size - 1
-            } else {
-                audio_vocab_size
-            };
-            let logits_for_sampling = logits.narrow(0, 0, effective_vocab)?;
-
-            // sample_token returns (sampled, argmax) from a single D2H transfer
-            let (next_token, argmax) = self.sample_token_with_scratch(
-                &logits_for_sampling,
-                top_k,
-                top_p,
-                temperature,
-                repetition_penalty,
-                prompt_tokens,
-                &generated_tokens,
-                &mut sampling_scratch,
-            )?;
-
-            let argmax_eos = !is_eos_masked && argmax == audio_vocab_size - 1;
-
-            if next_token >= audio_vocab_size - 1 || argmax_eos {
+            let Some(next_token) =
+                sampler.sample_next(&logits, prompt_tokens, &generated_tokens)?
+            else {
                 break;
-            }
+            };
+
             generated_tokens.push(next_token);
         }
 
@@ -230,20 +190,17 @@ impl GPTModel {
         max_new_tokens: usize,
         max_kv_len: usize, // max total KV sequence length (prefill + generated)
     ) -> Result<Vec<usize>> {
-        let audio_vocab_size = self.ar_predict_layer.dims()[0];
+        if phoneme_ids.is_empty() || max_new_tokens == 0 {
+            return Ok(Vec::new());
+        }
         let text_seq = phoneme_ids.len();
         let prompt_seq = prompt_tokens.len();
         let total_prefill = text_seq + prompt_seq;
 
-        assert!(
-            total_prefill + max_new_tokens <= max_kv_len,
-            "max_kv_len ({max_kv_len}) must be >= total_prefill ({total_prefill}) + max_new_tokens ({max_new_tokens})"
-        );
+        check_kv_capacity(total_prefill, max_new_tokens, max_kv_len)?;
 
         // ── Build text embeddings ────────────────────────────────────────────────
-        let phone_ids: Vec<i64> = phoneme_ids.iter().map(|&x| x as i64).collect();
-        let phone_tensor = Tensor::new(phone_ids.as_slice(), &self.device)?.unsqueeze(0)?;
-        let x_emb = self.lookup_tokens(&self.text_embedding, &phone_tensor, text_seq)?;
+        let x_emb = self.embed_phonemes(phoneme_ids)?;
 
         // Inject BERT features if available
         let x_emb = if let Some(bert) = pre_aligned_bert {
@@ -254,16 +211,7 @@ impl GPTModel {
         } else {
             x_emb
         };
-        let x_emb = self.add_sine_positional(&x_emb, "text")?;
-
-        // ── Build audio prompt embeddings ────────────────────────────────────────
-        let prompt_ids: Vec<i64> = prompt_tokens.iter().map(|&x| x as i64).collect();
-        let prompt_tensor = Tensor::new(prompt_ids.as_slice(), &self.device)?.unsqueeze(0)?;
-        let y_emb = self.lookup_tokens(&self.audio_embedding, &prompt_tensor, prompt_seq)?;
-        let y_pos = self.add_sine_positional(&y_emb, "audio")?;
-
-        // ── Prefill (dynamic KV) ─────────────────────────────────────────────────
-        let prefill_input = Tensor::cat(&[&x_emb, &y_pos], 1)?;
+        let prefill_input = self.prepare_prefill(&x_emb, prompt_tokens)?;
         let hybrid_mask = self.create_hybrid_mask(text_seq, total_prefill)?;
         let mut dyn_kv = KvCacheManager::new(self.num_layers);
         let prefill_out = self.transformer.forward_from_embedding_kv(
@@ -274,29 +222,18 @@ impl GPTModel {
 
         // ── Convert dynamic KV → static pre-allocated KV ────────────────────────
         let mut static_kv = StaticKvManager::from_dynamic(dyn_kv, max_kv_len)?;
-        let mut sampling_scratch = SamplingScratch::new(audio_vocab_size);
+        let mut sampler = DecoderSampler::new(self, top_k, top_p, temperature, repetition_penalty);
 
         // ── First token from prefill logits ─────────────────────────────────────
         let last_hidden = prefill_out.narrow(1, total_prefill - 1, 1)?.squeeze(0)?;
         let logits = last_hidden.matmul(&self.ar_predict_layer_t)?.squeeze(0)?;
-        let logits_for_sampling = logits.narrow(0, 0, audio_vocab_size - 1)?;
-        let (next_token, _) = self.sample_token_with_scratch(
-            &logits_for_sampling,
-            top_k,
-            top_p,
-            temperature,
-            repetition_penalty,
-            prompt_tokens,
-            &[],
-            &mut sampling_scratch,
-        )?;
-        if next_token >= audio_vocab_size - 1 {
+        let Some(next_token) = sampler.sample_next(&logits, prompt_tokens, &[])? else {
             return Ok(vec![]);
-        }
+        };
         let mut generated_tokens = vec![next_token];
 
         // ── Autoregressive decode with static KV ─────────────────────────────────
-        for step in 1..max_new_tokens {
+        for _ in 1..max_new_tokens {
             let prev_token = *generated_tokens.last().unwrap();
             let new_emb = self.lookup_audio_token(prev_token)?;
             let pe_pos = prompt_seq + generated_tokens.len() - 1;
@@ -311,29 +248,12 @@ impl GPTModel {
                 .matmul(&self.ar_predict_layer_t)?
                 .squeeze(0)?;
 
-            let is_eos_masked = step < 11;
-            let effective_vocab = if is_eos_masked {
-                audio_vocab_size - 1
-            } else {
-                audio_vocab_size
-            };
-            let logits_for_sampling = logits.narrow(0, 0, effective_vocab)?;
-
-            let (next_token, argmax) = self.sample_token_with_scratch(
-                &logits_for_sampling,
-                top_k,
-                top_p,
-                temperature,
-                repetition_penalty,
-                prompt_tokens,
-                &generated_tokens,
-                &mut sampling_scratch,
-            )?;
-
-            let argmax_eos = !is_eos_masked && argmax == audio_vocab_size - 1;
-            if next_token >= audio_vocab_size - 1 || argmax_eos {
+            let Some(next_token) =
+                sampler.sample_next(&logits, prompt_tokens, &generated_tokens)?
+            else {
                 break;
-            }
+            };
+
             generated_tokens.push(next_token);
         }
 
@@ -358,23 +278,13 @@ impl GPTModel {
         repetition_penalty: f32,
         max_tokens: usize,
     ) -> Result<Vec<usize>> {
-        if phoneme_ids.is_empty() {
+        if phoneme_ids.is_empty() || max_tokens == 0 {
             return Ok(Vec::new());
         }
 
-        // Convert phoneme IDs to tensor [1, text_seq]
-        let text_ids: Vec<i64> = phoneme_ids.iter().map(|&x| x as i64).collect();
-        let text_tensor = Tensor::new(text_ids.as_slice(), &self.device)?.unsqueeze(0)?;
-
-        // Convert prompt tokens to tensor [1, prompt_seq]
-        let prompt_ids: Vec<i64> = prompt_tokens.iter().map(|&x| x as i64).collect();
-        let prompt_tensor = Tensor::new(prompt_ids.as_slice(), &self.device)?.unsqueeze(0)?;
-
         let text_seq = phoneme_ids.len();
         let prompt_seq = prompt_tokens.len();
-
-        // Step 1: Embed text tokens [1, text_seq, 512]
-        let x_emb = self.lookup_tokens(&self.text_embedding, &text_tensor, text_seq)?;
+        let x_emb = self.embed_phonemes(phoneme_ids)?;
 
         // Step 2: Add BERT features (either pre-aligned 512-dim, or raw 1024-dim with projection)
         let x_emb = if let Some(aligned) = pre_aligned_bert {
@@ -403,22 +313,13 @@ impl GPTModel {
             x_emb
         };
 
-        // Step 3: Add text positional encoding
-        let x_emb = self.add_sine_positional(&x_emb, "text")?;
+        let mut xy_pos = self.prepare_prefill(&x_emb, prompt_tokens)?;
 
-        // Step 4: Embed prompt audio tokens [1, prompt_seq, 512]
-        let y_emb = self.lookup_tokens(&self.audio_embedding, &prompt_tensor, prompt_seq)?;
-
-        // Step 5: Add audio positional encoding
-        let y_pos = self.add_sine_positional(&y_emb, "audio")?;
-
-        // Step 6: Concatenate text + audio along sequence dimension
-        let mut xy_pos = Tensor::cat(&[&x_emb, &y_pos], 1)?;
         let mut generated_tokens = Vec::new();
         let max_new_tokens = max_tokens;
-        let audio_vocab_size = self.ar_predict_layer.dims()[0];
+        let mut sampler = DecoderSampler::new(self, top_k, top_p, temperature, repetition_penalty);
 
-        for step in 0..max_new_tokens {
+        for _ in 0..max_new_tokens {
             let total_seq = xy_pos.dims()[1];
 
             // Use hybrid mask: text bidirectional + text blocked from audio + audio causal
@@ -431,35 +332,11 @@ impl GPTModel {
             let last_hidden = hidden.narrow(1, total_seq - 1, 1)?.squeeze(0)?;
             let logits = last_hidden.matmul(&self.ar_predict_layer_t)?.squeeze(0)?;
 
-            // For first 11 steps, mask out EOS logit
-            let is_eos_masked = step < 11;
-            let effective_vocab_size = if is_eos_masked {
-                audio_vocab_size - 1
-            } else {
-                audio_vocab_size
-            };
-            let logits_for_sampling = if is_eos_masked {
-                logits.narrow(0, 0, effective_vocab_size)?
-            } else {
-                logits.clone()
-            };
-
-            // sample_token returns (sampled, argmax) from a single D2H transfer
-            let (next_token, argmax) = self.sample_token(
-                &logits_for_sampling,
-                top_k,
-                top_p,
-                temperature,
-                repetition_penalty,
-                prompt_tokens,
-                &generated_tokens,
-            )?;
-
-            // Python stop condition: argmax(logits_for_sampling) == EOS OR sampled == EOS
-            let argmax_eos = !is_eos_masked && argmax == audio_vocab_size - 1;
-            if next_token >= audio_vocab_size - 1 || argmax_eos {
+            let Some(next_token) =
+                sampler.sample_next(&logits, prompt_tokens, &generated_tokens)?
+            else {
                 break;
-            }
+            };
 
             generated_tokens.push(next_token);
 

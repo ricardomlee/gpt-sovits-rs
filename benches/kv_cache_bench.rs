@@ -53,6 +53,7 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
     ];
 
     let options = InferenceOptions::builder()
+        .seed(42)
         .top_k(1)
         .top_p(1.0)
         .temperature(1.0)
@@ -89,14 +90,12 @@ fn run_benchmark() -> Result<(), Box<dyn std::error::Error>> {
             audio_duration = audio.duration();
         }
         for _ in 0..2 {
-            pipeline.set_seed(42)?;
             let t = Instant::now();
             let audio = pipeline.inference_kv_cache(input_text, &ref_audio, &ref_text, &options)?;
             t_kv += t.elapsed().as_secs_f64();
             kv_audio = Some(audio);
         }
         for _ in 0..2 {
-            pipeline.set_seed(42)?;
             let t = Instant::now();
             let audio =
                 pipeline.inference_cuda_graph(input_text, &ref_audio, &ref_text, &options)?;

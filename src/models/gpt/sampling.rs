@@ -4,7 +4,66 @@ use super::GPTModel;
 use crate::Result;
 use candle_core::{DType, Tensor};
 
-pub(super) struct SamplingScratch {
+/// Sampling state and EOS policy shared by reference-conditioned decoders.
+pub(super) struct DecoderSampler<'a> {
+    model: &'a GPTModel,
+    top_k: usize,
+    top_p: f32,
+    temperature: f32,
+    repetition_penalty: f32,
+    scratch: SamplingScratch,
+}
+
+impl<'a> DecoderSampler<'a> {
+    pub(super) fn new(
+        model: &'a GPTModel,
+        top_k: usize,
+        top_p: f32,
+        temperature: f32,
+        repetition_penalty: f32,
+    ) -> Self {
+        Self {
+            model,
+            top_k,
+            top_p,
+            temperature,
+            repetition_penalty,
+            scratch: SamplingScratch::new(model.ar_predict_layer.dims()[0]),
+        }
+    }
+
+    pub(super) fn sample_next(
+        &mut self,
+        logits: &Tensor,
+        prompt_tokens: &[usize],
+        generated_tokens: &[usize],
+    ) -> Result<Option<usize>> {
+        let eos = self.model.ar_predict_layer.dims()[0] - 1;
+        let mask_eos = generated_tokens.len() < 11;
+        let logits = if mask_eos {
+            logits.narrow(0, 0, eos)?
+        } else {
+            logits.clone()
+        };
+        // Sampling precedes stopping to preserve request-local RNG replay.
+        let (token, argmax) = self.model.sample_token_with_scratch(
+            &logits,
+            self.top_k,
+            self.top_p,
+            self.temperature,
+            self.repetition_penalty,
+            prompt_tokens,
+            generated_tokens,
+            &mut self.scratch,
+        )?;
+        if token >= eos || (!mask_eos && argmax == eos) {
+            return Ok(None);
+        }
+        Ok(Some(token))
+    }
+}
+
+struct SamplingScratch {
     sorted_logits: Vec<f32>,
     idx_probs: Vec<(usize, f32)>,
     seen_tokens: Vec<u32>,
@@ -12,7 +71,7 @@ pub(super) struct SamplingScratch {
 }
 
 impl SamplingScratch {
-    pub(super) fn new(vocab_size: usize) -> Self {
+    fn new(vocab_size: usize) -> Self {
         Self {
             sorted_logits: Vec::with_capacity(vocab_size),
             idx_probs: Vec::with_capacity(vocab_size),
@@ -85,7 +144,7 @@ impl GPTModel {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn sample_token_with_scratch(
+    fn sample_token_with_scratch(
         &self,
         logits: &Tensor,
         top_k: usize,

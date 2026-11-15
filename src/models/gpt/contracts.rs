@@ -1,6 +1,8 @@
+use super::sampling::DecoderSampler;
 use super::*;
 use std::collections::HashMap;
 
+// Zero attention/FFN and EOS-dominant logits isolate decoder policy from learned behavior.
 fn model() -> GPTModel {
     let device = &Device::Cpu;
     let mut weights = HashMap::new();
@@ -85,10 +87,9 @@ fn model() -> GPTModel {
     GPTModel::load(file.path().to_str().unwrap()).unwrap()
 }
 
-fn generate(model: &GPTModel, mode: &str, max_tokens: usize) -> Vec<usize> {
-    let phones = &[1, 3, 2];
+fn generate(model: &GPTModel, mode: &str, phones: &[usize], max_tokens: usize) -> Vec<usize> {
     let prompt = &[2, 4];
-    let bert = Tensor::full(0.125f32, (1, 3, 16), &Device::Cpu).unwrap();
+    let bert = Tensor::full(0.125f32, (1, phones.len(), 16), &Device::Cpu).unwrap();
     match mode {
         "plain" => model.generate_with_prompts_aligned_bert(
             phones,
@@ -143,13 +144,13 @@ fn conditioned_decoders_preserve_seeded_sampling_eos_and_token_budgets() {
     for seed in [0, 42] {
         for max_tokens in [1, 8, 11, 16] {
             model.set_sampling_seed(Some(seed)).unwrap();
-            let expected = generate(&model, "plain", max_tokens);
+            let expected = generate(&model, "plain", &[1, 3, 2], max_tokens);
             assert_eq!(expected.len(), max_tokens.min(11));
             assert!(expected.iter().all(|&token| token < 6));
             for mode in ["kv", "static", "graph-fallback"] {
                 model.set_sampling_seed(Some(seed)).unwrap();
                 assert_eq!(
-                    generate(&model, mode, max_tokens),
+                    generate(&model, mode, &[1, 3, 2], max_tokens),
                     expected,
                     "{mode}, seed={seed}, max_tokens={max_tokens}"
                 );
@@ -289,5 +290,112 @@ fn nucleus_filter_runs_before_temperature_scaling() {
                 .unwrap(),
             (0, 0)
         );
+    }
+}
+
+#[test]
+fn shared_prefill_preserves_separate_embeddings_positions_and_layout() {
+    let model = model();
+    let phones = [1usize, 3, 2];
+    let prompt = [2usize, 4];
+    let text_ids = Tensor::new(&[1i64, 3, 2], &Device::Cpu)
+        .unwrap()
+        .unsqueeze(0)
+        .unwrap();
+    let audio_ids = Tensor::new(&[2i64, 4], &Device::Cpu)
+        .unwrap()
+        .unsqueeze(0)
+        .unwrap();
+    for bert in [0.0f32, 0.125] {
+        let condition = Tensor::full(bert, (1, 3, 16), &Device::Cpu).unwrap();
+        let text = model
+            .embed_phonemes(&phones)
+            .unwrap()
+            .broadcast_add(&condition)
+            .unwrap();
+        let actual = model.prepare_prefill(&text, &prompt).unwrap();
+        let expected_text = model
+            .lookup_text_tokens(&text_ids, 3)
+            .unwrap()
+            .broadcast_add(&condition)
+            .unwrap();
+        let expected_text = model
+            .add_sine_positional_pub(&expected_text, "text")
+            .unwrap();
+        let expected_audio = model.lookup_audio_tokens(&audio_ids, 2).unwrap();
+        let expected_audio = model
+            .add_sine_positional_pub(&expected_audio, "audio")
+            .unwrap();
+        let expected = Tensor::cat(&[&expected_text, &expected_audio], 1).unwrap();
+        assert_eq!(actual.dims(), &[1, 5, 16]);
+        assert_eq!(
+            actual.flatten_all().unwrap().to_vec1::<f32>().unwrap(),
+            expected.flatten_all().unwrap().to_vec1::<f32>().unwrap()
+        );
+    }
+}
+
+#[test]
+fn conditioned_sampler_stops_on_raw_argmax_eos_after_consuming_the_sample() {
+    let model = model();
+    let logits = Tensor::new(&[0.0f32, 0.0, 0.0, 0.0, 0.0, 0.0, 0.1], &Device::Cpu).unwrap();
+    let history = vec![1usize; 11];
+    model.set_sampling_seed(Some(42)).unwrap();
+    let (sampled, argmax) = model
+        .sample_token(&logits, 0, 1.0, 50.0, 1.0, &[2], &history)
+        .unwrap();
+    assert!(sampled < 6);
+    assert_eq!(argmax, 6);
+    let next_random = model.sampling_rng.uniform().unwrap();
+    model.set_sampling_seed(Some(42)).unwrap();
+    let mut sampler = DecoderSampler::new(&model, 0, 1.0, 50.0, 1.0);
+    assert_eq!(sampler.sample_next(&logits, &[2], &history).unwrap(), None);
+    assert_eq!(model.sampling_rng.uniform().unwrap(), next_random);
+    for len in 0..11 {
+        assert!(sampler
+            .sample_next(&logits, &[2], &history[..len])
+            .unwrap()
+            .is_some());
+    }
+}
+
+#[test]
+fn zero_generation_budget_returns_no_tokens_in_every_conditioned_decoder() {
+    let model = model();
+    for mode in ["plain", "kv", "static", "graph-fallback"] {
+        assert!(generate(&model, mode, &[1, 3, 2], 0).is_empty(), "{mode}");
+    }
+}
+
+#[test]
+fn empty_text_returns_no_tokens_in_every_conditioned_decoder() {
+    let model = model();
+    for mode in ["plain", "kv", "static", "graph-fallback"] {
+        assert!(generate(&model, mode, &[], 16).is_empty(), "{mode}");
+    }
+}
+
+#[test]
+fn invalid_static_kv_capacity_returns_an_error_instead_of_panicking() {
+    let model = model();
+    for (max_tokens, capacity) in [(16, 3), (usize::MAX, 64)] {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            model.generate_with_static_kv(
+                &[1, 2],
+                &[2],
+                None,
+                15,
+                0.95,
+                0.8,
+                1.35,
+                max_tokens,
+                capacity,
+            )
+        }));
+        assert!(
+            result.is_ok(),
+            "invalid capacity must be reported as Result::Err"
+        );
+        assert!(matches!(result.unwrap(), Err(Error::ConfigError(_))));
     }
 }

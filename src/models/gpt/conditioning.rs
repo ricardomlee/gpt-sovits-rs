@@ -4,7 +4,42 @@ use super::GPTModel;
 use crate::{Error, Result};
 use candle_core::Tensor;
 
+pub(super) fn check_kv_capacity(
+    prefix_len: usize,
+    max_new_tokens: usize,
+    max_kv_len: usize,
+) -> Result<()> {
+    let required = prefix_len
+        .checked_add(max_new_tokens)
+        .ok_or_else(|| Error::ConfigError("KV capacity calculation overflowed".into()))?;
+    if required > max_kv_len {
+        return Err(Error::ConfigError(format!(
+            "max_kv_len ({max_kv_len}) must be at least prefix length ({prefix_len}) + max_new_tokens ({max_new_tokens})"
+        )));
+    }
+    Ok(())
+}
+
 impl GPTModel {
+    pub(super) fn embed_phonemes(&self, phoneme_ids: &[usize]) -> Result<Tensor> {
+        let ids: Vec<i64> = phoneme_ids.iter().map(|&id| id as i64).collect();
+        let ids = Tensor::new(ids.as_slice(), &self.device)?.unsqueeze(0)?;
+        self.lookup_tokens(&self.text_embedding, &ids, phoneme_ids.len())
+    }
+
+    pub(super) fn prepare_prefill(
+        &self,
+        conditioned_text: &Tensor,
+        prompt_tokens: &[usize],
+    ) -> Result<Tensor> {
+        let text = self.add_sine_positional(conditioned_text, "text")?;
+        let ids: Vec<i64> = prompt_tokens.iter().map(|&id| id as i64).collect();
+        let ids = Tensor::new(ids.as_slice(), &self.device)?.unsqueeze(0)?;
+        let audio = self.lookup_tokens(&self.audio_embedding, &ids, prompt_tokens.len())?;
+        let audio = self.add_sine_positional(&audio, "audio")?;
+        Tensor::cat(&[&text, &audio], 1).map_err(Into::into)
+    }
+
     /// Project and align raw BERT features to phone level.
     ///
     /// Takes raw BERT output [1, seq+2, 1024] (includes CLS/SEP), applies bert_proj,
@@ -187,7 +222,7 @@ impl GPTModel {
     }
 
     /// Add sinusoidal positional encoding with explicit alpha
-    pub(super) fn add_sine_positional_with_alpha(
+    fn add_sine_positional_with_alpha(
         &self,
         x: &Tensor,
         start_pos: usize,

@@ -57,19 +57,9 @@ impl GPTModel {
             ));
         }
 
-        // Convert phoneme IDs to tensor [1, text_seq]
-        let text_ids: Vec<i64> = phoneme_ids.iter().map(|&x| x as i64).collect();
-        let text_tensor = Tensor::new(text_ids.as_slice(), &self.device)?.unsqueeze(0)?;
-
-        // Convert prompt tokens to tensor [1, prompt_seq]
-        let prompt_ids: Vec<i64> = prompt_tokens.iter().map(|&x| x as i64).collect();
-        let prompt_tensor = Tensor::new(prompt_ids.as_slice(), &self.device)?.unsqueeze(0)?;
-
         let text_seq = phoneme_ids.len();
         let prompt_seq = prompt_tokens.len();
-
-        // Step 1: Embed text tokens [1, text_seq, 512]
-        let x_emb = self.lookup_tokens(&self.text_embedding, &text_tensor, text_seq)?;
+        let x_emb = self.embed_phonemes(phoneme_ids)?;
 
         // Step 2: Project and add BERT features
         let x_emb = if let (Some(bert), Some((proj_w, proj_b))) = (bert_features, &self.bert_proj) {
@@ -96,17 +86,7 @@ impl GPTModel {
             x_emb
         };
 
-        // Step 3: Add text positional encoding
-        let x_emb = self.add_sine_positional(&x_emb, "text")?;
-
-        // Step 4: Embed prompt audio tokens [1, prompt_seq, 512]
-        let y_emb = self.lookup_tokens(&self.audio_embedding, &prompt_tensor, prompt_seq)?;
-
-        // Step 5: Add audio positional encoding
-        let y_pos = self.add_sine_positional(&y_emb, "audio")?;
-
-        // Step 6: Concatenate text + audio along sequence dimension
-        let xy_pos = Tensor::cat(&[&x_emb, &y_pos], 1)?;
+        let xy_pos = self.prepare_prefill(&x_emb, prompt_tokens)?;
 
         // Step 7: Create hybrid attention mask
         let total_seq = text_seq + prompt_seq;
