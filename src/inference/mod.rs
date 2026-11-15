@@ -523,63 +523,13 @@ impl Pipeline {
         reference_text: &str,
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
-        self.configure_sampling(options.seed)?;
-        if self.gpt_model.is_none() {
-            return Err(Error::ModelLoadError("GPT model not loaded".to_string()));
-        }
-        if self.sovits_model.is_none() {
-            return Err(Error::ModelLoadError("SoVITS model not loaded".to_string()));
-        }
-        let total_start = Instant::now();
-
-        // Reference features (cached after first call)
-        let ref_start = Instant::now();
-        let ref_feats = self.get_ref_features(&reference_audio, reference_text, options)?;
-        let ref_ms = ref_start.elapsed().as_millis();
-
-        let gpt = self.gpt_model.as_ref().unwrap();
-        let sovits = self.sovits_model.as_ref().unwrap();
-        let prepared = Self::prepare_target_features(
-            &mut self.text_frontend,
-            &mut self.bert_model,
-            &self.device,
-            gpt,
-            &ref_feats,
+        self.inference_with_backend(
+            DecodeBackend::Plain,
             text,
-            options.language,
-        )?;
-
-        // GPT generation
-        let gpt_start = Instant::now();
-        let backend = DecodeBackend::Plain;
-        let semantic_tokens =
-            backend.generate_semantic_tokens(gpt, &ref_feats, &prepared, options)?;
-        let gpt_ms = gpt_start.elapsed().as_millis();
-        backend.log_generated(semantic_tokens.len(), options.max_tokens);
-
-        let sovits_start = Instant::now();
-        let audio_samples = sovits.synthesize_with_speed_and_sv(
-            &semantic_tokens,
-            &prepared.target_phoneme_ids,
-            ref_feats.ref_mel.as_ref(),
-            ref_feats.sv_embedding.as_ref(),
-            0.5,
-            options.speed,
-        )?;
-        let sovits_ms = sovits_start.elapsed().as_millis();
-        tracing::info!(
-            "profile mode=plain target={}ms ref={}ms target_bert={}ms gpt={}ms sovits={}ms total={}ms tokens={} audio_samples={}",
-            prepared.target_ms,
-            ref_ms,
-            prepared.bert_ms,
-            gpt_ms,
-            sovits_ms,
-            total_start.elapsed().as_millis(),
-            semantic_tokens.len(),
-            audio_samples.len()
-        );
-
-        Ok(AudioBuffer::new(audio_samples, sovits.sampling_rate(), 1))
+            reference_audio,
+            reference_text,
+            options,
+        )
     }
 
     pub fn inference_kv_cache<P: AsRef<Path>>(
@@ -589,64 +539,13 @@ impl Pipeline {
         reference_text: &str,
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
-        self.configure_sampling(options.seed)?;
-        let total_start = Instant::now();
-
-        // Reference features (cached after first call)
-        let ref_start = Instant::now();
-        let ref_feats = self.get_ref_features(&reference_audio, reference_text, options)?;
-        let ref_ms = ref_start.elapsed().as_millis();
-
-        if self.sovits_model.is_none() {
-            return Err(Error::ModelLoadError("SoVITS model not loaded".to_string()));
-        }
-        let gpt = self
-            .gpt_model
-            .as_ref()
-            .ok_or_else(|| Error::ModelLoadError("GPT model not loaded".to_string()))?;
-        let prepared = Self::prepare_target_features(
-            &mut self.text_frontend,
-            &mut self.bert_model,
-            &self.device,
-            gpt,
-            &ref_feats,
+        self.inference_with_backend(
+            DecodeBackend::KvCache,
             text,
-            options.language,
-        )?;
-
-        let gpt = self.gpt_model.as_ref().unwrap();
-        let sovits = self.sovits_model.as_ref().unwrap();
-
-        let gpt_start = Instant::now();
-        let backend = DecodeBackend::KvCache;
-        let semantic_tokens =
-            backend.generate_semantic_tokens(gpt, &ref_feats, &prepared, options)?;
-        let gpt_ms = gpt_start.elapsed().as_millis();
-        backend.log_generated(semantic_tokens.len(), options.max_tokens);
-
-        let sovits_start = Instant::now();
-        let audio_samples = sovits.synthesize_with_speed_and_sv(
-            &semantic_tokens,
-            &prepared.target_phoneme_ids,
-            ref_feats.ref_mel.as_ref(),
-            ref_feats.sv_embedding.as_ref(),
-            0.5,
-            options.speed,
-        )?;
-        let sovits_ms = sovits_start.elapsed().as_millis();
-        tracing::info!(
-            "profile mode=kv target={}ms ref={}ms target_bert={}ms gpt={}ms sovits={}ms total={}ms tokens={} audio_samples={}",
-            prepared.target_ms,
-            ref_ms,
-            prepared.bert_ms,
-            gpt_ms,
-            sovits_ms,
-            total_start.elapsed().as_millis(),
-            semantic_tokens.len(),
-            audio_samples.len()
-        );
-
-        Ok(AudioBuffer::new(audio_samples, sovits.sampling_rate(), 1))
+            reference_audio,
+            reference_text,
+            options,
+        )
     }
 
     /// Like `inference_kv_cache` but accelerated with a CUDA graph for the decode loop.
@@ -661,7 +560,33 @@ impl Pipeline {
         reference_text: &str,
         options: &InferenceOptions,
     ) -> Result<AudioBuffer> {
+        self.inference_with_backend(
+            DecodeBackend::CudaGraph,
+            text,
+            reference_audio,
+            reference_text,
+            options,
+        )
+    }
+
+    fn inference_with_backend<P: AsRef<Path>>(
+        &mut self,
+        backend: DecodeBackend,
+        text: &str,
+        reference_audio: P,
+        reference_text: &str,
+        options: &InferenceOptions,
+    ) -> Result<AudioBuffer> {
         self.configure_sampling(options.seed)?;
+        // Plain mode historically validates models before accessing reference features.
+        if matches!(backend, DecodeBackend::Plain) {
+            if self.gpt_model.is_none() {
+                return Err(Error::ModelLoadError("GPT model not loaded".to_string()));
+            }
+            if self.sovits_model.is_none() {
+                return Err(Error::ModelLoadError("SoVITS model not loaded".to_string()));
+            }
+        }
         let total_start = Instant::now();
 
         let ref_start = Instant::now();
@@ -685,17 +610,15 @@ impl Pipeline {
             options.language,
         )?;
 
-        let gpt = self.gpt_model.as_ref().unwrap();
         let sovits = self.sovits_model.as_ref().unwrap();
 
         let gpt_start = Instant::now();
-        let backend = DecodeBackend::CudaGraph;
         let semantic_tokens =
             backend.generate_semantic_tokens(gpt, &ref_feats, &prepared, options)?;
         let gpt_ms = gpt_start.elapsed().as_millis();
         backend.log_generated(semantic_tokens.len(), options.max_tokens);
 
-        if std::env::var("SOVITS_DEBUG").is_ok() {
+        if matches!(backend, DecodeBackend::CudaGraph) && std::env::var("SOVITS_DEBUG").is_ok() {
             sovits.debug_pipeline(
                 &semantic_tokens,
                 &prepared.target_phoneme_ids,
@@ -715,7 +638,8 @@ impl Pipeline {
         )?;
         let sovits_ms = sovits_start.elapsed().as_millis();
         tracing::info!(
-            "profile mode=cuda-graph target={}ms ref={}ms target_bert={}ms gpt={}ms sovits={}ms total={}ms tokens={} audio_samples={}",
+            "profile mode={} target={}ms ref={}ms target_bert={}ms gpt={}ms sovits={}ms total={}ms tokens={} audio_samples={}",
+            backend.profile_mode(),
             prepared.target_ms,
             ref_ms,
             prepared.bert_ms,
@@ -938,15 +862,42 @@ mod tests {
     }
 
     #[test]
-    fn plain_inference_reports_missing_gpt_model_before_audio_access() {
+    fn inference_entries_preserve_missing_model_error_precedence() {
         let mut pipeline = Pipeline::new(Config::builder().with_device("cpu").build()).unwrap();
         let options = InferenceOptions::default();
-        let error = pipeline
-            .inference_with_mode("plain", "hello", "missing.wav", "prompt", &options)
-            .expect_err("unloaded GPT should fail");
+        for (mode, expected) in [
+            ("plain", "GPT model not loaded"),
+            ("kv", "SoVITS model not loaded"),
+            ("cuda-graph", "SoVITS model not loaded"),
+        ] {
+            let direct = match mode {
+                "plain" => pipeline.inference("hello", "missing.wav", "prompt", &options),
+                "kv" => pipeline.inference_kv_cache("hello", "missing.wav", "prompt", &options),
+                _ => pipeline.inference_cuda_graph("hello", "missing.wav", "prompt", &options),
+            }
+            .unwrap_err();
+            let selected = pipeline
+                .inference_with_mode(mode, "hello", "missing.wav", "prompt", &options)
+                .unwrap_err();
+            assert!(
+                matches!(direct, Error::ModelLoadError(_)),
+                "{mode}: {direct}"
+            );
+            assert!(direct.to_string().contains(expected), "{mode}: {direct}");
+            assert_eq!(direct.to_string(), selected.to_string(), "{mode}");
+        }
+    }
 
-        assert!(matches!(error, Error::ModelLoadError(_)));
-        assert!(error.to_string().contains("GPT model not loaded"));
+    #[test]
+    fn backend_profiling_labels_remain_stable() {
+        for (backend, mode, suffix) in [
+            (DecodeBackend::Plain, "plain", ""),
+            (DecodeBackend::KvCache, "kv", " (kv_cache)"),
+            (DecodeBackend::CudaGraph, "cuda-graph", " (cuda-graph)"),
+        ] {
+            assert_eq!(backend.profile_mode(), mode);
+            assert_eq!(backend.generated_suffix(), suffix);
+        }
     }
 
     #[test]
