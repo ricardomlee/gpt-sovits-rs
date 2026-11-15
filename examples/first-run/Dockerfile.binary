@@ -1,0 +1,14 @@
+# Runtime-only acceptance image for an extracted Linux release archive.
+FROM ubuntu:24.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl libgomp1 libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+COPY . /opt/gpt-sovits/
+ENV PATH=/opt/gpt-sovits:${PATH}
+RUN gpt-sovits --version && gpt-sovits-convert --version && gpt-sovits-client --version
+RUN for tool in python python3 cargo rustc; do \
+    if command -v "$tool"; then exit 1; fi; done
+WORKDIR /app
+ENV GPT_SOVITS_HOST=0.0.0.0
+ENTRYPOINT ["gpt-sovits"]
+CMD ["--help"]

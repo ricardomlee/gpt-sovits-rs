@@ -102,7 +102,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsoxr-dev libmp3lame-dev cmake patchelf
+          sudo apt-get install -y libsoxr-dev libmp3lame-dev cmake patchelf ffmpeg jq
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -154,6 +154,42 @@ jobs:
           name: linux-x86_64-binary
           path: dist/*.tar.gz
           if-no-files-found: error
+
+      - name: Test extracted archive in a runtime-only image
+        run: |
+          mkdir binary-runtime
+          tar -xzf dist/gpt-sovits-ci-linux-x86_64.tar.gz -C binary-runtime --strip-components=1
+          docker build -f examples/first-run/Dockerfile.binary -t gpt-sovits-rs:binary-ci binary-runtime
+
+      - name: Verify packaged binaries from conversion through HTTP and offline synthesis
+        env:
+          DEMO_IMAGE: gpt-sovits-rs:binary-ci
+          DEMO_PULL_POLICY: never
+          DEMO_PORT: "9882"
+          VERIFY_SPEECH_FORMATS: "1"
+        run: |
+          export DEMO_EXPECTED_VERSION
+          DEMO_EXPECTED_VERSION=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "gpt-sovits-rs") | .version')
+          demo="$RUNNER_TEMP/packaged-binary-demo"
+          evidence="$RUNNER_TEMP/packaged-binary-evidence"
+          bash examples/first-run/verify.sh "$demo" "$evidence"
+          docker run --rm --network none \
+            --mount "type=bind,src=$demo/models,dst=/app/models,readonly" \
+            --mount "type=bind,src=$demo/voices,dst=/app/voices,readonly" \
+            --mount "type=bind,src=$evidence,dst=/out" \
+            "$DEMO_IMAGE" --device cpu --voice demo --models-dir /app/models --voices-dir /app/voices \
+            --text 'Hello, this is the packaged binary offline test.' --output /out/offline.wav
+          FIRST_RUN_WAV="$evidence/offline.wav" cargo test --locked --test first_run \
+            generated_http_audio_is_valid -- --ignored --nocapture
+
+      - name: Upload packaged-binary acceptance evidence, never models
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: packaged-binary-acceptance
+          path: ${{ runner.temp }}/packaged-binary-evidence/
+          retention-days: 7
+          if-no-files-found: ignore
 
   docker:
     name: Build and smoke test CPU container

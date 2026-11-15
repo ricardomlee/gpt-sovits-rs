@@ -210,6 +210,11 @@ Model paths are relative to `--models-dir`; reference audio and SV embedding pat
 the voice directory. Model pairs use a bounded LRU cache (two entries by default), while BERT and
 HuBERT are shared between pipelines. Change the limit with `--max-cached-pipelines`.
 
+Reference features are cached by audio path, reference text, language, and SV path.
+Rust `Pipeline` model loads and mutable model/frontend access invalidate this cache;
+failed loads preserve the existing models and cache. Call `clear_speaker_cache()`
+after replacing reference files in place. Preloading uses the same cache as inference.
+
 ### `POST /tts`
 
 Synthesize one WAV using a configured voice:

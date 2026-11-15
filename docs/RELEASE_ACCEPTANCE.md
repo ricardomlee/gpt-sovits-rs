@@ -29,6 +29,12 @@ The main CI's CPU-container job runs this against its newly built image. The
 separate first-run workflow verifies published 1.3.0 and keeps 1.2.0 as a
 compatibility baseline. Local GPU and speech checks follow below.
 
+The Linux binary job also extracts its actual archive into a runtime-only image,
+without system libsoxr/libmp3lame, Python, Cargo, or rustc. It checks all three
+packaged binaries, runs conversion and real HTTP synthesis through the same
+verifier, then synthesizes offline with read-only model/voice mounts. Evidence
+is retained as `packaged-binary-acceptance`; downloaded models are excluded.
+
 ## Local GPU Performance
 
 Before each tag, run the candidate's [GPU benchmark](PERFORMANCE.md) on the local

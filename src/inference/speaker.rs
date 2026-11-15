@@ -7,7 +7,7 @@ use crate::text_frontend::TextFrontend;
 use crate::utils::load_safetensors;
 use crate::{Error, InferenceOptions, Language, Result};
 use candle_core::{Device, Tensor};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 /// Cached features derived from a (reference_audio, reference_text) pair.
@@ -26,6 +26,25 @@ pub(super) struct CachedSpeaker {
     pub(super) ref_bert_aligned: Option<Tensor>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct SpeakerCacheKey {
+    audio: PathBuf,
+    text: String,
+    language: Language,
+    sv_embedding: Option<PathBuf>,
+}
+
+impl SpeakerCacheKey {
+    fn new(audio: &Path, text: &str, options: &InferenceOptions) -> Self {
+        Self {
+            audio: audio.to_owned(),
+            text: text.to_owned(),
+            language: options.language,
+            sv_embedding: options.sv_embedding.clone(),
+        }
+    }
+}
+
 pub(super) struct PreparedTarget {
     pub(super) target_phoneme_ids: Vec<usize>,
     pub(super) phoneme_ids: Vec<usize>,
@@ -35,7 +54,7 @@ pub(super) struct PreparedTarget {
 }
 
 impl Pipeline {
-    fn cache_speaker(&mut self, key: (String, String, Option<String>), cached: CachedSpeaker) {
+    fn cache_speaker(&mut self, key: SpeakerCacheKey, cached: CachedSpeaker) {
         self.ref_cache_order.retain(|candidate| candidate != &key);
         self.ref_cache.insert(key.clone(), cached);
         self.ref_cache_order.push_back(key);
@@ -46,7 +65,7 @@ impl Pipeline {
         }
     }
 
-    fn touch_speaker_cache(&mut self, key: &(String, String, Option<String>)) {
+    fn touch_speaker_cache(&mut self, key: &SpeakerCacheKey) {
         self.ref_cache_order.retain(|candidate| candidate != key);
         self.ref_cache_order.push_back(key.clone());
     }
@@ -74,46 +93,14 @@ impl Pipeline {
         ref_text: &str,
         options: &InferenceOptions,
     ) -> Result<()> {
-        let sv_embedding_key = options
-            .sv_embedding
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned());
-        let key = (
-            ref_audio.as_ref().to_string_lossy().into_owned(),
-            ref_text.to_owned(),
-            sv_embedding_key,
-        );
-        if !self.ref_cache.contains_key(&key) {
-            let sovits = self
-                .sovits_model
-                .as_ref()
-                .ok_or_else(|| Error::ModelLoadError("SoVITS model not loaded".to_string()))?;
-            let sr = sovits.sampling_rate();
-            let n_mels = sovits.n_mels();
-            let cached = Self::compute_ref_features(
-                &mut self.hubert_model,
-                &mut self.bert_model,
-                &mut self.text_frontend,
-                &self.semantic_tokenizer,
-                self.gpt_model.as_ref(),
-                ref_audio.as_ref(),
-                ref_text,
-                options.language,
-                &self.device,
-                sr,
-                n_mels,
-                options.sv_embedding.as_deref(),
-            )?;
-            self.cache_speaker(key, cached);
-        } else {
-            self.touch_speaker_cache(&key);
-        }
-        Ok(())
+        self.get_ref_features(ref_audio, ref_text, options)
+            .map(|_| ())
     }
 
     /// Drop all cached speaker features.
     pub fn clear_speaker_cache(&mut self) {
         self.ref_cache.clear();
+        self.ref_cache_order.clear();
     }
 
     /// Get cached ref features (compute and cache on miss).
@@ -123,21 +110,13 @@ impl Pipeline {
         ref_text: &str,
         options: &InferenceOptions,
     ) -> Result<CachedSpeaker> {
-        let sv_embedding_key = options
-            .sv_embedding
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned());
-        let key = (
-            ref_audio.as_ref().to_string_lossy().into_owned(),
-            ref_text.to_owned(),
-            sv_embedding_key,
-        );
+        let key = SpeakerCacheKey::new(ref_audio.as_ref(), ref_text, options);
         if let Some(cached) = self.ref_cache.get(&key).cloned() {
-            tracing::debug!("Speaker cache hit: {:?}", key.0);
+            tracing::debug!("Speaker cache hit: {:?}", key.audio);
             self.touch_speaker_cache(&key);
             return Ok(cached);
         }
-        tracing::debug!("Speaker cache miss: {:?}", key.0);
+        tracing::debug!("Speaker cache miss: {:?}", key.audio);
         let sovits = self
             .sovits_model
             .as_ref()
@@ -333,5 +312,100 @@ fn load_sv_embedding(path: &Path, device: &Device) -> Result<Tensor> {
             other,
             path.display()
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Config;
+
+    fn cached_pipeline() -> Pipeline {
+        let mut pipeline = Pipeline::new(Config::builder().with_device("cpu").build()).unwrap();
+        pipeline.cache_speaker(
+            SpeakerCacheKey::new(
+                Path::new("missing.wav"),
+                "你好",
+                &InferenceOptions::default(),
+            ),
+            CachedSpeaker {
+                prompt_tokens: vec![42],
+                ref_mel: None,
+                sv_embedding: None,
+                ref_phoneme_ids: vec![1],
+                ref_bert_aligned: None,
+            },
+        );
+        pipeline
+    }
+
+    #[test]
+    fn reference_language_is_part_of_cache_identity() {
+        let mut pipeline = cached_pipeline();
+        let mut options = InferenceOptions::default();
+        assert_eq!(
+            pipeline
+                .get_ref_features("missing.wav", "你好", &options)
+                .unwrap()
+                .prompt_tokens,
+            vec![42]
+        );
+        pipeline
+            .preload_speaker_with_options("missing.wav", "你好", &options)
+            .unwrap();
+        options.language = Language::English;
+        assert!(pipeline
+            .get_ref_features("missing.wav", "你好", &options)
+            .is_err());
+        assert!(pipeline
+            .preload_speaker_with_options("missing.wav", "你好", &options)
+            .is_err());
+    }
+
+    #[test]
+    fn clearing_speakers_also_clears_recency_metadata() {
+        let mut pipeline = cached_pipeline();
+        pipeline.clear_speaker_cache();
+        assert!(pipeline.ref_cache.is_empty());
+        assert!(pipeline.ref_cache_order.is_empty());
+    }
+
+    #[test]
+    fn mutable_feature_access_invalidates_speaker_features() {
+        let accessors: [fn(&mut Pipeline); 3] = [
+            |pipeline| {
+                let _ = pipeline.bert_model();
+            },
+            |pipeline| {
+                let _ = pipeline.hubert_model();
+            },
+            |pipeline| {
+                let _ = pipeline.text_frontend_mut();
+            },
+        ];
+        for access in accessors {
+            let mut pipeline = cached_pipeline();
+            access(&mut pipeline);
+            assert!(pipeline.ref_cache.is_empty());
+            assert!(pipeline.ref_cache_order.is_empty());
+        }
+    }
+
+    #[test]
+    fn failed_model_loads_keep_existing_reference_features() {
+        let invalid = tempfile::NamedTempFile::new().unwrap();
+        let loaders: [fn(&mut Pipeline, &Path) -> Result<()>; 5] = [
+            |p, path| p.load_gpt(path),
+            |p, path| p.load_sovits(path),
+            |p, path| p.load_bert(path),
+            |p, path| p.load_hubert(path),
+            |p, path| p.load_semantic_tokenizer(path),
+        ];
+        for load in loaders {
+            let mut pipeline = cached_pipeline();
+            assert!(load(&mut pipeline, invalid.path()).is_err());
+            assert_eq!(pipeline.ref_cache.len(), 1);
+            assert_eq!(pipeline.ref_cache_order.len(), 1);
+        }
     }
 }

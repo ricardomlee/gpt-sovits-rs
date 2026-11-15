@@ -811,7 +811,7 @@ impl G2PConverter {
         // Strip surrounding punctuation for lookup, but remember to not lose it
         let alpha_word: String = word
             .chars()
-            .filter(|c| c.is_alphabetic() || *c == '\'')
+            .filter(|c| c.is_alphabetic() || matches!(*c, '\'' | '-'))
             .collect();
         if alpha_word.is_empty() {
             return String::new();
@@ -826,6 +826,7 @@ impl G2PConverter {
         if alpha_word.contains('-') {
             let parts: Vec<String> = alpha_word
                 .split('-')
+                .filter(|part| !part.is_empty())
                 .map(|part| {
                     self.cmudict_lookup(part)
                         .map(|p| p.to_string())
@@ -1007,6 +1008,23 @@ mod tests {
             ("12.5%", "twelve point five percent"),
             ("v12", "v one two"),
             ("１２", "twelve"),
+        ] {
+            assert_eq!(
+                converter.convert(input, Language::English).unwrap(),
+                converter.convert(spoken, Language::English).unwrap(),
+                "{input}"
+            );
+        }
+    }
+
+    #[test]
+    fn english_hyphenated_words_use_word_pronunciations() {
+        let converter = G2PConverter::new().unwrap();
+        for (input, spoken) in [
+            ("twenty-one", "twenty one"),
+            ("state-of-the-art", "state of the art"),
+            ("hello-XYZ", "hello XYZ"),
+            ("--hello--", "hello"),
         ] {
             assert_eq!(
                 converter.convert(input, Language::English).unwrap(),

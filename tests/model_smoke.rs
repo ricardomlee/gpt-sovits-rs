@@ -210,9 +210,11 @@ fn real_model_inference_smoke_when_enabled() {
         ]);
         candle_core::safetensors::save(&weights, incompatible.path()).unwrap();
         pipeline
+            .preload_speaker_with_options(&reference_audio, reference_text, &options)
+            .expect("populate reference cache before replacing the tokenizer");
+        pipeline
             .load_semantic_tokenizer(incompatible.path())
             .unwrap();
-        pipeline.clear_speaker_cache();
         for _ in 0..2 {
             assert_feature_error(
                 &mut pipeline,
@@ -227,5 +229,25 @@ fn real_model_inference_smoke_when_enabled() {
             .inference_with_mode("kv", &text, &reference_audio, reference_text, &options)
             .expect("failed features must not poison the speaker cache");
         assert!(!recovered.is_empty());
+    }
+
+    if pipeline.bert_model().is_some() {
+        // Chinese folds "..." into one symbol; English retains all three tokens.
+        let boundary_reference = "a...".repeat(150);
+        pipeline
+            .preload_speaker(&reference_audio, &boundary_reference, Language::Chinese)
+            .unwrap();
+        let hot = pipeline
+            .preload_speaker(&reference_audio, &boundary_reference, Language::English)
+            .expect_err("a Chinese cache entry must not bypass English BERT length validation");
+        pipeline.clear_speaker_cache();
+        let cold = pipeline
+            .preload_speaker(&reference_audio, &boundary_reference, Language::English)
+            .expect_err("oversized English reference must fail on a cold cache too");
+        assert!(hot.to_string().contains("Reference BERT"), "{hot}");
+        assert_eq!(hot.to_string(), cold.to_string());
+        pipeline
+            .preload_speaker(&reference_audio, &boundary_reference, Language::Chinese)
+            .unwrap();
     }
 }
