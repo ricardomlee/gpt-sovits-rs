@@ -1,13 +1,10 @@
 # API
 
-This page describes version 1.3.0. See [version differences](README.md#先选你的版本)
-when using an older binary or image.
-
 GPT-SoVITS-RS exposes three integration surfaces:
 
+- [HTTP API](#http-server): call a running service from an application.
 - [CLI](#cli): one-shot synthesis and inspection.
 - [Rust API](#rust-api): embed the inference pipeline in another Rust program.
-- [HTTP API](#http-server): call a running service from an application.
 
 For shell scripts and agent command providers, the standalone
 [HTTP client](../client/README.md) calls a running service without loading models locally.
@@ -53,7 +50,8 @@ Run setup diagnostics:
 ./gpt-sovits --doctor --voice demo
 ```
 
-`doctor` is intentionally lightweight: it validates file layout and safetensors headers, but does not load all model tensors or run inference.
+`doctor` checks file layout and safetensors headers. Follow it with a real synthesis
+request to verify model loading and audio output.
 
 The CLI logs a profile line:
 
@@ -145,12 +143,11 @@ cargo run --locked --release --features http-api --bin gpt-sovits -- \
 
 For a CUDA build, use `--features cuda,http-api` and add `--device cuda` to the server arguments.
 
-Starting with 1.2.1, standalone binaries default to `127.0.0.1`.
+Standalone binaries default to `127.0.0.1`.
 For LAN access, explicitly set `--host 0.0.0.0`; the server has no authentication.
 `--host <IP>` overrides `GPT_SOVITS_HOST`;
 both accept IPv4 or unbracketed IPv6 literals (`::1`, `::`). Docker/Compose sets
-the environment variable to `0.0.0.0` for port forwarding. Published v1.2.0
-binaries always bind to `0.0.0.0` and do not accept `--host`.
+the environment variable to `0.0.0.0` for port forwarding.
 
 | Endpoint | Response | Use |
 | --- | --- | --- |
@@ -161,7 +158,7 @@ binaries always bind to `0.0.0.0` and do not accept `--host`.
 | [`POST /tts`](#post-tts) | Complete WAV | One text request |
 | [`POST /tts/stream`](#post-ttsstream) | Streaming WAV | Play a complete text request as chunks arrive |
 | [`POST /tts/batch`](#post-ttsbatch) | NDJSON | Multiple texts, one result per item |
-| [`POST /v1/audio/speech`](#post-v1audiospeech) | WAV or PCM | Compatible speech clients |
+| [`POST /v1/audio/speech`](#post-v1audiospeech) | WAV, PCM, MP3 or Ogg/Opus | Compatible speech clients |
 
 ### `GET /health`
 
@@ -324,17 +321,17 @@ Common aliases are accepted for easier client integration:
 | `prompt_text` | `reference_text`, `referenceText` |
 | `sv_embedding` | `svEmbedding`, `speakerEmbedding` |
 
-Long text quality controls:
+Chunking and generation limits use the same request-over-voice precedence:
 
-| Field | Purpose |
-| --- | --- |
-| `split_sentences` | Enable chunked synthesis. Defaults to the voice profile value, usually `true`. |
-| `split_method` | `sentence` splits at sentence ends and bounds long clauses; `cut5` also splits at commas/semicolons. |
-| `min_sentence_chars` | Merge very short chunks until this many characters are reached. |
-| `sentence_gap_ms` | Silence between chunks. |
-| `sentence_fade_ms` | Fade each chunk in/out before concatenation. |
-| `max_tokens` | Maximum semantic tokens per chunk. Raise only when intentionally synthesizing longer chunks. |
-| `repetition_penalty` | GPT repetition penalty. |
+| Field | Default when absent from the voice | Purpose |
+| --- | --- | --- |
+| `split_sentences` | `true` | Enable chunked synthesis. |
+| `split_method` | `sentence` | Split at sentence ends and bound long clauses; `cut5` also splits at commas/semicolons. |
+| `min_sentence_chars` | `12` | Merge very short chunks until this many characters are reached. |
+| `sentence_gap_ms` | `120` | Silence between chunks. |
+| `sentence_fade_ms` | `8` | Fade each chunk in/out before concatenation. |
+| `max_tokens` | `500` | Maximum semantic tokens per chunk. |
+| `repetition_penalty` | `1.35` | GPT repetition penalty. |
 
 CamelCase aliases such as `splitMethod`, `minSentenceChars`, `maxTokens`, and `repetitionPenalty` are also accepted.
 
@@ -462,8 +459,7 @@ curl --fail-with-body http://127.0.0.1:9880/v1/audio/speech \
   --output output.wav
 ```
 
-`input` and `voice` are required. `response_format` defaults to `wav` for
-compatibility with existing callers. Version 1.3.0 adds `mp3` and `opus`:
+`input` and `voice` are required. `response_format` defaults to `wav`:
 
 | Format | Content-Type | Output |
 | --- | --- | --- |

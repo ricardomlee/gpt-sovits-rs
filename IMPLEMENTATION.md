@@ -1,24 +1,24 @@
 # GPT-SoVITS Rust 实现说明
 
 本文说明 Rust 推理链路和模块职责。
-发布范围见 [文档入口](docs/README.md)，操作步骤见 [API](docs/API.md) 和 [模型指南](docs/MODELS.md)。
+操作步骤见 [API](docs/API.md) 和 [模型指南](docs/MODELS.md)，代码目录与测试见
+[开发指南](docs/DEVELOPMENT.md)。
 
 ## 推理流程
 
-```text
-参考文本 / 目标文本
-  -> 读音标注解析、语言判断、数字规范化
-  -> G2P + word2ph                         -> 音素
-  -> BERT -> 投影 1024 到 512 -> 音素对齐   -> BERT 条件
-
-参考音频 -> 16 kHz + 尾部静音 -> HuBERT -> VQ -> prompt semantic tokens
-参考音频 -> SoVITS 采样率频谱 -> ref_enc ----> speaker conditioning
-匹配的 SV embedding（v2Pro）-> sv_emb ------> speaker conditioning
-
-参考及目标音素 / BERT 条件 + prompt tokens
-  -> GPT 自回归生成目标 semantic tokens
-  -> SoVITS enc_p + flow + decoder（结合 speaker conditioning）
-  -> 波形；可逐段合成后加间隔、淡入淡出并拼接
+```mermaid
+flowchart TD
+    Text["参考文本 / 目标文本"] --> Frontend["文本前端 + BERT：音素及对齐特征"]
+    Frontend --> GPT["GPT：生成目标 semantic tokens"]
+    Ref["参考音频"] --> Hubert["16 kHz + 尾部静音 / HuBERT / VQ"]
+    Hubert -->|"参考 semantic tokens"| GPT
+    Ref --> RefEnc["SoVITS 采样率频谱 / ref_enc"]
+    RefEnc --> Speaker["Speaker conditioning"]
+    SV["匹配的 SV embedding / v2Pro"] --> Speaker
+    GPT --> SoVITS["SoVITS：enc_p / flow / decoder"]
+    Frontend -->|"目标音素"| SoVITS
+    Speaker --> SoVITS
+    SoVITS --> Audio["波形 / 分段拼接"]
 ```
 
 参考音色通过 `ref_enc` 编码，`enc_q` 用于训练时的 posterior encoder。
@@ -27,9 +27,11 @@
 ## 文本和参考特征
 
 [speaker.rs](src/inference/speaker.rs) 负责参考缓存和目标特征准备。
+文本前端解析注音、判断语言、展开数字，再生成音素和 `word2ph`；
+BERT 特征按相同文本对齐到音素位置。
 参考/目标的音素与对齐后的 BERT 特征分别拼接后送给 GPT。
 G2P 与 BERT 使用同一份规范化文本，数字展开和读音覆盖通过原文索引映射保持一致。
-1.2.2 的数字处理规则见 [API](docs/API.md)。
+数字与注音规则见 [Agent 接入](docs/AGENT_INTEGRATION.md#读音和数字)。
 
 [HuBERT](src/models/hubert.rs) 使用 soxr 重采样到 16 kHz，并追加 9600 个零样本。
 已经是 16 kHz 的输入也追加静音。另一条参考路径在

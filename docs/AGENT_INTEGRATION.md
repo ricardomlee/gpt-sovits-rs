@@ -1,100 +1,47 @@
 # Agent 接入
 
-助手通过 HTTP 发送文本和音色名；需要逐句播放时，由助手端组织句子、排队和播放。
-接口字段见 [API](API.md)，版本差异见 [文档入口](README.md)。
-能发送 HTTP 请求的助手可直接调用接口；通过外部命令生成音频的助手可使用
-[`gpt-sovits-client`](../client/README.md)。[Hermes 配置](#hermes)见下文。
+Agent 通过 HTTP 发送音色名和待朗读文字，服务端管理模型、参考录音、SV 和推理参数。
+Hermes 可直接使用内置 OpenAI provider；[配置见下文](#hermes)。
 
-## 逐句生成和播放
+## 最小调用
 
-推荐在客户端按句子组织 LLM 输出：
-
-```text
-LLM token stream -> 句子边界检测 -> 有界队列
-  -> 依次 POST /tts -> 按顺序播放 WAV
-```
-
-中文通常每段 10-25 字，优先在句末或较长从句的标点处分开，避免把一两个字拆成孤立请求。
-根据试听结果调整片段长度，留意漏读和句间衔接。
-不要切开数字、小数、百分比、版本号或 `字[pinyin+tone]` 标注。
-
-单个服务使用串行推理槽，多个请求会排队。
-队列应有上限；用户打断时丢弃尚未播放的旧回复。客户端断开不保证已经开始的 GPU
-合成立刻取消。收到 503 可按客户端策略有限重试，不能无限重发过期内容。
-
-`/tts/stream` 接收完整文本，服务端分段后在一个 WAV 响应中逐段输出 PCM。
-它不接收 LLM token 流。响应头的 200 和首字节不代表已经拿到可播放音频；
-流中途失败时也无法再换成 JSON 错误。播放端需支持未知长度 WAV，不能把每个网络块
-当成独立 WAV。简单客户端逐句调用普通 `/tts` 即可。
-
-需要结构化输出时，可约定客户端自己的 JSON Lines（不是服务端输入协议）：
-
-```jsonl
-{"type":"speech_chunk","index":1,"text":"先帝创业未半而中道崩殂。"}
-{"type":"speech_chunk","index":2,"text":"今天下三分，益州疲弊。"}
-```
-
-## HTTP 契约
-
-音色目录绑定模型、参考文字/音频、SV 和默认参数。Agent 只需稳定传 `voice` 和文字，
-不必暴露本机文件路径。可用 `GET /voices` 查询，`POST /warmup` 预加载。
-下面使用已配置的 `demo` 音色和默认端口 `9880`；首次体验服务改用 `9881`。
-
-```bash
-curl --fail-with-body http://127.0.0.1:9880/tts \
-  -H 'Content-Type: application/json' \
-  -d '{"voice":"demo","text":"你好，今天有什么安排？","text_language":"auto"}' \
-  --output /tmp/reply.wav
-```
-
-支持 OpenAI-compatible speech 接口的客户端可把 base URL 指向
-`http://127.0.0.1:9880/v1`，调用 `POST /v1/audio/speech`：
-
-```json
-{"model":"tts-1","voice":"demo","input":"你好，今天有什么安排？","text_language":"auto","response_format":"wav"}
-```
-
-1.3.0 支持 `wav`、`pcm`、`mp3` 和 `opus`，省略格式时仍返回 WAV。
-Opus 使用 Ogg 容器，输出 48 kHz 单声道；当前 WAV/PCM 为 32 kHz、单声道、16-bit little-endian。
-`model` 和 `instructions` 字段当前忽略；模型随音色配置选择。
-兼容字段和错误响应见 [speech API](API.md#post-v1audiospeech)。
-`/tts/batch` 的 HTTP 200 也可能包含逐项失败，应检查每一行的 `error` 和 `wav_base64`；
-批量结果没有 `success` 字段。
-
-长期使用常驻 HTTP 服务。每句重新启动推理 CLI 都会重新加载模型。
-服务无内置认证。独立二进制默认监听 loopback，Compose 的访问范围由宿主机端口映射决定，
-配置见[部署](DEPLOYMENT.md#监听地址与版本兼容)。
-
-## Hermes
-
-1.3.0 服务可直接使用 Hermes 内置的 OpenAI TTS provider：
-
-```text
-Hermes text_to_speech -> POST /v1/audio/speech -> 常驻推理服务
-                        文本、音色、格式          返回 MP3 或 Ogg/Opus
-```
-
-### 验证服务
-
-按[部署文档](DEPLOYMENT.md)启动服务、准备音色。以下命令在 Hermes 所在机器执行，
-将 `demo` 换成 `/voices` 返回的音色名，大小写保持一致：
+先按[部署指南](DEPLOYMENT.md)启动服务，查询可用音色并生成一段 WAV：
 
 ```bash
 curl --fail-with-body http://127.0.0.1:9880/health
 curl --fail-with-body http://127.0.0.1:9880/voices
-curl --fail-with-body http://127.0.0.1:9880/v1/audio/speech \
+curl --fail-with-body --max-time 300 http://127.0.0.1:9880/tts \
   -H 'Content-Type: application/json' \
-  -d '{"model":"tts-1","voice":"demo","input":"你好，今天有什么安排？","response_format":"mp3"}' \
-  --output /tmp/reply.mp3
+  -d '{"voice":"demo","text":"你好，今天有什么安排？","text_language":"auto"}' \
+  --output reply.wav
 ```
 
-Hermes 与服务分开部署时，地址应填写 Hermes 能访问的服务地址。
-模型、参考音频和 SV 留在服务端，客户端只传音色名和文本。
-首次加载某个音色会比后续调用慢，可用 `POST /warmup` 预热。
+将 `demo` 换成 `/voices` 返回的音色名，大小写保持一致。
+[首次体验](FIRST_RUN.zh-CN.md)的地址使用 **9881**，其他示例使用 **9880**。
+`text_language: "auto"` 适合中文、英文和混读；省略时使用音色的语言设置。
+服务就绪后可用 `POST /warmup`、`{"voice":"demo"}` 预热常用音色，减少首次调用等待。
 
-### 配置 provider
+### 选择接口
 
-在 Hermes 所在环境执行，将 `demo` 换成实际音色名：
+| 调用方 | 接口 | 返回 |
+| --- | --- | --- |
+| 自己的工具或 Agent | `POST /tts`，发送 `voice`、`text` | 完整 WAV |
+| Hermes / OpenAI-compatible 客户端 | `POST /v1/audio/speech`，发送 `voice`、`input` | WAV、PCM、MP3 或 Ogg/Opus |
+| 已拿到整段文字，想边生成边播 | `POST /tts/stream` | 一个持续输出的 WAV 流 |
+
+兼容客户端的 base URL 填 `http://127.0.0.1:9880/v1`。完整请求示例：
+
+```json
+{"model":"tts-1","voice":"demo","input":"你好，今天有什么安排？","response_format":"mp3"}
+```
+
+音色决定模型；`model` 和 `instructions` 为兼容字段，当前忽略。
+格式、采样率、参数覆盖和错误结构见 [HTTP API](API.md#http-server)。
+仅支持外部命令的调用方可选用 [HTTP 客户端](../client/README.md)。
+
+## Hermes
+
+在 Hermes 所在环境执行，将地址和 `demo` 换成实际服务及音色：
 
 ```bash
 hermes config set tts.openai.base_url http://127.0.0.1:9880/v1
@@ -105,100 +52,109 @@ hermes config set tts.use_gateway false
 hermes config set tts.provider openai
 ```
 
-`api_key` 的 `local` 用于满足 SDK 的必填字段；服务本身没有认证功能。
-`use_gateway false` 让语音请求使用这里配置的本地地址和凭据。
-模型、参考音频和 SV 均留在服务端。用户端只需 Hermes 及其 OpenAI provider 的依赖。
+`api_key: local` 满足 SDK 的必填项，`use_gateway false` 让请求使用本地地址和凭据。
+服务没有内置认证；跨机器部署时，通过防火墙或带认证的反向代理限制访问。
+模型和录音留在服务端，这条路径无需安装 `gpt-sovits-client` 或额外调用 FFmpeg。
 
-然后让 Hermes 调用 `text_to_speech`，传入一小段 `text`，检查工具结果和生成的音频。
-TTS provider 配置在每次工具调用时读取，修改这些配置后可直接重试。
+让 Hermes 调用 `text_to_speech`，传入一小段 `text`，检查工具结果并试听。
+provider 配置每次调用时读取，修改后可直接重试。
+Hermes 默认请求 MP3；Telegram 等语音平台会请求 Opus，服务直接返回 Ogg/Opus。
 
-需要收到语音后自动语音回复时，设置：
+要在收到语音时自动用语音回复：
 
 ```bash
 hermes config set voice.auto_tts true
 ```
 
-此项属于 `voice` 配置。已运行的网关还受会话语音模式影响；可在会话中用 `/voice on`
-开启，或重启网关加载新的全局默认值。
+该设置位于 `voice` 下。已运行的网关可在会话中用 `/voice on` 开启，
+或重启网关加载全局默认值。
 
-### 输出格式和音色设置
-
-Hermes 默认获取 MP3；在 Telegram 等语音平台中会请求 Opus，服务直接返回 Ogg/Opus。
-这条路径无需安装 `gpt-sovits-client` 或调用 FFmpeg 转码。
-`voice.auto_tts` 控制何时自动回复。
-
-分句、语速和采样参数统一由服务端音色配置管理。需要调整长句表现时，将以下字段
-合并进该音色现有的 `voice.json`，保留原来的模型和参考音频设置：
-
-```json
-{"split_sentences":true,"split_method":"sentence","min_sentence_chars":12,"sentence_gap_ms":120}
-```
-
-原 command provider 的请求级分句或采样覆盖需要移到音色配置。
-不要设置 `tts.openai.instructions` 来控制情绪，该字段当前被服务忽略。
-
-### 命令行接入（可选）
-
-使用 1.2.1/1.2.2 服务，或已有 command provider 脚本时，可继续使用
-[`gpt-sovits-client`](../client/README.md)：
-
-```bash
-hermes config set tts.providers.sovits.type command
-hermes config set tts.providers.sovits.command \
-  "\"$(command -v gpt-sovits-client)\" --url http://127.0.0.1:9880 --voice demo --timeout 120 -o {output_path} < {input_path}"
-hermes config set tts.providers.sovits.output_format wav
-hermes config set tts.providers.sovits.timeout 150
-hermes config set tts.provider sovits
-```
-
-先确认 `command -v gpt-sovits-client` 能找到程序。Hermes 将文本写入临时文件，
-客户端从 stdin 读取并保存 WAV。长文本按实际耗时同时调整 provider 和客户端超时。
-此路径需要语音气泡时，在 Hermes 环境安装 FFmpeg，再设置
-`hermes config set tts.providers.sovits.voice_compatible true`。
+分句、语速和采样参数放在服务端的 `voice.json` 中管理，完整示例见
+[音色配置](DEPLOYMENT.md#音色目录)。从 command provider 迁移时，
+将原命令里的请求级覆盖移到音色配置；情绪和语气主要由模型及参考录音决定。
 
 本节按 Hermes [`0a62610` 的 TTS 实现](https://github.com/NousResearch/hermes-agent/blob/0a62610f10cc34d696b2239b2c69fa1ba0f1ca63/tools/tts_tool.py)
 核对。若工具被权限策略拒绝，通过 Hermes 的工具授权或管理员配置处理。
 
+## 逐句生成和播放
+
+接收 LLM token 流的 Agent 可以在完整句子出现后提交，按顺序播放：
+
+```mermaid
+sequenceDiagram
+    participant LLM as LLM 输出
+    participant Agent as Agent 队列
+    participant TTS as TTS 服务
+    participant Player as 播放器
+    LLM->>Agent: 完整短句 1
+    Agent->>TTS: POST /tts
+    TTS-->>Agent: WAV 1
+    Agent->>Player: 播放 WAV 1
+    LLM->>Agent: 完整短句 2
+    Agent->>TTS: POST /tts
+    TTS-->>Agent: WAV 2
+    Agent->>Player: WAV 1 播完后播放 WAV 2
+```
+
+合成下一句与播放上一句可以重叠。单个服务只有一个推理槽，多个合成请求会排队。
+队列设上限；用户打断时停止播放并丢弃旧回复，已开始的模型加载或合成会继续到结束。
+保持数字、小数、版本号和 `字[pinyin+tone]` 标注完整，避免切成一两个字的请求。
+
+`/tts/stream` 接收完整文本，由服务端分段后输出一个未知长度 WAV。
+播放端需要支持这种 WAV，并把网络块当作同一条音频流解码。
+只有普通文件播放能力时，逐句调用 `/tts` 更方便。
+
+### 失败处理
+
+| 结果 | 调用方处理 |
+| --- | --- |
+| HTTP 400 | 检查文字、音色和参数后再提交 |
+| HTTP 503 | 等待推理槽超时；仅对仍有效的回复做有上限的退避重试 |
+| HTTP 500 | 记录错误并检查服务日志；避免自动反复合成相同失败内容 |
+| 流中断或未收全 | 停止播放；HTTP 200 之后的合成错误会终止音频流 |
+| Batch HTTP 200 | 逐行检查 `error` 和 `wav_base64`，批量结果没有 `success` 字段 |
+
+请求超时应覆盖排队、首次加载和生成。断开连接后，已开始的合成可能仍在运行；
+重试也可能再次生成同一段，尤其要避免重复播放已听到的部分。
+服务状态和错误结构见 [API](API.md#errors)。
+
 ## 读音和数字
 
-只在确实歧义的字后加注音：
+只在有歧义的字后加注音，格式为 `字[pinyin+声调数字]`，1-5 表示声调，5 为轻声：
 
 ```text
 这个人很好[hao4]学，银行的行[hang2]长正在重[chong2]新安排会议。
 ```
 
-格式为 `字[pinyin+声调数字]`，1-5 表示声调，5 为轻声。只影响前一个中文字符，
-方括号标注不会送给 BERT 朗读。其他文字仍按正常分词、G2P 和变调处理。
+标注只影响前一个中文字符，方括号内容会在 BERT/G2P 对齐前移除。
+其他文字仍按正常分词、G2P 和变调处理。
 
-中文支持百分比、小数和全角数字展开，切句时会保护数字。
-例如 `50%` 读“百分之五十”，`3.140` 读“三点一四零”，
-`-3.5` 读“负三点五”。`50%分[fen4]成` 的标注仍只作用于原文的“分”。
+| 输入 | 自动展开 |
+| --- | --- |
+| 中文 `50%`、`3.140`、`-3.5` | 百分之五十、三点一四零、负三点五 |
+| 英文 `123`、`12.5%`、`21st` | one hundred twenty three、twelve point five percent、twenty first |
+| 英文 `007`、`v12` | zero zero seven、v one two |
 
-英文支持整数、小数、百分比和常见序数：`123` 读“one hundred twenty three”，
-`12.5%` 读“twelve point five percent”，`21st` 读“twenty first”。
-带前导零或紧邻英文字母的编号按位读：`007` 读“zero zero seven”，`v12` 读“v one two”。
+纯数字的 `auto` 默认中文，英文读法显式传 `text_language: "en"`。
+日期、时间、金额和电话的语境读法由 Agent 写成希望读出的文字，
+例如“二零二六年十月二十五日”“下午三点半”“一百二十三元”。
+避免让 `123元` 这样的整数默认展开承担金额语义。
 
-纯数字的 `auto` 默认中文，英文读法需要指定 `text_language: "en"`。
-`text_language` 控制待朗读文字，`prompt_language` 控制参考录音的转写，默认独立识别。
-中文参考音色读英文时，可同时传 `text_language: "en"` 和 `prompt_language: "zh"`。
-也可以在音色配置里固定 `prompt_language`，Agent 继续只传音色名和文字。
-1.3.1 及更早的服务会忽略 `prompt_language`；跨语言调用这些版本时使用 `text_language: "auto"`。
-混合语言需要确定读法时也应显式指定 `text_language`。
-日期、时间、金额和电话仍需 Agent 按上下文转换。
-Agent 可先输出希望读出的文字，例如“二零二六年十月二十五日”“下午三点半”。
+参考转写语言可用 `prompt_language` 独立设置，例如中文参考读英文时用
+`text_language: "en"`、`prompt_language: "zh"`。版本兼容见 [请求字段](API.md#post-tts)；
+也可将参考语言固定在音色配置中，让 Agent 保持只传音色名和文字。
 
-## 排查吞句
+## 排障
 
-遇到 BERT、HuBERT 或语义编码错误时，先核对模型和参考 WAV；模型加载或特征提取失败会中止合成。
-目标文本的 BERT 提取失败时，检查单段是否过长，保持按句发送。截断 WAV、NaN/Inf 采样会被拒绝。
+先保留失败请求和音频，定位具体句子。模型或 BERT/HuBERT 特征提取失败时，
+检查日志中的阶段、模型文件和参考 WAV。单段过长时先恢复按句提交。
 
-先定位具体 chunk，不要直接全局调整 temperature/top_p：
+需要在本机查看分段文字时，可临时开启：
 
 ```bash
 GPT_SOVITS_LOG_CHUNK_TEXT=1 ./gpt-sovits --http --port 9880 --voice demo
 ```
 
 日志包含 chunk 序号、字数、semantic token 数、时长和 chars/sec。
-明显短的音频只是线索，不是漏读的自动判定。保留请求、音色配置、模型哈希和失败样本，
-用 [语音回归](RELEASE_ACCEPTANCE.md#speech-regression) 做 ASR 对照并试听。
-文本日志可能包含私人对话，默认不要开启或对外上传。
+文本日志可能含私人对话，平时保持关闭。结合试听和
+[语音回归](RELEASE_ACCEPTANCE.md#speech-regression)检查漏读，再决定是否调整参数。

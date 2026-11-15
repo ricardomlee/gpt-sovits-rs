@@ -6,9 +6,9 @@
 
 **Turn GPT-SoVITS voices into a local HTTP service, without a Python runtime.**
 
-For people who already use GPT-SoVITS and want their assistant or application to
-speak with a configured voice. Conversion and inference run in Rust. Training stays
-in [upstream GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS).
+Configure a voice once, then send its name and text from your assistant or app.
+Conversion and inference run in Rust on your own computer. Train or fine-tune voices
+with [upstream GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS).
 
 [Try it](#quick-start) | [Listen](#samples) | [中文上手](docs/FIRST_RUN.zh-CN.md) |
 [Use your models](docs/MODELS.md) | [API](docs/API.md) | [Documentation](docs/README.md)
@@ -32,14 +32,10 @@ Allow at least 6 GiB free disk and 4 GiB available memory. Downloads are about
 1.1 GB plus the container; conversion and the first model load take time.
 No Rust, Python, API key, or GPU is needed for this CPU demo.
 
-The demo runs the published release. Unreleased changes on `master`, including
-numeric-reading fixes, require a source build; see [version scope](docs/README.md#先选你的版本).
-
 The script downloads weights directly from their publisher, verifies checksums,
-converts all four models inside the published **1.3.0** image, and checks the setup.
-Read [what it downloads](examples/first-run/downloads.txt) and
-[the script](examples/first-run/prepare.sh) before running it. Model licenses remain
-separate from this project's MIT license.
+converts them inside Docker, and checks the setup.
+[Downloads](examples/first-run/downloads.txt), [script](examples/first-run/prepare.sh),
+and [setup details](docs/FIRST_RUN.zh-CN.md) are available for review.
 
 ```bash
 git clone https://github.com/ricardomlee/gpt-sovits-rs.git
@@ -55,8 +51,8 @@ curl --fail-with-body --max-time 300 http://127.0.0.1:9881/tts \
 Play `first.wav` with your usual audio player. The demo uses its own directory,
 Compose project, and **localhost-only port 9881**, without changing a service on 9880.
 Stop it with `docker compose down` in the demo directory; downloaded files stay there.
-If preparation is interrupted, rerun the same command: verified downloads are reused.
-Use a new directory, not an existing models or deployment directory.
+Use a new directory for preparation. If interrupted, rerun the same command:
+verified downloads are reused.
 
 Already have weights or use another platform?
 
@@ -69,6 +65,13 @@ Already have weights or use another platform?
 
 ## Connect Your App
 
+```mermaid
+flowchart LR
+    App["Your app / agent"] -->|"voice + text"| Service["Local HTTP service"]
+    Voice["Voice profile + models"] --> Service
+    Service -->|"WAV / MP3 / Opus"| Audio["Playback"]
+```
+
 Once a voice is configured, send only its name and the text:
 
 ```bash
@@ -77,20 +80,24 @@ curl --fail-with-body http://127.0.0.1:9881/tts \
   -d '{"voice":"demo","text":"The backup is complete."}' --output reply.wav
 ```
 
-An [OpenAI-compatible speech endpoint](docs/API.md#post-v1audiospeech), sentence streaming, and multiple
-voice profiles are also available. For an LLM assistant, submit completed short
-sentences in order; [agent integration](docs/AGENT_INTEGRATION.md) covers playback
-and errors. The service is not an authenticated public API.
+For Hermes and other OpenAI-compatible clients, use base URL
+`http://127.0.0.1:9881/v1` and select a configured voice.
+[Agent integration](docs/AGENT_INTEGRATION.md) includes Hermes setup and ordered
+sentence playback; the [API reference](docs/API.md#http-server) covers streaming and batch requests.
 
 ## Models and Speech Quality
 
-- Supports compatible **v2 and v2Pro** weights.
+- Supports **v2 and v2Pro** weights, with Chinese, English and mixed text.
 - A clean 3-10 second reference clip and matching transcript are still required.
 - v2Pro needs an SV embedding for the full voice-conditioning path. The released converter
   can convert an existing training embedding; it does not extract one from audio.
-- Long text can still lose words. Use short sentences and review important output.
+- For assistant replies, generate and play completed short sentences in order.
+  Long text can still lose words; review important output.
 - [Performance reports](docs/PERFORMANCE.md) record hardware, models and repeated measurements.
 - Models are not bundled or rehosted. Only use voices and recordings you have permission to use.
+
+The service has no built-in authentication. Keep it on localhost or put an authenticated
+proxy in front of it; [deployment](docs/DEPLOYMENT.md) covers network access.
 
 ## Help and Contribute
 

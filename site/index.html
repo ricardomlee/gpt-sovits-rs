@@ -45,9 +45,8 @@
         <audio controls preload="metadata" aria-label="播放 Sun 中文合成音频" src="audio/sun-zh.wav"></audio>
         <a class="download" href="audio/sun-zh.wav" download>下载 WAV</a>
       </article>
-      <p class="note">两段均由本地 Sun 音色合成，无后期编辑；这里只提供生成结果，不提供模型、SV 文件或参考录音。
-        Docker 首次体验使用可自行下载的通用模型，并不包含 Sun 音色。
-        样例只展示本次输出，不代表长文不会漏字，也不是与 Python 的速度对比。
+      <p class="note">两段均由本地 Sun 音色合成，无后期编辑。Sun 的模型、SV 和参考录音由维护者私下保管；
+        Docker 首次体验使用公开可下载的通用 v2 模型。
         <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/examples/samples/README.md">来源、参数与复现</a></p>
     </section>
 
@@ -67,7 +66,7 @@
       <dl>
         <div><dt>适合</dt><dd>已有 v2 / v2Pro 模型，希望在本机长期运行一个 HTTP 语音服务。</dd></div>
         <div><dt>仍需准备</dt><dd>清晰参考录音和准确转写。v2Pro 完整音色条件还需要 SV embedding。</dd></div>
-        <div><dt>已知边界</dt><dd>不负责训练，不兼容所有新版模型；长文仍可能漏字，建议按短句生成和播放。</dd></div>
+        <div><dt>使用建议</dt><dd>训练使用上游 GPT-SoVITS。长文本可能漏读，建议按完整短句生成和播放，重要内容试听确认。</dd></div>
       </dl>
     </section>
   </main>

@@ -1,6 +1,5 @@
 # Development
 
-See [version scope](README.md) before comparing a source build with a release.
 The root package contains the inference binary and the Rust weight converter.
 The HTTP command-line client builds separately under `client/`.
 
@@ -103,6 +102,11 @@ Documentation tests check local Markdown link paths, JSON examples, Bash syntax
 and documented CLI flags; the Rust API example is compiled as a no-run doctest.
 These checks do not execute deployment snippets or verify external URLs.
 
+Keep CLI, HTTP fields, defaults and model-format documentation in the same PR as
+their implementation. Put a procedure in one guide and link to it from other pages.
+Use Mermaid fences for diagrams so changes remain reviewable alongside the code.
+Keep historical measurements and release notes tied to their original versions.
+
 ## HTTP Client
 
 The standalone client has its own manifest and lockfile, so installing it does not
@@ -191,5 +195,5 @@ GPT/SoVITS stay F32. Half-precision and cuda-oxide experiments are archived in t
 
 Follow [release acceptance](RELEASE_ACCEPTANCE.md), including the local GPU report.
 Check `cargo run --quiet --bin gpt-sovits -- --version` explicitly: the root package defines two binaries.
-Update documentation with behavior changes and identify the version introducing each feature.
+Update affected usage examples and version-specific compatibility notes.
 Do not change pinned first-run images until the new artifacts are published and verified.

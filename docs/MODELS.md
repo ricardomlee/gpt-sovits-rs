@@ -73,7 +73,7 @@ docker run --rm \
   -v "$PWD/models:/models" \
   -v "/path/to/source-models:/source:ro" \
   --entrypoint gpt-sovits-convert \
-  ghcr.io/ricardomlee/gpt-sovits-rs:1.2.1 \
+  ghcr.io/ricardomlee/gpt-sovits-rs:1.3.1 \
   sovits /source/gsv-v2final-pretrained/s2G2333k.pth /models/sovits-model.safetensors
 ```
 
@@ -154,7 +154,7 @@ gpt-sovits-convert sv \
 不提供 `sv_embedding` 时，v2Pro 仍可运行，但会使用零 SV embedding，音色相似度通常不如官方完整路径。
 
 转换器读取已有训练 SV 文件，不会从新参考音频提取 SV。更换参考音频时应使用与之匹配的
-embedding；1.2.2 需要用户提供匹配的 embedding 文件。
+embedding。参考录音和 embedding 一起放在音色目录，便于核对和迁移。
 
 自训练音色使用 3 到 10 秒的清晰参考音频及准确转写。可先用 ASR 转写，再人工核对。
 

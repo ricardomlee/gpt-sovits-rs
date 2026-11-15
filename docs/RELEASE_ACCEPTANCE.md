@@ -80,7 +80,7 @@ Build the Rust capture/comparison tool (curl 7.76+ is its HTTP transport):
 ```bash
 cargo build --locked --example speech_regression
 target/debug/examples/speech_regression capture \
-  --url http://127.0.0.1:19881 --voice sun --label 'v1.3.0 baseline; image sha256:...' \
+  --url http://127.0.0.1:19881 --voice sun --label 'published baseline; version ...; image sha256:...' \
   --output-dir /tmp/tts-baseline --repeats 3
 # Replace only the isolated service with the candidate, then:
 target/debug/examples/speech_regression capture \
@@ -147,14 +147,13 @@ and the original thresholds when investigating a regression.
 ## Upgrade and Rollback
 
 In the isolated deployment, exercise `last published -> candidate -> last published`
-(currently `1.3.0 -> candidate -> 1.3.0`) with identical
-read-only model/voice mounts. At each stage check `/health`, `/status`, `/voices`,
+with identical read-only model/voice mounts. At each stage check `/health`, `/status`, `/voices`,
 and real audio. Record the image ID and version, then compare SHA-256 manifests of
 models, the voice JSON, reference recording, and SV embedding before and after.
 Use a distinct container name and loopback-only spare port. Never run the production
 Compose file unchanged for this exercise: it has a fixed production container name.
 
-The 1.2.1 standalone binary defaults to loopback. LAN callers must explicitly select
+Standalone binaries default to loopback. LAN callers must explicitly select
 `--host 0.0.0.0` or `GPT_SOVITS_HOST=0.0.0.0`. Docker's environment already does this;
 host port exposure is separate. The server still has no built-in authentication.
 
@@ -164,7 +163,7 @@ host port exposure is separate. The server still has no built-in authentication.
 2. Match the root and client package versions in both manifests and lockfiles, the tag, and release notes.
    Release preflight checks metadata before any binary/image publishing job starts.
 3. Use absolute HTTPS links in release notes. Pin repository documentation links to
-   the release tag, for example `https://github.com/ricardomlee/gpt-sovits-rs/blob/v1.3.0/docs/RELEASE_ACCEPTANCE.md`.
+   the release tag, for example `https://github.com/ricardomlee/gpt-sovits-rs/blob/v1.3.1/docs/RELEASE_ACCEPTANCE.md`.
    The workflow copies the Markdown body verbatim; relative paths lose the source
    file's directory context on a Release page. After publication, open each link
    from the actual Release page, not just from the repository Markdown preview.

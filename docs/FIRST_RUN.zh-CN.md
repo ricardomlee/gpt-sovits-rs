@@ -8,8 +8,8 @@
 
 - Linux x86_64、Docker Engine、Compose v2、Bash、curl，以及 sha256sum 或 shasum。
 - 至少 6 GiB 可用磁盘、4 GiB 可用内存。模型源文件下载约 1.1 GB，另需下载镜像。
-- 能访问 GitHub、GHCR、Hugging Face。运行前阅读[下载清单](../examples/first-run/downloads.txt)
-  和[准备脚本](../examples/first-run/prepare.sh)。运行后会从上游下载，不会把模型放入本仓库。
+- 能访问 GitHub、GHCR、Hugging Face。模型从上游下载到专用 demo 目录，
+  详情见[下载清单](../examples/first-run/downloads.txt)和[准备脚本](../examples/first-run/prepare.sh)。
 - macOS 使用[原生二进制](DEPLOYMENT.md#binary)；ARM Linux 使用[源码构建](DEVELOPMENT.md)。
 
 ## 跑出第一段音频
@@ -50,7 +50,7 @@ curl --fail-with-body --max-time 300 http://127.0.0.1:9881/tts \
 | 9881 被占用 | 启动前 `export DEMO_PORT=9882`，同时把 curl URL 改成 9882 |
 | 启动超时 / 容器退出 | 在 demo 目录执行 `docker compose logs --tail 100`、`docker compose ps -a`；检查内存和 Docker 分配的资源 |
 | curl 返回非 2xx | 先查日志；`--fail-with-body` 会报错，此时输出文件可能是 JSON 错误，不能当 WAV 播放 |
-| 声音不理想 / 吞字 | 先试短句；参考音频、转写和模型会影响效果，分句并不能保证不漏字 |
+| 声音不理想 / 吞字 | 先试短句，核对参考音频和转写；保留失败请求与音频以便排查 |
 
 prepare 可在专用 demo 目录重试，但会重新转换模型并恢复 demo 配置。
 自定义音色请迁移到[正式部署流程](DEPLOYMENT.md)，不要修改 demo 后再次 prepare。
@@ -61,7 +61,7 @@ prepare 可在专用 demo 目录重试，但会重新转换模型并恢复 demo 
 
 通用模型需要你有权使用的 3-10 秒参考录音及准确转写；微调模型还需要替换兼容的
 GPT/SoVITS 权重。v2Pro 请同时准备训练预处理产生的 SV embedding，不能只换权重而漏掉它。
-详情见[模型文档](MODELS.md)。本流程不会下载任何维护者的私人模型或角色声音。
+详情见[模型文档](MODELS.md)。
 
 ## 接入和反馈
 

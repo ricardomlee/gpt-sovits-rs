@@ -27,7 +27,7 @@ cp .env.example .env
 
 ```env
 GPT_SOVITS_PORT=127.0.0.1:9880
-GPT_SOVITS_IMAGE_TAG=1.3.0
+GPT_SOVITS_IMAGE_TAG=1.3.1
 ```
 
 路径按配置位置解析：
@@ -80,7 +80,7 @@ docker compose -f compose.cpu.yml up -d --wait --wait-timeout 900
 docker compose -f compose.cpu.yml ps
 ```
 
-CPU 固定版本镜像为 `ghcr.io/ricardomlee/gpt-sovits-rs:1.3.0`。
+CPU 固定版本镜像为 `ghcr.io/ricardomlee/gpt-sovits-rs:1.3.1`。
 
 ## CUDA
 
@@ -88,10 +88,10 @@ CPU 固定版本镜像为 `ghcr.io/ricardomlee/gpt-sovits-rs:1.3.0`。
 里设置 `CUDA_IMAGE_TAG`：
 
 ```text
-RTX 20: 1.3.0-cuda-sm75
-RTX 30: 1.3.0-cuda-sm86
-RTX 40: 1.3.0-cuda-sm89
-H100:   1.3.0-cuda-sm90
+RTX 20: 1.3.1-cuda-sm75
+RTX 30: 1.3.1-cuda-sm86
+RTX 40: 1.3.1-cuda-sm89
+H100:   1.3.1-cuda-sm90
 ```
 
 ```bash
@@ -117,27 +117,29 @@ CUDA_IMAGE_TAG=local-cuda-sm80 docker compose -f compose.cuda.yml \
 
 [Release](https://github.com/ricardomlee/gpt-sovits-rs/releases/latest) 中的 Linux x86_64 包携带 `libsoxr` 和 `libmp3lame`。
 干净运行环境的验收使用 Ubuntu 24.04，安装系统运行库 `libstdc++6` 和 `libgomp1`，无需 Python 或 Rust 工具链。
-1.3.0 的发布包还携带 MP3 编码所需的 `libmp3lame`，Opus 编码器编入程序。
+Opus 编码器编入程序。
 Docker 镜像包含相同的编码能力。第三方库说明见 [Audio Codec Notices](../THIRD_PARTY.md)。
 
 | 程序 | 用途 |
 | --- | --- |
 | `gpt-sovits` | 本机推理或常驻 HTTP 服务 |
 | `gpt-sovits-convert` | 模型和 SV 文件转换 |
-| `gpt-sovits-client`（1.2.2 起） | 调用已有 HTTP 服务，适用于脚本和 Agent |
+| `gpt-sovits-client` | 可选的 HTTP 命令行客户端，适用于脚本和 command provider |
 
-以下使用 1.3.0 包演示服务启动；客户端用法见 [HTTP 客户端](../client/README.md)。
+从 Release 下载对应平台的压缩包和 `SHA256SUMS`。以下用 Linux x86_64 包启动服务；
+客户端用法见 [HTTP 客户端](../client/README.md)。
 
 ```bash
-tar -xzf gpt-sovits-1.3.0-linux-x86_64.tar.gz
-cd gpt-sovits-1.3.0-linux-x86_64
+sha256sum --check SHA256SUMS --ignore-missing
+tar -xzf gpt-sovits-1.3.1-linux-x86_64.tar.gz
+cd gpt-sovits-1.3.1-linux-x86_64
 ./gpt-sovits-convert --version
 ./gpt-sovits --models-dir /path/to/models \
   --voices-dir /path/to/voices \
   --http --port 9880
 ```
 
-macOS 包同时携带对应的 `libsoxr.0.dylib`；1.3.0 还包含 `libmp3lame.0.dylib`。首次运行若被 Gatekeeper 阻止，需要在
+macOS 包携带 `libsoxr.0.dylib` 和 `libmp3lame.0.dylib`。首次运行若被 Gatekeeper 阻止，需要在
 系统设置中确认允许该二进制。
 
 已发布的 Linux/macOS 二进制是 CPU 构建；macOS 构建未启用 Metal，`--device mps`
@@ -161,15 +163,11 @@ curl --fail-with-body http://127.0.0.1:9880/tts \
 
 ## 监听地址与版本兼容
 
-从 `1.2.1` 开始，独立二进制默认监听 `127.0.0.1`。从 `1.2.0` 升级且需要局域网
-访问时，必须显式配置监听地址，否则其他机器将无法连接。可以用 `--host 0.0.0.0` 或
+独立二进制默认监听 `127.0.0.1`。局域网访问时用 `--host 0.0.0.0` 或
 `GPT_SOVITS_HOST=0.0.0.0` 指定监听地址；命令行优先于环境变量。IPv6 使用
 `--host ::1` 或 `--host ::`，不带方括号和端口，端口单独通过 `--port` 设置。
 
 Dockerfile 和 Compose 都设置 `GPT_SOVITS_HOST=0.0.0.0`，保证 Docker 的端口转发可用。
-已发布的 `1.2.0` 镜像会忽略该变量，本身就监听所有接口，因此同一份 Compose 也能运行
-固定版本 `1.2.0`。不要给 `1.2.0` 添加 `--host`，该版本尚不支持这个参数。
-
 仓库 Compose 的默认端口映射是所有宿主机接口；上面的 `127.0.0.1:9880` 设置将其限制为本机。
 跨机器访问时配置宿主机绑定地址，并通过防火墙或带认证的反向代理控制访问；服务本身无内置认证。
 
@@ -254,7 +252,7 @@ HTTP 默认限制每条合成文本最多 10,000 个 Unicode 字符、每个 bat
 `.env` 中通过 `MAX_TEXT_CHARS` 和 `MAX_BATCH_ITEMS` 调整；长期运行的个人服务建议保留
 上限，避免误发的大请求长时间占用 GPU 队列。
 
-请求等待串行 GPU 槽位的默认超时是 120 秒，可通过 `QUEUE_TIMEOUT_SECS` 调整。超时返回
+请求等待串行推理槽位的默认超时是 120 秒，可通过 `QUEUE_TIMEOUT_SECS` 调整。超时返回
 HTTP 503，只终止还未开始的排队请求，不会中断已经开始的模型加载或推理。
 
 常见问题：
