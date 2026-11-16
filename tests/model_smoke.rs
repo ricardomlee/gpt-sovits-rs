@@ -19,6 +19,83 @@ fn optional_path(var: &str) -> Option<PathBuf> {
 }
 
 #[test]
+fn debug_capture_preserves_seeded_speech_when_enabled() {
+    if std::env::var("GPT_SOVITS_RUN_MODEL_SMOKE").as_deref() != Ok("1") {
+        return;
+    }
+    let models = optional_path("GPT_SOVITS_MODELS_DIR").unwrap_or_else(|| "models".into());
+    let voices = optional_path("GPT_SOVITS_VOICES_DIR").unwrap_or_else(|| "voices".into());
+    let models = models.canonicalize().unwrap();
+    let voices = voices.canonicalize().unwrap();
+    let voice = std::env::var("GPT_SOVITS_SMOKE_VOICE").unwrap_or_else(|_| "demo".into());
+    let device = std::env::var("GPT_SOVITS_SMOKE_DEVICE").unwrap_or_else(|_| "auto".into());
+    let directory = tempfile::tempdir().unwrap();
+    let run = |debug: bool| {
+        let output = directory
+            .path()
+            .join(if debug { "trace.wav" } else { "normal.wav" });
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_gpt-sovits"));
+        command
+            .current_dir(directory.path())
+            .env_remove("SOVITS_DEBUG")
+            .args([
+                "--mode",
+                "cuda-graph",
+                "--device",
+                &device,
+                "--voice",
+                &voice,
+            ])
+            .arg("--models-dir")
+            .arg(&models)
+            .arg("--voices-dir")
+            .arg(&voices)
+            .args(["--seed", "42", "--speed", "1.25", "--max-tokens", "150"])
+            .args([
+                "--text",
+                "这是固定种子的合成测试，声音和语速都应该保持一致。",
+            ])
+            .arg("--output")
+            .arg(&output);
+        for (variable, flag) in [
+            ("GPT_SOVITS_GPT_MODEL", "--gpt-model"),
+            ("GPT_SOVITS_SOVITS_MODEL", "--sovits-model"),
+            ("GPT_SOVITS_BERT_MODEL", "--bert-model"),
+            ("GPT_SOVITS_HUBERT_MODEL", "--hubert-model"),
+        ] {
+            if let Some(path) = optional_path(variable) {
+                command.arg(flag).arg(path.canonicalize().unwrap());
+            }
+        }
+        if debug {
+            command.env("SOVITS_DEBUG", "1");
+        }
+        let result = command.output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let audio = gpt_sovits_rs::AudioBuffer::load(&output).unwrap();
+        let metrics = AudioQualityMetrics::from_audio(&audio);
+        assert!(validate_audio_quality(&metrics, &AudioQualityThresholds::default()).is_empty());
+        audio
+    };
+    let normal = run(false);
+    let traced = run(true);
+    assert_eq!(normal.sample_rate, traced.sample_rate);
+    assert!(
+        normal.samples == traced.samples,
+        "debug capture changed seeded speech"
+    );
+    assert!(directory
+        .path()
+        .join("sovits_debug_dec_input.txt")
+        .is_file());
+    assert!(directory.path().join("sovits_debug_audio.txt").is_file());
+}
+
+#[test]
 fn real_model_inference_smoke_when_enabled() {
     if std::env::var("GPT_SOVITS_RUN_MODEL_SMOKE").as_deref() != Ok("1") {
         eprintln!("skipping real model smoke; set GPT_SOVITS_RUN_MODEL_SMOKE=1 to enable");

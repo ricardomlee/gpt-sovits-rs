@@ -11,6 +11,7 @@ use crate::utils::sampling::SamplingRng;
 use crate::utils::{load_safetensors, Linear, StateDict};
 use crate::{Error, Result};
 use candle_core::{DType, Device, Tensor};
+use std::path::Path;
 use std::time::Instant;
 
 use crate::models::sovits_decoder::Decoder;
@@ -87,37 +88,6 @@ impl Quantizer {
         let result = stacked.reshape((batch, seq_len, self.dimension))?;
         Ok(result.transpose(1, 2)?) // [batch, dimension, seq_len]
     }
-}
-
-/// Build sequence mask from lengths
-/// Returns [batch, 1, time] where positions < length are 1 and >= length are 0
-fn build_sequence_mask(
-    lengths: &[i64],
-    time: usize,
-    batch: usize,
-    device: &Device,
-) -> Result<Tensor> {
-    let indices: Vec<i64> = (0..time as i64).collect();
-    let idx_tensor = Tensor::from_vec(indices, (1, 1, time), device)?;
-    let len_tensor = Tensor::from_vec(lengths.to_vec(), (batch, 1, 1), device)?;
-    let lengths_b = len_tensor.broadcast_as((batch, 1, time))?;
-    // mask = idx < length — always F32; caller casts to model dtype as needed
-    let mask = idx_tensor.broadcast_lt(&lengths_b)?;
-    mask.to_dtype(DType::F32)
-        .map_err(|e| crate::Error::InferenceError(e.to_string()))
-}
-
-/// Build sequence mask with specified dtype
-fn build_sequence_mask_typed(
-    lengths: &[i64],
-    time: usize,
-    batch: usize,
-    device: &Device,
-    dtype: DType,
-) -> Result<Tensor> {
-    let mask = build_sequence_mask(lengths, time, batch, device)?;
-    mask.to_dtype(dtype)
-        .map_err(|e| crate::Error::InferenceError(e.to_string()))
 }
 
 /// Nearest-neighbor 2x upsampling along the time dimension
@@ -329,12 +299,44 @@ impl SoVITSModel {
         noise_scale: f32,
         speed: f32,
     ) -> Result<Vec<f32>> {
+        self.synthesize_internal(
+            semantic_tokens,
+            text_tokens,
+            ref_audio_mel,
+            sv_embedding,
+            noise_scale,
+            speed,
+            None,
+        )
+        .map(|(_, audio)| audio)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn synthesize_internal(
+        &self,
+        semantic_tokens: &[usize],
+        text_tokens: &[usize],
+        ref_audio_mel: Option<&Tensor>,
+        sv_embedding: Option<&Tensor>,
+        noise_scale: f32,
+        speed: f32,
+        trace_dir: Option<&Path>,
+    ) -> Result<(Tensor, Vec<f32>)> {
         let profile_start = Instant::now();
         if semantic_tokens.is_empty() {
             return Err(Error::InferenceError("Empty semantic tokens".to_string()));
         }
         if text_tokens.is_empty() {
             return Err(Error::InferenceError("Empty text tokens".to_string()));
+        }
+
+        let trace_tensor = |name: &str, tensor: &Tensor| match trace_dir {
+            Some(directory) => self.save_tensor(directory, name, tensor),
+            None => Ok(()),
+        };
+        if let Some(directory) = trace_dir {
+            self.save_tokens(directory, "sovits_debug_semantic_tokens", semantic_tokens)?;
+            self.save_tokens(directory, "sovits_debug_text_tokens", text_tokens)?;
         }
 
         // Convert semantic tokens to tensor [1, seq_len]
@@ -347,15 +349,19 @@ impl SoVITSModel {
 
         let ge = self.compute_ge(ref_audio_mel, sv_embedding)?;
         let ge_enc = self.ge_for_enc_p(&ge)?;
+        trace_tensor("sovits_debug_ge", &ge)?;
+        trace_tensor("sovits_debug_ge_enc", &ge_enc)?;
         sync_profile_stage(&self.device)?;
         let ref_enc_ms = profile_start.elapsed().as_millis();
 
         // Decode semantic codes using quantizer
         let stage_start = Instant::now();
         let quantized = self.quantizer.decode(&codes)?;
+        trace_tensor("sovits_debug_quantized", &quantized)?;
 
         // 2x upsampling to match frame rate
         let quantized_up = nearest_upsample_2x(&quantized)?;
+        trace_tensor("sovits_debug_quantized_up", &quantized_up)?;
 
         // Create length tensors
         let y_lengths = vec![quantized_up.dims()[2] as i64];
@@ -374,6 +380,8 @@ impl SoVITSModel {
             &ge_enc,
             speed,
         )?;
+        trace_tensor("sovits_debug_encp_m", &m_p)?;
+        trace_tensor("sovits_debug_encp_logs", &logs_p)?;
         sync_profile_stage(&self.device)?;
         let enc_p_ms = stage_start.elapsed().as_millis();
 
@@ -384,21 +392,27 @@ impl SoVITSModel {
         let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(
             &Tensor::full(noise_scale, m_p.dims(), &self.device)?.to_dtype(m_p.dtype())?,
         )?)?;
+        trace_tensor("sovits_debug_zp", &z_p)?;
         sync_profile_stage(&self.device)?;
         let sample_ms = stage_start.elapsed().as_millis();
 
         // Invert flow transform: z_p → z (with ge conditioning, matching Python)
         let stage_start = Instant::now();
         let z = self.flow.forward(&z_p, &y_mask, Some(&ge), true)?;
+        trace_tensor("sovits_debug_flow_z", &z)?;
 
         // Apply mask
         let z_masked = z.broadcast_mul(&y_mask)?;
+        trace_tensor("sovits_debug_dec_input", &z_masked)?;
         sync_profile_stage(&self.device)?;
         let flow_ms = stage_start.elapsed().as_millis();
 
         // Pass through decoder with full 512-dim ge (matching Python: o = self.dec((z * y_mask), g=ge))
         let stage_start = Instant::now();
         let output = self.decoder.forward(&z_masked, Some(&ge))?;
+        if let Some(directory) = trace_dir {
+            self.save_f32_file(directory, "sovits_debug_audio", &output)?;
+        }
         sync_profile_stage(&self.device)?;
         let decoder_ms = stage_start.elapsed().as_millis();
 
@@ -415,7 +429,7 @@ impl SoVITSModel {
             );
         }
 
-        Ok(output)
+        Ok((z_masked, output))
     }
 
     fn compute_ge(
@@ -485,54 +499,15 @@ impl SoVITSModel {
         ref_audio_mel: Option<&Tensor>,
         noise_scale: f32,
     ) -> Result<(Tensor, Vec<f32>)> {
-        if semantic_tokens.is_empty() {
-            return Err(Error::InferenceError("Empty semantic tokens".to_string()));
-        }
-        if text_tokens.is_empty() {
-            return Err(Error::InferenceError("Empty text tokens".to_string()));
-        }
-
-        let codes_vec: Vec<i64> = semantic_tokens.iter().map(|&x| x as i64).collect();
-        let codes = Tensor::from_vec(codes_vec, (1, semantic_tokens.len()), &self.device)?;
-
-        let text_vec: Vec<i64> = text_tokens.iter().map(|&x| x as i64).collect();
-        let text = Tensor::from_vec(text_vec, (1, text_tokens.len()), &self.device)?;
-
-        let ge = self.compute_ge(ref_audio_mel, None)?;
-        let ge_enc = self.ge_for_enc_p(&ge)?;
-
-        let quantized = self.quantizer.decode(&codes)?;
-        let quantized_up = nearest_upsample_2x(&quantized)?;
-
-        let y_lengths = vec![quantized_up.dims()[2] as i64];
-        let text_lengths = vec![text.dims()[1] as i64];
-
-        let time_len = quantized_up.dims()[2];
-        let y_mask = build_sequence_mask_typed(&y_lengths, time_len, 1, &self.device, self.dtype)?;
-
-        let (_y, m_p, logs_p, _y_mask_enc) = self.enc_p.forward(
-            &quantized_up,
-            &y_lengths,
-            &text,
-            &text_lengths,
-            &ge_enc,
+        self.synthesize_internal(
+            semantic_tokens,
+            text_tokens,
+            ref_audio_mel,
+            None,
+            noise_scale,
             1.0,
-        )?;
-
-        // enc_p.forward() already clamps logs to [-5.0, 2.0]
-        let noise = self.sample_noise(&m_p)?;
-        let logs_exp = logs_p.exp()?;
-        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(
-            &Tensor::full(noise_scale, m_p.dims(), &self.device)?.to_dtype(m_p.dtype())?,
-        )?)?;
-
-        let z = self.flow.forward(&z_p, &y_mask, Some(&ge), true)?;
-        let z_masked = z.broadcast_mul(&y_mask)?;
-
-        let dec_input = z_masked.clone();
-        let output = self.decoder.forward(&z_masked, Some(&ge))?;
-
-        Ok((dec_input, output))
+            None,
+        )
     }
 
     /// Get model device
@@ -593,127 +568,37 @@ impl SoVITSModel {
         ref_audio_mel: Option<&Tensor>,
         noise_scale: f32,
     ) -> Result<()> {
-        let codes_vec: Vec<i64> = semantic_tokens.iter().map(|&x| x as i64).collect();
-        let codes = Tensor::from_vec(codes_vec.clone(), (1, semantic_tokens.len()), &self.device)?;
-
-        let text_vec: Vec<i64> = text_tokens.iter().map(|&x| x as i64).collect();
-        let text = Tensor::from_vec(text_vec.clone(), (1, text_tokens.len()), &self.device)?;
-
-        // Save tokens to files for Python comparison
-        {
-            use std::io::Write;
-            if let Ok(mut f) = std::fs::File::create("sovits_debug_semantic_tokens.txt") {
-                writeln!(f, "{}", codes_vec.len()).ok();
-                for t in &codes_vec {
-                    writeln!(f, "{}", t).ok();
-                }
-            }
-            if let Ok(mut f) = std::fs::File::create("sovits_debug_text_tokens.txt") {
-                writeln!(f, "{}", text_vec.len()).ok();
-                for t in &text_vec {
-                    writeln!(f, "{}", t).ok();
-                }
-            }
-        }
-
-        let ge = self.compute_ge(ref_audio_mel, None)?;
-        let ge_enc = self.ge_for_enc_p(&ge)?;
-        self.save_tensor("sovits_debug_ge", &ge)?;
-        self.save_tensor("sovits_debug_ge_enc", &ge_enc)?;
-
-        // Quantizer
-        let quantized = self.quantizer.decode(&codes)?;
-        self.save_tensor("sovits_debug_quantized", &quantized)?;
-
-        // Upsample
-        let quantized_up = nearest_upsample_2x(&quantized)?;
-        self.save_tensor("sovits_debug_quantized_up", &quantized_up)?;
-
-        let y_lengths = vec![quantized_up.dims()[2] as i64];
-        let text_lengths = vec![text.dims()[1] as i64];
-        let time_len = quantized_up.dims()[2];
-        let y_mask = build_sequence_mask_typed(&y_lengths, time_len, 1, &self.device, self.dtype)?;
-
-        // enc_p
-        let (_y, m_p, logs_p, _y_mask_enc) = self.enc_p.forward(
-            &quantized_up,
-            &y_lengths,
-            &text,
-            &text_lengths,
-            &ge_enc,
+        self.synthesize_internal(
+            semantic_tokens,
+            text_tokens,
+            ref_audio_mel,
+            None,
+            noise_scale,
             1.0,
-        )?;
-        self.save_tensor("sovits_debug_encp_m", &m_p)?;
-        self.save_tensor("sovits_debug_encp_logs", &logs_p)?;
-
-        // Sampling - enc_p.forward() already clamps logs to [-5.0, 2.0]
-        let noise = self.sample_noise(&m_p)?;
-        let logs_exp = logs_p.exp()?;
-        let z_p = m_p.add(&noise.broadcast_mul(&logs_exp)?.broadcast_mul(
-            &Tensor::full(noise_scale, m_p.dims(), &self.device)?.to_dtype(m_p.dtype())?,
-        )?)?;
-        self.save_tensor("sovits_debug_zp", &z_p)?;
-
-        // Flow inverse
-        let z = self.flow.forward(&z_p, &y_mask, Some(&ge), true)?;
-        self.save_tensor("sovits_debug_flow_z", &z)?;
-        let z_masked = z.broadcast_mul(&y_mask)?;
-        self.save_tensor("sovits_debug_dec_input", &z_masked)?;
-
-        // Decoder
-        let output = self.decoder.forward(&z_masked, Some(&ge))?;
-        self.save_f32_file("sovits_debug_audio", &output);
-
-        // Print stats
-        for name in &[
-            "quantized",
-            "quantized_up",
-            "encp_m",
-            "encp_logs",
-            "zp",
-            "flow_z",
-            "dec_input",
-        ] {
-            let key = format!("sovits_debug_{}", name);
-            let path = format!("{}.txt", key);
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let mut lines = content.lines();
-                if let Some(dims_line) = lines.next() {
-                    let dims: Vec<usize> = dims_line
-                        .split(',')
-                        .filter_map(|s| s.parse().ok())
-                        .collect();
-                    let data: Vec<f32> = lines.filter_map(|l| l.trim().parse().ok()).collect();
-                    if !data.is_empty() {
-                        let mean = data.iter().sum::<f32>() / data.len() as f32;
-                        let sq_sum = data.iter().map(|v| v * v).sum::<f32>();
-                        let std = (sq_sum / data.len() as f32 - mean * mean).sqrt();
-                        let min = data.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-                        let max = data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-                        let mean_f = mean as f64;
-                        let std_f = std as f64;
-                        let min_f = min as f64;
-                        let max_f = max as f64;
-                        tracing::debug!(
-                            "  {}: {:?} mean={:.4} std={:.4} min={:.4} max={:.4}",
-                            name,
-                            dims,
-                            mean_f,
-                            std_f,
-                            min_f,
-                            max_f
-                        );
-                    }
-                }
-            }
-        }
-
-        Ok(())
+            Some(Path::new(".")),
+        )
+        .map(|_| ())
     }
 
-    fn save_tensor(&self, name: &str, t: &Tensor) -> Result<()> {
+    fn save_tensor(&self, directory: &Path, name: &str, t: &Tensor) -> Result<()> {
         let flat: Vec<f32> = t.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?;
         let dims = t.dims();
+        if !flat.is_empty() {
+            let mean = flat.iter().sum::<f32>() / flat.len() as f32;
+            let variance =
+                flat.iter().map(|value| (value - mean).powi(2)).sum::<f32>() / flat.len() as f32;
+            let min = flat.iter().copied().fold(f32::INFINITY, f32::min);
+            let max = flat.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            tracing::debug!(
+                name,
+                ?dims,
+                mean,
+                std = variance.sqrt(),
+                min,
+                max,
+                "SoVITS intermediate"
+            );
+        }
         let header = dims
             .iter()
             .map(|d| d.to_string())
@@ -724,17 +609,37 @@ impl SoVITSModel {
             .map(|v| format!("{:.10}", v))
             .collect::<Vec<_>>()
             .join("\n");
-        std::fs::write(format!("{}.txt", name), format!("{}\n{}\n", header, data))
-            .map_err(|e| crate::Error::InferenceError(format!("Failed to save {}: {}", name, e)))
+        std::fs::write(
+            directory.join(format!("{}.txt", name)),
+            format!("{}\n{}\n", header, data),
+        )
+        .map_err(|e| crate::Error::InferenceError(format!("Failed to save {}: {}", name, e)))
     }
 
-    fn save_f32_file(&self, name: &str, data: &[f32]) {
+    fn save_tokens(&self, directory: &Path, name: &str, tokens: &[usize]) -> Result<()> {
+        let data = tokens
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(
+            directory.join(format!("{name}.txt")),
+            format!("{}\n{data}\n", tokens.len()),
+        )
+        .map_err(|e| Error::InferenceError(format!("Failed to save {name}: {e}")))
+    }
+
+    fn save_f32_file(&self, directory: &Path, name: &str, data: &[f32]) -> Result<()> {
         let content = data
             .iter()
             .map(|v| format!("{:.10}", v))
             .collect::<Vec<_>>()
             .join("\n");
-        std::fs::write(format!("{}.txt", name), format!("{}\n", content)).unwrap();
+        std::fs::write(
+            directory.join(format!("{}.txt", name)),
+            format!("{}\n", content),
+        )
+        .map_err(|e| Error::InferenceError(format!("Failed to save {name}: {e}")))
     }
 }
 
@@ -753,103 +658,4 @@ impl crate::models::Model for SoVITSModel {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn check_upsampling(device: &Device) -> Result<()> {
-        for (batch, channels, time) in [
-            (1, 1, 1),
-            (1, 2, 3),
-            (2, 3, 5),
-            (1, 768, 63),
-            (1, 768, 64),
-            (2, 768, 65),
-            (0, 2, 3),
-            (1, 0, 3),
-            (1, 2, 0),
-        ] {
-            for dtype in [DType::F32, DType::F16, DType::BF16] {
-                let source =
-                    Tensor::arange(0f32, ((batch + 1) * channels * time) as f32, &Device::Cpu)?
-                        .affine(1.0 / 256.0, -1.0)?
-                        .to_dtype(dtype)?
-                        .reshape((batch + 1, time, channels))?;
-                let values = source
-                    .narrow(0, 1, batch)?
-                    .transpose(1, 2)?
-                    .to_dtype(DType::F32)?
-                    .flatten_all()?
-                    .to_vec1::<f32>()?;
-                let expected: Vec<f32> = values.iter().flat_map(|&value| [value, value]).collect();
-                let input = source
-                    .to_device(device)?
-                    .narrow(0, 1, batch)?
-                    .transpose(1, 2)?;
-                for contiguous in [false, true] {
-                    let input = if contiguous {
-                        input.contiguous()?
-                    } else {
-                        input.clone()
-                    };
-                    let output = nearest_upsample_2x(&input)?;
-                    assert_eq!(output.dims(), &[batch, channels, time * 2]);
-                    assert_eq!(output.dtype(), dtype);
-                    assert!(output.device().same_device(device));
-                    assert_eq!(
-                        output
-                            .to_device(&Device::Cpu)?
-                            .to_dtype(DType::F32)?
-                            .flatten_all()?
-                            .to_vec1::<f32>()?,
-                        expected,
-                        "shape={:?}, dtype={dtype:?}, contiguous={contiguous}",
-                        input.dims()
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn nearest_upsample_preserves_layout_values_and_dtype() -> Result<()> {
-        check_upsampling(&Device::Cpu)
-    }
-
-    #[cfg(feature = "cuda")]
-    #[test]
-    #[ignore = "requires a CUDA GPU"]
-    fn nearest_upsample_cuda_preserves_layout_values_and_dtype() -> Result<()> {
-        check_upsampling(&Device::new_cuda(0)?)
-    }
-
-    #[test]
-    fn nearest_upsample_repeats_each_frame() -> Result<()> {
-        let input = Tensor::new(&[[[1f32, 2., 3.], [4., 5., 6.]]], &Device::Cpu)?;
-        let output = nearest_upsample_2x(&input)?;
-
-        assert_eq!(output.dims(), &[1, 2, 6]);
-        assert_eq!(output.dtype(), DType::F32);
-        assert_eq!(
-            output.flatten_all()?.to_vec1::<f32>()?,
-            [1., 1., 2., 2., 3., 3., 4., 4., 5., 5., 6., 6.]
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn quantizer_decodes_codes_without_changing_layout() -> Result<()> {
-        let device = Device::Cpu;
-        let codebook = Tensor::new(&[[1f32, 2.], [3., 4.], [5., 6.]], &device)?;
-        let quantizer = Quantizer::new(2, 3, codebook);
-        let codes = Tensor::new(&[[2i64, 0], [1, 2]], &device)?;
-
-        let output = quantizer.decode(&codes)?;
-        assert_eq!(output.dims(), &[2, 2, 2]);
-        assert_eq!(
-            output.flatten_all()?.to_vec1::<f32>()?,
-            [5., 1., 6., 2., 3., 5., 4., 6.]
-        );
-        Ok(())
-    }
-}
+mod tests;

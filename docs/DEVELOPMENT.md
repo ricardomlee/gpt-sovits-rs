@@ -208,8 +208,11 @@ cargo run --locked --profile dev-gpu --features cuda --bin gpt-sovits -- \
   --voice demo --text '你好，这是一次测试。' --output /tmp/demo.wav
 ```
 
-Set `SOVITS_DEBUG=1` to dump intermediate tensors in the working directory, or
-`GPT_SOVITS_SYNC_PROFILE=1` with CLI `--verbose` for synchronized stage analysis.
+With `--mode cuda-graph` (or CUDA `auto`), `SOVITS_DEBUG=1` saves intermediate
+tensors from the returned synthesis pass in the working directory. Captures use
+the active SV, speed and sampled latent. File writes are synchronous; failures
+return inference errors. Set `GPT_SOVITS_SYNC_PROFILE=1` with CLI `--verbose`
+for synchronized stage analysis.
 Disable both during latency measurements; debug output can also contain private data.
 GPT/SoVITS stay F32. The performance guide links half-precision history and the
 independent cuda-oxide experiment.

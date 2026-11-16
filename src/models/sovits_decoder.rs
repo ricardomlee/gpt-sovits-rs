@@ -6,6 +6,7 @@ use crate::Result;
 use candle_core::backend::BackendStorage;
 use candle_core::{cpu_backend, CpuStorage, CustomOp1, DType, Device, Layout, Shape, Tensor};
 use half::{bf16, f16};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 struct FusedLeakyRelu {
@@ -359,10 +360,24 @@ impl Decoder {
 
     /// Generate waveform from latent features
     pub fn forward(&self, x: &Tensor, g: Option<&Tensor>) -> Result<Vec<f32>> {
+        self.forward_with_trace(x, g, None)
+    }
+
+    fn forward_with_trace(
+        &self,
+        x: &Tensor,
+        g: Option<&Tensor>,
+        trace_dir: Option<&Path>,
+    ) -> Result<Vec<f32>> {
         let profile_start = Instant::now();
         let device = x.device().clone();
+        let trace_tensor = |name: &str, tensor: &Tensor| match trace_dir {
+            Some(directory) => self.save_tensor(directory, name, tensor),
+            None => Ok(()),
+        };
         // x: [batch, channels, time]
         let mut x = self.conv_pre.forward(x)?;
+        trace_tensor("debug_conv_pre", &x)?;
 
         // Add condition if provided
         if let Some(cond) = &self.cond {
@@ -370,6 +385,7 @@ impl Decoder {
                 let g_proj = cond.forward(g)?;
                 // g_proj: [batch, channels, 1] → broadcast across time
                 x = x.broadcast_add(&g_proj)?;
+                trace_tensor("debug_cond", &x)?;
             }
         }
         sync_profile_stage(&device)?;
@@ -380,11 +396,14 @@ impl Decoder {
         // Upsampling and resblocks
         for (i, up) in self.ups.iter().enumerate() {
             // LeakyReLU
-            x = self.leaky_relu(&x, 0.1)?;
+            x = leaky_relu(&x, 0.1)?;
 
             // Upsample using transposed convolution
             let stage_start = Instant::now();
             x = self.upsample_forward(&x, &up.conv, up.upsample_factor)?;
+            if trace_dir.is_some() {
+                trace_tensor(&format!("debug_ups{i}"), &x)?;
+            }
             sync_profile_stage(&device)?;
             upsample_time += stage_start.elapsed();
 
@@ -413,6 +432,9 @@ impl Decoder {
                     .to_dtype(xs.dtype())?;
                     x = xs.broadcast_div(&divisor)?;
                 }
+                if trace_dir.is_some() {
+                    trace_tensor(&format!("debug_resblock{i}"), &x)?;
+                }
             }
             sync_profile_stage(&device)?;
             resblock_time += stage_start.elapsed();
@@ -420,13 +442,15 @@ impl Decoder {
 
         // Final activation (Python uses F.leaky_relu(x) with default slope=0.01)
         let stage_start = Instant::now();
-        x = self.leaky_relu(&x, 0.01)?;
+        x = leaky_relu(&x, 0.01)?;
 
         // Output projection
         x = self.conv_post.forward(&x)?;
+        trace_tensor("debug_post_conv", &x)?;
 
         // Tanh activation
         x = x.tanh()?;
+        trace_tensor("debug_audio", &x)?;
 
         // Convert to Vec<f32> — cast to F32 first since weights may be F16
         let output: Vec<f32> = x.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?;
@@ -445,61 +469,11 @@ impl Decoder {
 
     /// Generate waveform and save intermediate outputs for debugging
     pub fn forward_debug(&self, x: &Tensor, g: Option<&Tensor>) -> Result<Vec<f32>> {
-        let mut x = self.conv_pre.forward(x)?;
-        self.save_tensor("debug_conv_pre", &x)?;
-
-        if let Some(cond) = &self.cond {
-            if let Some(g) = g {
-                let g_proj = cond.forward(g)?;
-                x = x.broadcast_add(&g_proj)?;
-                self.save_tensor("debug_cond", &x)?;
-            }
-        }
-
-        for i in 0..self.ups.len() {
-            x = self.leaky_relu(&x, 0.1)?;
-            let up = &self.ups[i];
-            x = self.upsample_forward(&x, &up.conv, up.upsample_factor)?;
-            self.save_tensor(&format!("debug_ups{}", i), &x)?;
-
-            let resblock_start = i * 3;
-            let resblock_end = (resblock_start + 3).min(self.resblocks.len());
-
-            if resblock_start < self.resblocks.len() {
-                let mut xs_acc: Option<Tensor> = None;
-                for block in &self.resblocks[resblock_start..resblock_end] {
-                    let xs = block.forward(&x)?;
-                    xs_acc = Some(match xs_acc {
-                        Some(acc) => acc.add(&xs)?,
-                        None => xs,
-                    });
-                }
-                if let Some(xs) = xs_acc {
-                    let divisor = Tensor::full(
-                        (resblock_end - resblock_start) as f32,
-                        xs.dims(),
-                        xs.device(),
-                    )?
-                    .to_dtype(xs.dtype())?;
-                    x = xs.broadcast_div(&divisor)?;
-                }
-                self.save_tensor(&format!("debug_resblock{}", i), &x)?;
-            }
-        }
-
-        x = self.leaky_relu(&x, 0.01)?;
-        x = self.conv_post.forward(&x)?;
-        self.save_tensor("debug_post_conv", &x)?;
-        x = x.tanh()?;
-        self.save_tensor("debug_audio", &x)?;
-
-        // Cast to F32 before to_vec1 since weights may be F16
-        let output: Vec<f32> = x.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?;
-        Ok(output)
+        self.forward_with_trace(x, g, Some(Path::new(".")))
     }
 
-    fn save_tensor(&self, name: &str, t: &Tensor) -> Result<()> {
-        let flat: Vec<f32> = t.flatten_all()?.to_vec1()?;
+    fn save_tensor(&self, directory: &Path, name: &str, t: &Tensor) -> Result<()> {
+        let flat: Vec<f32> = t.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?;
         let dims = t.dims();
         let header = format!(
             "{}\n",
@@ -513,12 +487,11 @@ impl Decoder {
             .map(|v| format!("{:.10}", v))
             .collect::<Vec<_>>()
             .join("\n");
-        std::fs::write(format!("{}.txt", name), format!("{}{}\n", header, data))
-            .map_err(|e| crate::Error::InferenceError(format!("Failed to save {}: {}", name, e)))
-    }
-
-    fn leaky_relu(&self, x: &Tensor, slope: f32) -> Result<Tensor> {
-        leaky_relu(x, slope)
+        std::fs::write(
+            directory.join(format!("{}.txt", name)),
+            format!("{}{}\n", header, data),
+        )
+        .map_err(|e| crate::Error::InferenceError(format!("Failed to save {}: {}", name, e)))
     }
 
     fn upsample_forward(
@@ -573,6 +546,12 @@ mod tests {
             let samples = [-2f32, 0., 1., 3.];
             let input = Tensor::new(&[[samples]], &Device::Cpu)?;
             let actual = decoder.forward(&input, None)?;
+            let directory = tempfile::tempdir().unwrap();
+            let traced = decoder.forward_with_trace(&input, None, Some(directory.path()))?;
+            assert_eq!(actual, traced);
+            for name in ["debug_conv_pre", "debug_post_conv", "debug_audio"] {
+                assert!(directory.path().join(format!("{name}.txt")).is_file());
+            }
             assert_eq!(actual.len(), samples.len());
             for (actual, sample) in actual.iter().zip(samples) {
                 let x = sample * 2.0 + bias.unwrap_or(0.0);
