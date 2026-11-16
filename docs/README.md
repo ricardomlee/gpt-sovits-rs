@@ -31,5 +31,5 @@ GPT-SoVITS-RS 将已有音色变成本地 HTTP 语音服务。先跑出声音，
 
 文档随仓库代码维护。使用固定版本时，从[对应 tag](https://github.com/ricardomlee/gpt-sovits-rs/tags)
 进入该版本的文档；变更记录见 [Releases](https://github.com/ricardomlee/gpt-sovits-rs/releases)。
-[历史测量](history/performance-2026-07.md)和 [cuda-oxide 实验](CUDA_OXIDE_EXPERIMENT.md)
-保留当时的环境与结论，当前测量入口在性能指南。
+[历史测量](history/performance-2026-07.md)保留早期数据与环境；
+[cuda-oxide 实验](CUDA_OXIDE_EXPERIMENT.md)单独记录算子探索，当前发布测量入口在性能指南。

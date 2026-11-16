@@ -108,7 +108,7 @@ GPT_SOVITS_SYNC_PROFILE=1 target/release/gpt-sovits \
   --models-dir models --text '你好，这是一次推理分析。' --output /tmp/profile.wav
 ```
 
-旧工具仍可用于局部实验，但有不同测量边界：
+局部实验工具的测量边界：
 
 | 工具 | 用途与限制 |
 | --- | --- |
@@ -117,6 +117,7 @@ GPT_SOVITS_SYNC_PROFILE=1 target/release/gpt-sovits \
 | `inference_bench` | 文本前端、音频及合成张量微基准；CUDA 张量操作异步执行 |
 | `profile_kv_cache` / `e2e_quick` | 开发调试例子，依赖各自硬编码素材 |
 | `conv1d_cpu_bench` | CPU Conv1d 微基准 |
+| `cuda_oxide_candle` | F32 LeakyReLU 融合对照，需先生成实验 PTX；包含分配及主机启动开销 |
 
-[2026 年 7 月记录](history/performance-2026-07.md)及 [cuda-oxide 实验](CUDA_OXIDE_EXPERIMENT.md)
-保存了早期 KV、半精度和 Graph 实验的测量条件与结果。
+[2026 年 7 月记录](history/performance-2026-07.md)保存了早期 KV、半精度和 Graph 数据。
+[cuda-oxide 实验](CUDA_OXIDE_EXPERIMENT.md)记录独立工具链、算子对照和推理热点复测。

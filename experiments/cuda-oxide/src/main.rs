@@ -1,15 +1,20 @@
 use cuda_core::{CudaContext, DeviceBuffer, LaunchConfig};
 use cuda_device::{kernel, thread, DisjointSlice};
-use cuda_host::{cuda_launch, load_kernel_module};
+use cuda_host::cuda_module;
 use std::time::Instant;
 
-#[kernel]
-pub fn fused_leaky_relu(input: &[f32], slope: f32, mut output: DisjointSlice<f32>) {
-    let index = thread::index_1d();
-    let offset = index.get();
-    if let Some(output_value) = output.get_mut(index) {
-        let value = input[offset];
-        *output_value = if value >= 0.0 { value } else { value * slope };
+#[cuda_module]
+mod kernels {
+    use super::*;
+
+    #[kernel]
+    pub fn fused_leaky_relu(input: &[f32], slope: f32, mut output: DisjointSlice<f32>) {
+        let index = thread::index_1d();
+        let offset = index.get();
+        if let Some(output_value) = output.get_mut(index) {
+            let value = input[offset];
+            *output_value = if value >= 0.0 { value } else { value * slope };
+        }
     }
 }
 
@@ -26,46 +31,34 @@ fn main() {
         .collect();
     let input = DeviceBuffer::from_host(&stream, &input_host).expect("copy input");
     let mut output = DeviceBuffer::<f32>::zeroed(&stream, ELEMENTS).expect("allocate output");
-    let module =
-        load_kernel_module(&context, "gpt_sovits_cuda_oxide").expect("load cuda-oxide PTX");
+    let module = kernels::load(&context).expect("load embedded cuda-oxide module");
     let launch_config = LaunchConfig::for_num_elems(ELEMENTS as u32);
+    let mut launch = || {
+        // The 1D launch covers equal input/output lengths; the kernel guards its tail.
+        unsafe { module.fused_leaky_relu(&stream, launch_config, &input, SLOPE, &mut output) }
+            .expect("launch fused_leaky_relu");
+    };
 
     for _ in 0..WARMUP {
-        unsafe {
-            cuda_launch! {
-                kernel: fused_leaky_relu,
-                stream: stream,
-                module: module,
-                config: launch_config,
-                args: [slice(input), SLOPE, slice_mut(output)]
-            }
-            .expect("warmup launch");
-        }
+        launch();
     }
     stream.synchronize().expect("warmup synchronize");
 
     let start = Instant::now();
     for _ in 0..ITERATIONS {
-        unsafe {
-            cuda_launch! {
-                kernel: fused_leaky_relu,
-                stream: stream,
-                module: module,
-                config: launch_config,
-                args: [slice(input), SLOPE, slice_mut(output)]
-            }
-            .expect("benchmark launch");
-        }
+        launch();
     }
     stream.synchronize().expect("benchmark synchronize");
     let elapsed = start.elapsed();
 
     let output_host = output.to_host_vec(&stream).expect("copy output");
+    assert_eq!(output_host.len(), input_host.len());
     let max_error = input_host
         .iter()
         .zip(output_host.iter())
         .map(|(&input, &actual)| {
             let expected = if input >= 0.0 { input } else { input * SLOPE };
+            assert!(actual.is_finite(), "non-finite output");
             (expected - actual).abs()
         })
         .fold(0.0f32, f32::max);
