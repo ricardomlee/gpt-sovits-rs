@@ -105,13 +105,6 @@ dimensions. Run the GPU variant on a CUDA host:
 cargo test --locked --release --features cuda --lib nearest_upsample -- --include-ignored
 ```
 
-The controlled GPT fixture also checks fixed-seed Graph decoding across KV
-capacities and repeated requests with Candle's capture parameter cache:
-
-```bash
-cargo test --locked --release --features cuda --lib cuda_graph_param_cache -- --ignored
-```
-
 ```bash
 cargo fmt --all -- --check
 cargo test --locked
@@ -129,6 +122,8 @@ These checks do not execute deployment snippets or verify external URLs.
 
 Keep CLI, HTTP fields, defaults and model-format documentation in the same PR as
 their implementation. Put a procedure in one guide and link to it from other pages.
+Rust library callers using Candle Tensor/Device types must match this project's
+Candle minor version in Cargo.toml.
 Use Mermaid fences for diagrams so changes remain reviewable alongside the code.
 Keep historical measurements and release notes tied to their original versions.
 
