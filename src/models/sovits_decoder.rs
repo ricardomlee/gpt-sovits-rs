@@ -86,13 +86,23 @@ pub fn leaky_relu(x: &Tensor, slope: f32) -> Result<Tensor> {
 }
 
 fn conv_transpose1d(x: &Tensor, weight: &Tensor, padding: usize, stride: usize) -> Result<Tensor> {
-    if cfg!(feature = "mkl") && x.device().is_cpu() && padding > 0 {
-        // Candle's CPU GEMM + col2im path only accepts zero padding. A padded
+    let use_cropped_convolution = (cfg!(feature = "mkl") && x.device().is_cpu())
+        || (x.device().is_cuda()
+            && x.dtype() == DType::F32
+            && x.is_contiguous()
+            && weight.is_contiguous());
+    if use_cropped_convolution && padding > 0 {
+        // Candle's GEMM + col2im fast paths require zero padding. A padded
         // transposed convolution is exactly the zero-padding result cropped at
         // both ends, so keep the fast path and apply the crop explicitly.
         let full = x.conv_transpose1d(weight, 0, 0, stride, 1, 1)?;
         let full_len = full.dim(2)?;
-        return Ok(full.narrow(2, padding, full_len - 2 * padding)?);
+        let output_len = full_len
+            .checked_sub(padding.saturating_mul(2))
+            .ok_or_else(|| {
+                crate::Error::InferenceError("transposed convolution padding exceeds output".into())
+            })?;
+        return Ok(full.narrow(2, padding, output_len)?);
     }
     Ok(x.conv_transpose1d(weight, padding, 0, stride, 1, 1)?)
 }
@@ -583,6 +593,75 @@ mod tests {
         let input = Tensor::new(&[-2f32, 0., 3.], &Device::Cpu)?;
         let output = leaky_relu(&input, 0.1)?;
         assert_eq!(output.to_vec1::<f32>()?, [-0.2, 0., 3.]);
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn cuda_transposed_conv_crop_matches_padded_convolution() -> Result<()> {
+        let device = Device::new_cuda_with_stream(0)?;
+        assert!(!candle_core::cuda_backend::gemm_reduced_precision_f32());
+        for (batch, c_in, c_out, length, kernel, stride, padding) in [
+            (1, 2, 3, 5, 4, 2, 1),
+            (2, 3, 4, 7, 7, 3, 2),
+            (1, 512, 256, 7, 16, 10, 3),
+            (1, 256, 128, 11, 16, 8, 4),
+            (1, 128, 64, 13, 8, 2, 3),
+            (1, 4, 2, 9, 2, 2, 0),
+        ] {
+            let input = Tensor::arange(0f32, (batch * c_in * length) as f32, &Device::Cpu)?
+                .sin()?
+                .affine(0.1, 0.0)?
+                .reshape((batch, c_in, length))?
+                .to_device(&device)?;
+            let weight = Tensor::arange(0f32, (c_in * c_out * kernel) as f32, &Device::Cpu)?
+                .cos()?
+                .affine(0.05, 0.0)?
+                .reshape((c_in, c_out, kernel))?
+                .to_device(&device)?;
+            for (input, weight) in [
+                (input.clone(), weight.clone()),
+                (
+                    Tensor::cat(&[&input, &input], 0)?.narrow(0, batch, batch)?,
+                    Tensor::cat(&[&weight, &weight], 0)?.narrow(0, c_in, c_in)?,
+                ),
+                (input.narrow(2, 1, length - 1)?, weight.clone()),
+                (
+                    input.clone(),
+                    weight.transpose(1, 2)?.contiguous()?.transpose(1, 2)?,
+                ),
+            ] {
+                let expected = input.conv_transpose1d(&weight, padding, 0, stride, 1, 1);
+                let actual = conv_transpose1d(&input, &weight, padding, stride);
+                if expected.is_err() {
+                    assert!(actual.is_err());
+                    continue;
+                }
+                let expected = expected?;
+                let actual = actual?;
+                assert_eq!(actual.dims(), expected.dims());
+                let error = actual
+                    .sub(&expected)?
+                    .abs()?
+                    .flatten_all()?
+                    .max(0)?
+                    .to_scalar::<f32>()?;
+                assert!(error < 1e-5, "maximum error was {error}");
+            }
+        }
+        let input = Tensor::ones((1, 2, 4), DType::F32, &device)?;
+        let weight = Tensor::ones((2, 3, 4), DType::F32, &device)?;
+        assert!(conv_transpose1d(&input, &weight, 6, 2).is_err());
+        for dtype in [DType::F16, DType::BF16, DType::F64] {
+            let input = input.to_dtype(dtype)?;
+            let weight = weight.to_dtype(dtype)?;
+            let expected = input.conv_transpose1d(&weight, 1, 0, 2, 1, 1)?;
+            let actual = conv_transpose1d(&input, &weight, 1, 2)?;
+            assert_eq!(
+                actual.to_dtype(DType::F32)?.to_vec3::<f32>()?,
+                expected.to_dtype(DType::F32)?.to_vec3::<f32>()?
+            );
+        }
         Ok(())
     }
 
