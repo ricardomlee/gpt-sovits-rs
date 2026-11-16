@@ -5,9 +5,9 @@
 //!   Feature projection: LayerNorm(512) → Linear(512→768)
 //!   Positional conv: Conv1d(768, 768, 128, groups=16, pad=64) + GELU + residual
 //!   Encoder LayerNorm(768)
-//!   12 × Transformer layer (pre-LN, 768 hidden, 12 heads, 3072 FFN, GELU)
+//!   12 × Transformer layer (post-LN, 768 hidden, 12 heads, 3072 FFN, GELU)
 //!
-//! Weights loaded from models/hubert.safetensors (produced by scripts/extract_hubert_weights.py).
+//! Weights loaded from models/hubert.safetensors.
 
 use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::{Conv1d, Conv1dConfig, LayerNorm, Linear, Module, VarBuilder};
@@ -71,16 +71,8 @@ impl CnnLayer {
         match self {
             Self::WithNorm(l) => {
                 let x = l.conv.forward(x)?;
-                // GroupNorm(num_groups=C) = InstanceNorm: normalize per (batch, channel)
-                // Implemented as: transpose → LayerNorm over T → transpose back
-                // Actually for GroupNorm(groups=C, channels=C) each channel is normalized independently.
-                // The layer_norm here has dim=C (one weight per channel) and we apply it
-                // after transposing so LN sees [B*C, T] effectively.
-                // Simpler: use the fact that LayerNorm over last dim applied on [B, T, C] = per-token norm.
-                // For instance norm: normalize each [B, c, T] slice over T.
+                // GroupNorm(groups=C): normalize each (batch, channel) over time.
                 let (b, c, t) = x.dims3()?;
-                // Reshape [B, C, T] → [B*C, T, 1], apply LN over last dim=1 → then back
-                // But our norm has weight/bias of shape [C]. Use manual instance norm instead.
                 let x = x.reshape((b * c, t, 1))?;
                 // Manual InstanceNorm: normalize each (b,c) slice over T
                 let mean = x.mean_keepdim(1)?; // [B*C, 1, 1]
@@ -230,7 +222,7 @@ impl PosConvEmbed {
             groups,
             cudnn_fwd_algo: None,
         };
-        // weight_norm has already been baked into the weight by extract_hubert_weights.py
+        // Weight normalization is baked into the converted weights.
         let conv = Conv1d::new(
             vb.get(
                 (hidden, hidden / groups, kernel),
@@ -330,11 +322,6 @@ impl Wav2Vec2Model {
         })
     }
 
-    /// Extract features. Returns `last_hidden_state` [1, T_out, 768].
-    pub fn forward(&self, audio: &Tensor) -> Result<Tensor> {
-        self.forward_impl(audio, false, None)
-    }
-
     pub fn forward_debug(&self, audio: &Tensor) -> Result<Vec<Tensor>> {
         let mut checkpoints = Vec::new();
         let mut x = audio.unsqueeze(1)?;
@@ -362,12 +349,8 @@ impl Wav2Vec2Model {
         Ok(checkpoints)
     }
 
-    fn forward_impl(
-        &self,
-        audio: &Tensor,
-        _debug: bool,
-        _out: Option<&mut Vec<Tensor>>,
-    ) -> Result<Tensor> {
+    /// Extract features. Returns `last_hidden_state` [1, T_out, 768].
+    pub fn forward(&self, audio: &Tensor) -> Result<Tensor> {
         // Cast F32 input audio to model dtype (BF16 or F32)
         let audio = if self.dtype != audio.dtype() {
             audio.to_dtype(self.dtype)?

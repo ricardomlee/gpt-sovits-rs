@@ -109,7 +109,6 @@ fn reference_encoder() -> Result<RefEnc> {
     let temporal = Conv1dGLU {
         conv_weight: Tensor::from_vec(weights, (8, 4, 1), &Device::Cpu)?,
         conv_bias: Tensor::zeros(8, DType::F32, &Device::Cpu)?,
-        kernel_size: 1,
         padding: 0,
     };
     Ok(RefEnc {
@@ -139,7 +138,6 @@ fn convolution_glu_matches_scalar_padding_bias_and_channel_gate() -> Result<()> 
     let model = Conv1dGLU {
         conv_weight: Tensor::from_slice(&weights, (2, 1, 3), &Device::Cpu)?,
         conv_bias: Tensor::new(&bias, &Device::Cpu)?,
-        kernel_size: 3,
         padding: 1,
     };
     let input = [[0.2f32, -0.5, 1.2, 0.7], [-0.8, 0.6, 0.1, -0.3]];

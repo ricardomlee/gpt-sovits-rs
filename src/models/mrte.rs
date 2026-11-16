@@ -10,7 +10,6 @@ use candle_core::{DType, Device, Tensor, D};
 use candle_nn::{Conv1d, Module, VarBuilder};
 
 /// Multi-Head Cross-Attention module
-#[allow(dead_code)]
 pub struct MultiHeadAttention {
     conv_q: Conv1d,
     conv_k: Conv1d,
@@ -19,8 +18,6 @@ pub struct MultiHeadAttention {
     n_heads: usize,
     k_channels: usize,
     channels: usize,
-    out_channels: usize,
-    device: Device,
 }
 
 impl MultiHeadAttention {
@@ -57,8 +54,6 @@ impl MultiHeadAttention {
             n_heads,
             k_channels,
             channels,
-            out_channels,
-            device: vb.device().clone(),
         })
     }
 
@@ -145,8 +140,6 @@ impl MultiHeadAttention {
             n_heads,
             k_channels,
             channels,
-            out_channels: channels,
-            device: device.clone(),
         })
     }
 
@@ -176,11 +169,9 @@ impl MultiHeadAttention {
 }
 
 /// Layer Normalization for 1D sequences
-#[allow(dead_code)]
 pub struct LayerNorm {
     gamma: Tensor,
     beta: Tensor,
-    channels: usize,
     eps: f32,
 }
 
@@ -189,12 +180,7 @@ impl LayerNorm {
         let gamma = vb.get(channels, "gamma")?;
         let beta = vb.get(channels, "beta")?;
 
-        Ok(Self {
-            gamma,
-            beta,
-            channels,
-            eps,
-        })
+        Ok(Self { gamma, beta, eps })
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {

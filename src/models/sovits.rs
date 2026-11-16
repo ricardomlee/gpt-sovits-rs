@@ -51,7 +51,6 @@ pub struct SoVITSModel {
     // Configuration
     n_mels: usize,
     sampling_rate: u32,
-    #[allow(dead_code)]
     gin_channels: usize,
     sampling_rng: SamplingRng,
 }
@@ -59,16 +58,13 @@ pub struct SoVITSModel {
 /// Simple quantizer for semantic tokens
 #[derive(Debug, Clone)]
 pub struct Quantizer {
-    #[allow(dead_code)]
-    bins: usize,
     dimension: usize,
     codebook: Tensor,
 }
 
 impl Quantizer {
-    pub fn new(dimension: usize, bins: usize, codebook: Tensor) -> Self {
+    pub fn new(dimension: usize, _bins: usize, codebook: Tensor) -> Self {
         Self {
-            bins,
             dimension,
             codebook,
         }

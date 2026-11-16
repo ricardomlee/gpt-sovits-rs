@@ -3,7 +3,10 @@
 //! Neural network models for GPT-SoVITS
 
 pub mod bert;
-pub mod bert_candle;
+/// Compatibility exports; BERT implementation lives in [`bert`].
+pub mod bert_candle {
+    pub use super::bert::{BertCandleModel, DTYPE_BF16, DTYPE_F32};
+}
 pub mod bigvgan;
 pub mod gpt;
 pub mod hubert;
@@ -18,8 +21,7 @@ pub mod sovits_ref_enc;
 pub mod transformer;
 pub mod wav2vec2;
 
-pub use bert::BertModel;
-pub use bert_candle::BertCandleModel;
+pub use bert::{BertCandleModel, BertModel};
 pub use bigvgan::BigVGAN;
 pub use gpt::GPTModel;
 pub use hubert::HubertModel;
