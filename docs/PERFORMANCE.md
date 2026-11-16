@@ -92,6 +92,7 @@ cargo bench --locked --bench inference_bench -- text_frontend
 
 | 报告 | 记录 |
 | --- | --- |
+| [CUDA 转置卷积对照](benchmarks/2026-11-16-cuda-transposed-convolution.md) | 完整 A/B/A/B/A 及英文/混读补测，保留波动项；最大 PCM16 差异一个量化步 |
 | [1.3.1 / 1.3.0 对照](benchmarks/v1.3.1-sun-cuda.md) | A/B/A 共 252 段波形检查通过，ASR 对照通过预设门槛；保留小数和混读偏差 |
 | [1.3.0](benchmarks/v1.3.0-sun-cuda.md) | 候选验收及正式镜像复验；混读单项超限后追加对照，保留全部结果 |
 | [SoVITS 通道归一化修复](benchmarks/v1.2.2-layer-norm-fix.md) | 95/96/97-token 边界与完整 HTTP 回归，保留待试听项 |
