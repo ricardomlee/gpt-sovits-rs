@@ -5,7 +5,7 @@
 use crate::config::Config;
 use crate::models::{BertModel, BigVGAN, GPTModel, HubertModel, SemanticTokenizer, SoVITSModel};
 use crate::text_frontend::TextFrontend;
-use crate::utils::AudioBuffer;
+use crate::utils::{load_safetensors, AudioBuffer, StateDict};
 use crate::{Error, Result};
 use candle_core::Device;
 use std::collections::{HashMap, VecDeque};
@@ -217,10 +217,10 @@ impl Pipeline {
     }
 
     pub fn load_sovits<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let path_str = path.as_ref().to_str().unwrap();
         let dtype = self.config.candle_dtype();
-        let model = SoVITSModel::load_with_device(path_str, &self.device, dtype)?;
-        let tokenizer = SemanticTokenizer::load_with_device(path_str, &self.device)?;
+        let state_dict = StateDict::new(load_safetensors(path)?);
+        let model = SoVITSModel::from_state_dict(&state_dict, &self.device, dtype)?;
+        let tokenizer = SemanticTokenizer::from_state_dict(&state_dict, &self.device)?;
         self.sovits_model = Some(model);
         self.semantic_tokenizer = Some(tokenizer);
         self.clear_speaker_cache();

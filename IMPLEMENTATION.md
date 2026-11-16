@@ -70,6 +70,9 @@ argmax 或采样结果为 EOS 时停止的判断，并保持停止前的 RNG 消
 
 ## SoVITS 和 v2Pro
 
+`Pipeline::load_sovits` 为模型和参考语义 tokenizer 共用一次读取的权重。
+两者都加载成功后才替换现有模型，并清空参考缓存。
+
 [sovits.rs](src/models/sovits.rs) 根据权重是否包含 `sv_emb.*` 等层加载 v2Pro 条件分支。
 SV 接受 `[20480]` 或 `[1, 20480]`，应与参考音频匹配。
 缺少 SV 时使用零向量。性能和发布验收使用与参考音频匹配的 SV。

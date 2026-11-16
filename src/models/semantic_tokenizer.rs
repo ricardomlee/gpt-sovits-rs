@@ -25,7 +25,10 @@ impl SemanticTokenizer {
     pub fn load_with_device(path: &str, device: &Device) -> Result<Self> {
         let weights_map = load_safetensors(path)?;
         let state_dict = StateDict::new(weights_map);
+        Self::from_state_dict(&state_dict, device)
+    }
 
+    pub(crate) fn from_state_dict(state_dict: &StateDict, device: &Device) -> Result<Self> {
         // SSL projection weights
         let ssl_weight = state_dict
             .get("ssl_proj.weight")?
@@ -119,6 +122,68 @@ impl SemanticTokenizer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use candle_core::DType;
+    use std::collections::HashMap;
+
+    fn tokenizer_weights(kernel: usize, dtype: DType) -> Result<HashMap<String, Tensor>> {
+        let device = &Device::Cpu;
+        Ok(HashMap::from([
+            (
+                "ssl_proj.weight".into(),
+                Tensor::ones((1, 1, kernel), dtype, device)?.affine(1.0 / kernel as f64, 0.0)?,
+            ),
+            ("ssl_proj.bias".into(), Tensor::ones(1, dtype, device)?),
+            (
+                "quantizer.vq.layers.0._codebook.embed".into(),
+                Tensor::new(&[[-2f32], [0.], [2.]], device)?.to_dtype(dtype)?,
+            ),
+        ]))
+    }
+
+    #[test]
+    fn shared_and_file_weights_extract_expected_tokens() -> Result<()> {
+        let device = &Device::Cpu;
+        let features = Tensor::new(&[[[-3f32, -3., -1., -1., 1., 1.]]], device)?;
+        for dtype in [DType::F32, DType::F16] {
+            for (kernel, expected) in [(1, vec![0, 0, 1, 1, 2, 2]), (2, vec![0, 1, 2])] {
+                let weights = tokenizer_weights(kernel, dtype)?;
+                let file = tempfile::NamedTempFile::new().unwrap();
+                candle_core::safetensors::save(&weights, file.path())?;
+                let state_dict = StateDict::new(weights);
+                let shared = SemanticTokenizer::from_state_dict(&state_dict, device)?;
+                drop(state_dict);
+                let standalone = SemanticTokenizer::load(file.path().to_str().unwrap())?;
+                assert_eq!(shared.extract(&features)?, expected);
+                assert_eq!(standalone.extract(&features)?, expected);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn shared_and_file_weights_report_the_same_missing_keys() -> Result<()> {
+        for key in [
+            "ssl_proj.weight",
+            "ssl_proj.bias",
+            "quantizer.vq.layers.0._codebook.embed",
+        ] {
+            let mut weights = tokenizer_weights(1, DType::F32)?;
+            weights.remove(key);
+            let file = tempfile::NamedTempFile::new().unwrap();
+            candle_core::safetensors::save(&weights, file.path())?;
+            let state_dict = StateDict::new(weights);
+            let shared_error = SemanticTokenizer::from_state_dict(&state_dict, &Device::Cpu)
+                .err()
+                .expect("missing key should fail shared loading");
+            let file_error = SemanticTokenizer::load(file.path().to_str().unwrap())
+                .err()
+                .expect("missing key should fail file loading");
+            assert!(matches!(shared_error, crate::Error::ModelLoadError(_)));
+            assert!(shared_error.to_string().contains(key));
+            assert_eq!(shared_error.to_string(), file_error.to_string());
+        }
+        Ok(())
+    }
 
     #[test]
     fn argmin_returns_one_index_per_frame() -> Result<()> {

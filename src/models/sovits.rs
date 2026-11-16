@@ -157,7 +157,14 @@ impl SoVITSModel {
     pub fn load_with_device(path: &str, device: &Device, dtype: DType) -> Result<Self> {
         let weights_map = load_safetensors(path)?;
         let state_dict = StateDict::new(weights_map);
+        Self::from_state_dict(&state_dict, device, dtype)
+    }
 
+    pub(crate) fn from_state_dict(
+        state_dict: &StateDict,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
         // Configuration
         let hidden_channels = 192;
         let n_layers = 6;
@@ -172,7 +179,7 @@ impl SoVITSModel {
 
         // Load EncP (text + semantic token encoder)
         let enc_p = EncP::load(
-            &state_dict,
+            state_dict,
             device,
             hidden_channels,
             n_layers,
@@ -184,7 +191,7 @@ impl SoVITSModel {
         // path, and some exported inference checkpoints omit all enc_q weights.
         let enc_q = if state_dict.contains("enc_q.pre.weight") {
             Some(EncQ::load(
-                &state_dict,
+                state_dict,
                 device,
                 hidden_channels,
                 enc_out_channels,
@@ -195,13 +202,13 @@ impl SoVITSModel {
         };
 
         // Load Flow (ResidualCouplingBlock)
-        let flow = ResidualCouplingBlock::load(&state_dict, "flow.flows", device, 4, dtype)?;
+        let flow = ResidualCouplingBlock::load(state_dict, "flow.flows", device, 4, dtype)?;
 
         // Load Decoder
-        let decoder = Decoder::load(&state_dict, device, dtype)?;
+        let decoder = Decoder::load(state_dict, device, dtype)?;
 
         // Load RefEnc (MelStyleEncoder for speaker embedding)
-        let ref_enc = RefEnc::load(&state_dict, device, dtype)?;
+        let ref_enc = RefEnc::load(state_dict, device, dtype)?;
         let gin_channels = state_dict
             .get("ref_enc.fc.fc.weight")?
             .dims()
