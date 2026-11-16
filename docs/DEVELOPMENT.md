@@ -98,6 +98,13 @@ zero-valued weight rows and zero-initialized coupling layers.
 cargo test --locked --features http-api --lib models::sovits_
 ```
 
+Nearest-upsample fixtures cover offset/strided views, F32/F16/BF16 and empty
+dimensions. Run the GPU variant on a CUDA host:
+
+```bash
+cargo test --locked --release --features cuda --lib nearest_upsample -- --include-ignored
+```
+
 ```bash
 cargo fmt --all -- --check
 cargo test --locked
