@@ -232,6 +232,38 @@ fn flow_loader_preserves_regular_and_normalized_projection_weights() -> Result<(
     Ok(())
 }
 
+#[test]
+fn zero_initialized_regular_coupling_is_an_exact_identity() -> Result<()> {
+    let original = checkpoint(&[0], false)?;
+    let weights = StateDict::new(
+        original
+            .keys()
+            .map(|key| {
+                let value = original.get(key)?;
+                let value = if matches!(
+                    key.as_str(),
+                    "flow.flows.0.post.weight" | "flow.flows.0.post.bias"
+                ) {
+                    Tensor::zeros_like(value)?
+                } else {
+                    value.clone()
+                };
+                Ok((key.clone(), value))
+            })
+            .collect::<Result<_>>()?,
+    );
+    let layer =
+        ResidualCouplingLayer::load(&weights, "flow.flows.0", &Device::Cpu, false, DType::F32)?;
+    let input = Tensor::new(&[[[0.2f32, -0.6, 7.0], [0.8, -0.3, -9.0]]], &Device::Cpu)?;
+    let mask = Tensor::new(&[[[1f32, 1.0, 0.0]]], &Device::Cpu)?;
+    let g = Tensor::full(0.4f32, (1, 1, 1), &Device::Cpu)?;
+    for reverse in [false, true] {
+        let output = layer.forward(&input, &mask, Some(&g), reverse)?;
+        assert_eq!(output.to_vec3::<f32>()?, input.to_vec3::<f32>()?);
+    }
+    Ok(())
+}
+
 fn coupling_scalar(
     x: [f64; 2],
     valid: bool,

@@ -281,36 +281,7 @@ impl ResidualCouplingLayer {
                 weight_g, weight_v, bias, 1, padding, 1,
             )?)
         } else {
-            // Regular weight format
-            let weight = state_dict
-                .get(&format!("{}.weight", prefix))?
-                .to_device(device)?
-                .to_dtype(dtype)?;
-            let bias = state_dict
-                .get(&format!("{}.bias", prefix))
-                .ok()
-                .cloned()
-                .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
-                .transpose()?;
-
-            let kernel_size = if weight.dims().len() >= 3 {
-                weight.dims()[2]
-            } else {
-                1
-            };
-            let padding = (kernel_size - 1) / 2;
-
-            // Set weight_g = per-channel L2 norm so (w/norm)*norm = w (no spurious normalization)
-            let v_sq = weight.sqr()?;
-            let v_norm = v_sq
-                .sum(candle_core::D::Minus1)?
-                .sum(candle_core::D::Minus1)?
-                .sqrt()?;
-            let out_ch = weight.dims()[0];
-            let weight_g = v_norm.reshape((out_ch, 1, 1))?;
-            Ok(Conv1dWeightNorm::new_with_cached(
-                weight_g, weight, bias, 1, padding, 1,
-            )?)
+            Conv1dWeightNorm::load_regular(state_dict, prefix, device, dtype)
         }
     }
 
