@@ -87,6 +87,16 @@ cargo test --locked --features http-api --lib models::gpt
 
 ## Local Checks
 
+SoVITS Flow and reference-encoder tests use tiny fixed weights and independent
+scalar calculations for gating, residual/skip updates, affine inverses, channel
+flips, attention heads/masks and temporal pooling. They run on CPU without model
+files. The encoder fixtures cover single inputs and batches with unequal valid
+lengths.
+
+```bash
+cargo test --locked --features http-api --lib models::sovits_
+```
+
 ```bash
 cargo fmt --all -- --check
 cargo test --locked

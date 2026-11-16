@@ -351,7 +351,7 @@ impl RefEnc {
 
             // Sum over time, then divide by count
             let sum = x_masked.sum_keepdim(1)?; // [batch, 1, 512]
-            let valid_count_3d = valid_count.broadcast_as((sum.dims()[0], 1, sum.dims()[2]))?; // [batch, 1, 512]
+            let valid_count_3d = valid_count.unsqueeze(2)?; // [batch, 1, 1]
             let result = sum.broadcast_div(&valid_count_3d)?;
             // Squeeze dim 1: [batch, 1, 512] → [batch, 512]
             Ok(result.squeeze(1)?)
@@ -360,3 +360,6 @@ impl RefEnc {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
