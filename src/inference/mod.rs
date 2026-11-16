@@ -623,23 +623,18 @@ impl Pipeline {
         let gpt_ms = gpt_start.elapsed().as_millis();
         backend.log_generated(semantic_tokens.len(), options.max_tokens);
 
-        if matches!(backend, DecodeBackend::CudaGraph) && std::env::var("SOVITS_DEBUG").is_ok() {
-            sovits.debug_pipeline(
-                &semantic_tokens,
-                &prepared.target_phoneme_ids,
-                ref_feats.ref_mel.as_ref(),
-                0.5,
-            )?;
-        }
-
         let sovits_start = Instant::now();
-        let audio_samples = sovits.synthesize_with_speed_and_sv(
+        let trace_dir = (matches!(backend, DecodeBackend::CudaGraph)
+            && std::env::var("SOVITS_DEBUG").is_ok())
+        .then_some(Path::new("."));
+        let (_, audio_samples) = sovits.synthesize_internal(
             &semantic_tokens,
             &prepared.target_phoneme_ids,
             ref_feats.ref_mel.as_ref(),
             ref_feats.sv_embedding.as_ref(),
             0.5,
             options.speed,
+            trace_dir,
         )?;
         let sovits_ms = sovits_start.elapsed().as_millis();
         tracing::info!(
