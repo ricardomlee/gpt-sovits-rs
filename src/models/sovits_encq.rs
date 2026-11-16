@@ -305,35 +305,3 @@ impl EncQ {
         )?)
     }
 }
-
-/// Extension trait for loading regular (non-weight-norm) convolutions from state dict
-impl Conv1dWeightNorm {
-    /// Load a regular convolution as Conv1dWeightNorm (with dummy weight_g)
-    pub fn load_regular(
-        state_dict: &StateDict,
-        prefix: &str,
-        device: &Device,
-        dtype: DType,
-    ) -> Result<Self> {
-        let weight = state_dict
-            .get(&format!("{}.weight", prefix))?
-            .to_device(device)?
-            .to_dtype(dtype)?;
-        let bias = state_dict
-            .get(&format!("{}.bias", prefix))
-            .ok()
-            .cloned()
-            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
-            .transpose()?;
-
-        let kernel_size = if weight.dims().len() >= 3 {
-            weight.dims()[2]
-        } else {
-            1
-        };
-        let padding = (kernel_size - 1) / 2;
-
-        let weight_g = Tensor::full(1.0f32, weight.dims(), weight.device())?.to_dtype(dtype)?;
-        Conv1dWeightNorm::new_with_cached(weight_g, weight, bias, 1, padding, 1)
-    }
-}

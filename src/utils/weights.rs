@@ -591,6 +591,53 @@ impl Conv1dWeightNorm {
         }
     }
 
+    /// Load regular convolution weights verbatim, including all-zero rows.
+    pub fn load_regular(
+        state_dict: &StateDict,
+        prefix: &str,
+        device: &Device,
+        dtype: DType,
+    ) -> Result<Self> {
+        let weight = state_dict.get(&format!("{prefix}.weight"))?;
+        if weight.dims().len() != 3 || weight.dims().contains(&0) {
+            return Err(Error::ModelLoadError(format!(
+                "{prefix}.weight must have nonempty [out_channels, in_channels, kernel] dimensions, got {:?}",
+                weight.dims()
+            )));
+        }
+        let (out_channels, _, kernel_size) = weight.dims3()?;
+        let bias = state_dict.get(&format!("{prefix}.bias")).ok();
+        if let Some(bias) = bias {
+            if bias.dims() != [out_channels] {
+                return Err(Error::ModelLoadError(format!(
+                    "{prefix}.bias must have shape [{out_channels}], got {:?}",
+                    bias.dims()
+                )));
+            }
+        }
+        let weight = weight.to_device(device)?.to_dtype(dtype)?.contiguous()?;
+        let weight_g = weight
+            .sqr()?
+            .sum(D::Minus1)?
+            .sum(D::Minus1)?
+            .sqrt()?
+            .reshape((out_channels, 1, 1))?;
+        let bias = bias
+            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
+            .transpose()?;
+
+        // Cache raw weights: normalizing a zero row would introduce NaNs.
+        Ok(Self {
+            weight_g,
+            weight_v: weight.clone(),
+            bias,
+            stride: 1,
+            padding: (kernel_size - 1) / 2,
+            dilation: 1,
+            cached_weight: Some(weight),
+        })
+    }
+
     /// Create with pre-computed weight (preferred for inference)
     pub fn new_with_cached(
         weight_g: Tensor,
@@ -667,6 +714,116 @@ impl Conv1dWeightNorm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn regular_convolution_preserves_loaded_weights_and_forward_values() -> Result<()> {
+        let device = Device::Cpu;
+        let values = [[3f32, 4.0, 2.0], [-6.0, 8.0, -2.0]];
+        let weight = Tensor::new(&values, &device)?.reshape((2, 1, 3))?;
+        let samples = [[2f32, -1.0, 0.5, 3.0], [-0.5, 0.25, 2.0, -2.0]];
+        let input = Tensor::new(&samples, &device)?.reshape((2, 1, 4))?;
+        for with_bias in [false, true] {
+            let bias = if with_bias { [0.5f32, -1.25] } else { [0.0; 2] };
+            let mut data = HashMap::from([("conv.weight".into(), weight.clone())]);
+            if with_bias {
+                data.insert("conv.bias".into(), Tensor::new(&bias, &device)?);
+            }
+            let conv =
+                Conv1dWeightNorm::load_regular(&StateDict::new(data), "conv", &device, DType::F32)?;
+            assert_eq!(
+                conv.get_weight()?.to_vec3::<f32>()?,
+                weight.to_vec3::<f32>()?
+            );
+            let mut expected = Vec::new();
+            for sample in samples {
+                for (channel, weights) in values.iter().enumerate() {
+                    for time in 0..4 {
+                        let mut sum = f64::from(bias[channel]);
+                        for (tap, &weight) in weights.iter().enumerate() {
+                            let position = time as isize + tap as isize - 1;
+                            if (0..4).contains(&position) {
+                                sum += f64::from(weight) * f64::from(sample[position as usize]);
+                            }
+                        }
+                        expected.push(sum as f32);
+                    }
+                }
+            }
+            let output = conv.forward(&input)?;
+            assert_eq!(output.dims(), &[2, 2, 4]);
+            assert_eq!(output.flatten_all()?.to_vec1::<f32>()?, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn regular_convolution_keeps_zero_weight_channels_finite() -> Result<()> {
+        let device = Device::Cpu;
+        let weight = Tensor::new(&[[[3f32, 4.0, 0.0]], [[0.0, 0.0, 0.0]]], &device)?;
+        let data = HashMap::from([
+            ("conv.weight".into(), weight),
+            ("conv.bias".into(), Tensor::new(&[0.5f32, -0.25], &device)?),
+        ]);
+        let conv =
+            Conv1dWeightNorm::load_regular(&StateDict::new(data), "conv", &device, DType::F32)?;
+        let output = conv.forward(&Tensor::new(&[[[2f32, -1.0, 0.5, 3.0]]], &device)?)?;
+        let values = output.to_vec3::<f32>()?;
+        assert!(values
+            .iter()
+            .flatten()
+            .flatten()
+            .all(|value| value.is_finite()));
+        assert_eq!(values[0][1], [-0.25; 4]);
+        Ok(())
+    }
+
+    #[test]
+    fn regular_convolution_rejects_invalid_weight_shapes() -> Result<()> {
+        for shape in [
+            &[][..],
+            &[2, 3][..],
+            &[1, 1, 0][..],
+            &[0, 1, 3][..],
+            &[1, 0, 3][..],
+        ] {
+            let weights = StateDict::new(HashMap::from([(
+                "conv.weight".into(),
+                Tensor::zeros(shape, DType::F32, &Device::Cpu)?,
+            )]));
+            let error = Conv1dWeightNorm::load_regular(&weights, "conv", &Device::Cpu, DType::F32)
+                .expect_err("invalid raw convolution weights must fail at loading");
+            assert!(
+                matches!(error, Error::ModelLoadError(_)),
+                "{shape:?}: {error}"
+            );
+            assert!(error.to_string().contains("conv.weight"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn regular_convolution_rejects_invalid_bias_shapes() -> Result<()> {
+        for shape in [&[][..], &[1][..], &[1, 2][..]] {
+            let weights = StateDict::new(HashMap::from([
+                (
+                    "conv.weight".into(),
+                    Tensor::ones((2, 1, 3), DType::F32, &Device::Cpu)?,
+                ),
+                (
+                    "conv.bias".into(),
+                    Tensor::zeros(shape, DType::F32, &Device::Cpu)?,
+                ),
+            ]));
+            let error = Conv1dWeightNorm::load_regular(&weights, "conv", &Device::Cpu, DType::F32)
+                .expect_err("a regular convolution needs one bias value per output channel");
+            assert!(
+                matches!(error, Error::ModelLoadError(_)),
+                "{shape:?}: {error}"
+            );
+            assert!(error.to_string().contains("conv.bias"));
+        }
+        Ok(())
+    }
 
     #[test]
     fn channels_first_layer_norm_handles_equal_channels_and_time() -> Result<()> {

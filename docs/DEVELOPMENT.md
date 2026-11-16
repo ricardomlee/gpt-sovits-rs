@@ -91,7 +91,8 @@ SoVITS Flow and reference-encoder tests use tiny fixed weights and independent
 scalar calculations for gating, residual/skip updates, affine inverses, channel
 flips, attention heads/masks and temporal pooling. They run on CPU without model
 files. The encoder fixtures cover single inputs and batches with unequal valid
-lengths.
+lengths. Regular-convolution regressions also check checkpoint magnitudes,
+zero-valued weight rows and zero-initialized coupling layers.
 
 ```bash
 cargo test --locked --features http-api --lib models::sovits_

@@ -77,6 +77,8 @@ Rust 转换器可转换已有 embedding，不负责从参考录音计算新的 S
 
 EncP 的 attention/FFN 使用 post-norm：`LayerNorm(x + block(x))`。
 Flow 的 gate 先做 `a + b` 再分通道执行 tanh/sigmoid。
+普通 Conv1d 权重由共享加载器原样缓存，保留权重幅度和零值通道；`weight_g` / `weight_v`
+形式仍使用 weight normalization。Flow 投影与训练用 EncQ 的普通卷积共用该加载器。
 声码器使用项目内的 SoVITS decoder。BigVGAN 尚未接入主推理路径，v3/v4 尚未支持。
 
 [Config](src/config/mod.rs) 当前把 GPT 与 SoVITS 保持在 F32；`--half` 为兼容选项。
