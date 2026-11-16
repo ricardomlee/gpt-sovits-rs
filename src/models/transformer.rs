@@ -768,7 +768,6 @@ mod tests {
 /// Transformer for GPT-SoVITS with fused QKV and SwiGLU
 #[derive(Debug, Clone)]
 pub struct TransformerGPTSoVITS {
-    #[allow(dead_code)]
     pub config: TransformerConfig,
     token_embedding: Embedding,
     pub layers: Vec<TransformerBlock>,

@@ -13,11 +13,7 @@ use candle_core::{DType, Device, Tensor};
 /// BigVGAN vocoder for mel-to-waveform synthesis
 pub struct BigVGAN {
     device: Device,
-    #[allow(dead_code)]
-    dtype: DType,
     sampling_rate: u32,
-    #[allow(dead_code)]
-    hop_length: usize,
     // Model components
     conv_pre: Conv1dWeightNorm,
     ups: Vec<Upsample>,
@@ -29,7 +25,6 @@ pub struct BigVGAN {
 /// Upsampling layer
 struct Upsample {
     conv: Conv1dWeightNorm,
-    #[allow(dead_code)]
     upsample_factor: usize,
 }
 
@@ -38,55 +33,6 @@ struct ResidualBlock {
     convs1: Vec<Conv1dWeightNorm>,
     convs2: Vec<Conv1dWeightNorm>,
     activations: Vec<Activation>,
-}
-
-/// Snake activation: x + 1/(alpha + eps) * sin^2(x * alpha)
-/// alpha is stored as log(alpha), so we apply exp() first
-#[allow(dead_code)]
-struct Snake {
-    alpha: Tensor,
-}
-
-#[allow(dead_code)]
-impl Snake {
-    fn new(alpha: Tensor) -> Self {
-        Self { alpha }
-    }
-
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let eps = 1e-9f32;
-        let x_dims = x.dims();
-
-        // Exp alpha for log-scale
-        let alpha_exp = self.alpha.exp()?;
-
-        // Reshape alpha to [1, channels, 1]
-        let alpha_reshaped = if x_dims.len() == 3 {
-            let channels = x_dims[1];
-            if self.alpha.dims().len() == 1 && self.alpha.dims()[0] == channels {
-                alpha_exp.reshape((1, channels, 1))?
-            } else if self.alpha.dims().len() == 1 {
-                alpha_exp.narrow(0, 0, 1)?.reshape((1, 1, 1))?
-            } else {
-                alpha_exp.clone()
-            }
-        } else {
-            alpha_exp.narrow(0, 0, 1)?.reshape((1, 1, 1))?
-        };
-
-        // sin(x * alpha)
-        let x_alpha = x.broadcast_mul(&alpha_reshaped)?;
-        let sin_x_alpha = x_alpha.sin()?;
-        let sin_squared = sin_x_alpha.broadcast_mul(&sin_x_alpha)?;
-
-        // 1 / (alpha + eps)
-        let eps_tensor = Tensor::full(eps, alpha_reshaped.dims(), alpha_reshaped.device())?;
-        let inv_alpha = alpha_reshaped.add(&eps_tensor)?.recip()?;
-
-        // x + 1/(alpha+eps) * sin^2(x*alpha)
-        let correction = sin_squared.broadcast_mul(&inv_alpha)?;
-        Ok(x.broadcast_add(&correction)?)
-    }
 }
 
 /// SnakeBeta activation: x + 1/(beta + eps) * sin^2(x * alpha)
@@ -184,72 +130,7 @@ impl Downsample {
 /// Post-activation module
 struct PostActivation {
     downsample: Option<Downsample>,
-    #[allow(dead_code)]
-    upsample: Option<UpsampleFilter>,
     snake: SnakeBeta,
-}
-
-/// Upsample filter for post-activation
-#[allow(dead_code)]
-struct UpsampleFilter {
-    filter: Tensor,
-}
-
-#[allow(dead_code)]
-impl UpsampleFilter {
-    fn new(state_dict: &StateDict, prefix: &str, device: &Device) -> Result<Self> {
-        let filter_data = state_dict
-            .get(&format!("{}.upsample.filter", prefix))?
-            .to_device(device)?
-            .to_dtype(DType::F32)?
-            .clone();
-
-        Ok(Self {
-            filter: filter_data,
-        })
-    }
-
-    fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        // Upsample by 2x using nearest neighbor interpolation, then apply filter
-        let x_upsampled = self.nearest_upsample(x, 2)?;
-        self.apply_filter(&x_upsampled)
-    }
-
-    fn nearest_upsample(&self, x: &Tensor, factor: usize) -> Result<Tensor> {
-        let (batch, channels, time) = (x.dims()[0], x.dims()[1], x.dims()[2]);
-
-        let mut samples = Vec::new();
-        let x_vec: Vec<f32> = x.flatten_all()?.to_vec1()?;
-        for &val in &x_vec {
-            for _ in 0..factor {
-                samples.push(val);
-            }
-        }
-
-        Ok(Tensor::from_vec(
-            samples,
-            (batch, channels, time * factor),
-            x.device(),
-        )?)
-    }
-
-    fn apply_filter(&self, x: &Tensor) -> Result<Tensor> {
-        let filter_dims = self.filter.dims();
-        let filter_len = filter_dims[2];
-        let channels = x.dims()[1];
-
-        let pad_left = filter_len / 2;
-        let pad_right = filter_len - 1 - pad_left;
-        let x_padded = x.pad_with_zeros(2, pad_left, pad_right)?;
-
-        let filter_expanded = if channels > 1 {
-            self.filter.broadcast_as((channels, 1, filter_len))?
-        } else {
-            self.filter.clone()
-        };
-
-        Ok(x_padded.conv1d(&filter_expanded, 0, 1, 1, channels)?)
-    }
 }
 
 impl ResidualBlock {
@@ -275,10 +156,10 @@ impl ResidualBlock {
                 let conv2_prefix = format!("{}.convs2.{}", prefix, j);
 
                 if state_dict.contains(&format!("{}.weight_v", conv1_prefix)) {
-                    convs1.push(Self::load_conv(state_dict, &conv1_prefix, device)?);
+                    convs1.push(BigVGAN::load_conv(state_dict, &conv1_prefix, device)?);
                 }
                 if state_dict.contains(&format!("{}.weight_v", conv2_prefix)) {
-                    convs2.push(Self::load_conv(state_dict, &conv2_prefix, device)?);
+                    convs2.push(BigVGAN::load_conv(state_dict, &conv2_prefix, device)?);
                 }
             }
 
@@ -319,38 +200,6 @@ impl ResidualBlock {
         }
 
         Ok(blocks)
-    }
-
-    fn load_conv(
-        state_dict: &StateDict,
-        prefix: &str,
-        device: &Device,
-    ) -> Result<Conv1dWeightNorm> {
-        let weight_g = state_dict
-            .get(&format!("{}.weight_g", prefix))?
-            .to_device(device)?
-            .to_dtype(DType::F32)?;
-        let weight_v = state_dict
-            .get(&format!("{}.weight_v", prefix))?
-            .to_device(device)?
-            .to_dtype(DType::F32)?;
-        let bias = state_dict
-            .get(&format!("{}.bias", prefix))
-            .ok()
-            .cloned()
-            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(DType::F32)))
-            .transpose()?;
-
-        let weight_v_shape = weight_v.dims();
-        let kernel_size = if weight_v_shape.len() >= 3 {
-            weight_v_shape[2]
-        } else {
-            1
-        };
-
-        let padding = (kernel_size - 1) / 2;
-
-        Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -426,7 +275,6 @@ impl BigVGAN {
         let state_dict = StateDict::new(weights_map);
 
         let sampling_rate = 24000;
-        let hop_length = 256;
 
         // Load input projection
         let conv_pre = Self::load_conv(&state_dict, "conv_pre", device)?;
@@ -455,9 +303,7 @@ impl BigVGAN {
 
         Ok(Self {
             device: device.clone(),
-            dtype: DType::F32,
             sampling_rate,
-            hop_length,
             conv_pre,
             ups,
             resblocks,
@@ -504,7 +350,6 @@ impl BigVGAN {
         device: &Device,
     ) -> Result<PostActivation> {
         let has_downsample = state_dict.contains(&format!("{}.downsample.lowpass.filter", prefix));
-        let has_upsample = state_dict.contains(&format!("{}.upsample.filter", prefix));
 
         let alpha = state_dict
             .get(&format!("{}.act.alpha", prefix))?
@@ -518,11 +363,6 @@ impl BigVGAN {
         Ok(PostActivation {
             downsample: if has_downsample {
                 Some(Downsample::new(state_dict, prefix, device)?)
-            } else {
-                None
-            },
-            upsample: if has_upsample {
-                Some(UpsampleFilter::new(state_dict, prefix, device)?)
             } else {
                 None
             },
@@ -613,5 +453,61 @@ impl crate::models::Model for BigVGAN {
             Device::Cuda(_) => "cuda",
             Device::Metal(_) => "mps",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unused_post_upsample_weights_do_not_affect_generation() -> Result<()> {
+        let device = &Device::Cpu;
+        let samples = [-1f32, 0., 0.5, 1.];
+        let input = Tensor::new(&[[samples]], device)?;
+        let mut weights = std::collections::HashMap::new();
+        for prefix in [
+            "conv_pre",
+            "conv_post",
+            "resblocks.0.convs1.0",
+            "resblocks.0.convs1.1",
+            "resblocks.0.convs1.2",
+            "resblocks.0.convs2.0",
+            "resblocks.0.convs2.1",
+            "resblocks.0.convs2.2",
+        ] {
+            for suffix in ["weight_g", "weight_v"] {
+                weights.insert(
+                    format!("{prefix}.{suffix}"),
+                    Tensor::ones((1, 1, 1), DType::F32, device)?,
+                );
+            }
+        }
+        for prefix in ["activation_post.act", "resblocks.0.activations.0.act"] {
+            for suffix in ["alpha", "beta"] {
+                weights.insert(
+                    format!("{prefix}.{suffix}"),
+                    Tensor::zeros(1, DType::F32, device)?,
+                );
+            }
+        }
+        let file = tempfile::NamedTempFile::new().unwrap();
+        candle_core::safetensors::save(&weights, file.path())?;
+        let model = BigVGAN::load(file.path().to_str().unwrap())?;
+        assert_eq!(model.resblocks[0].convs1.len(), 3);
+        assert_eq!(model.resblocks[0].convs2.len(), 3);
+        let without = model.generate(&input)?;
+        weights.insert(
+            "activation_post.upsample.filter".into(),
+            Tensor::ones((1, 1, 3), DType::F32, device)?,
+        );
+        candle_core::safetensors::save(&weights, file.path())?;
+        let with = BigVGAN::load(file.path().to_str().unwrap())?.generate(&input)?;
+        assert_eq!(with.len(), samples.len());
+        assert_eq!(without, with);
+        for (actual, sample) in with.iter().zip(samples) {
+            assert!((actual - (sample + sample.sin().powi(2)).tanh()).abs() < 1e-6);
+        }
+        Ok(())
     }
 }

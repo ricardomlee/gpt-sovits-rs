@@ -112,7 +112,6 @@ impl EncoderLayer {
 
 /// Self-attention mechanism
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SelfAttention {
     conv_q: candle_nn::Conv1d,
     conv_k: candle_nn::Conv1d,
@@ -639,27 +638,6 @@ impl MRTE {
 
         Ok(x)
     }
-}
-
-#[allow(dead_code)]
-fn load_linear(
-    state_dict: &StateDict,
-    prefix: &str,
-    device: &Device,
-    dtype: DType,
-) -> Result<candle_nn::Linear> {
-    let weight = state_dict
-        .get(&format!("{}.weight", prefix))?
-        .to_device(device)?
-        .to_dtype(dtype)?;
-    let bias = state_dict
-        .get(&format!("{}.bias", prefix))
-        .ok()
-        .cloned()
-        .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
-        .transpose()?;
-
-    Ok(candle_nn::Linear::new(weight, bias))
 }
 
 /// Encoder P for processing semantic tokens

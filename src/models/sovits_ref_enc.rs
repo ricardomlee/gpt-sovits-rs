@@ -67,8 +67,6 @@ fn mish(x: &Tensor) -> Result<Tensor> {
 struct Conv1dGLU {
     conv_weight: Tensor,
     conv_bias: Tensor,
-    #[allow(dead_code)]
-    kernel_size: usize,
     padding: usize,
 }
 
@@ -88,7 +86,6 @@ impl Conv1dGLU {
         Ok(Self {
             conv_weight: weight,
             conv_bias: bias,
-            kernel_size,
             padding,
         })
     }

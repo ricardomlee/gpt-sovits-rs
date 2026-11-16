@@ -16,10 +16,7 @@ use rustfft::{num_complex::Complex, FftPlanner};
 pub struct SpectrogramExtractor {
     n_fft: usize,
     hop_length: usize,
-    win_length: usize,
     n_mels: usize,
-    #[allow(dead_code)]
-    sample_rate: u32,
     mel_basis: Vec<f32>,
     window: Vec<f32>,
 }
@@ -33,9 +30,7 @@ impl SpectrogramExtractor {
         Self {
             n_fft,
             hop_length,
-            win_length: n_fft,
             n_mels,
-            sample_rate,
             mel_basis,
             window,
         }
@@ -88,7 +83,6 @@ impl SpectrogramExtractor {
     pub fn extract_spectrogram(&self, audio: &[f32], device: &Device) -> Result<Tensor> {
         let n_fft = self.n_fft;
         let hop = self.hop_length;
-        let win_len = self.win_length;
 
         if n_fft < 2 || hop == 0 || hop > n_fft {
             return Err(Error::AudioError(
@@ -117,13 +111,9 @@ impl SpectrogramExtractor {
         for frame_idx in 0..n_frames {
             let start = frame_idx * hop;
 
-            // Apply Hann window and copy to FFT buffer
+            // Frame count guarantees a full window, including the last frame.
             for i in 0..n_fft {
-                if i < win_len && start + i < padded.len() {
-                    fft_buf[i] = Complex::new(padded[start + i] * self.window[i], 0.0);
-                } else {
-                    fft_buf[i] = Complex::new(0.0, 0.0);
-                }
+                fft_buf[i] = Complex::new(padded[start + i] * self.window[i], 0.0);
             }
 
             // FFT
@@ -259,6 +249,46 @@ fn create_mel_basis(sample_rate: f32, n_fft: usize, n_mels: usize) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn complete_stft_frames_match_a_direct_dft() -> Result<()> {
+        for n_fft in [2, 3, 8, 9] {
+            for hop in 1..=n_fft {
+                let extractor = SpectrogramExtractor::new(32_000, n_fft, hop, 2);
+                let pad = (n_fft - hop) / 2;
+                let minimum = n_fft - 2 * pad;
+                for len in [minimum, minimum + 1, n_fft * 2 + 1] {
+                    let audio: Vec<f32> = (0..len).map(|i| (i as f32 * 0.7).sin()).collect();
+                    let padded = reflect_pad(&audio, pad);
+                    let actual = extractor
+                        .extract_spectrogram(&audio, &Device::Cpu)?
+                        .to_vec2::<f32>()?;
+                    let n_frames = (padded.len() - n_fft) / hop + 1;
+                    assert_eq!(actual.len(), n_fft / 2 + 1);
+                    for (bin, magnitudes) in actual.iter().enumerate() {
+                        assert_eq!(magnitudes.len(), n_frames);
+                        for (frame, magnitude) in magnitudes.iter().enumerate() {
+                            let (mut re, mut im) = (0f64, 0f64);
+                            for i in 0..n_fft {
+                                let value =
+                                    f64::from(padded[frame * hop + i] * extractor.window[i]);
+                                let phase =
+                                    -std::f64::consts::TAU * (bin * i) as f64 / n_fft as f64;
+                                re += value * phase.cos();
+                                im += value * phase.sin();
+                            }
+                            let expected = (re * re + im * im + 1e-8).sqrt();
+                            assert!(
+                                (f64::from(*magnitude) - expected).abs() < 1e-5,
+                                "n_fft={n_fft}, hop={hop}, len={len}, bin={bin}, frame={frame}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn short_audio_is_an_error_and_the_first_complete_frame_is_valid() {

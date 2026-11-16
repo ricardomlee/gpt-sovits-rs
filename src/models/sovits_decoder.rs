@@ -226,8 +226,6 @@ pub struct Decoder {
     resblocks: Vec<ResBlock1>,
     conv_post: Conv1d,
     cond: Option<Conv1d>,
-    #[allow(dead_code)]
-    gin_channels: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -243,7 +241,7 @@ impl Decoder {
         let conv_pre = Self::load_conv_plain(state_dict, "dec.conv_pre", device, dtype)?;
 
         // Load conv_post: [1, 16, 7] - PLAIN conv, NOT weight_norm
-        let conv_post = Self::load_conv_plain_weight(state_dict, "dec.conv_post", device, dtype)?;
+        let conv_post = Self::load_conv_plain(state_dict, "dec.conv_post", device, dtype)?;
 
         // Load condition layer if exists - PLAIN conv, NOT weight_norm
         let cond = if state_dict.contains("dec.cond.weight") {
@@ -289,16 +287,12 @@ impl Decoder {
             }
         }
 
-        // Get gin_channels from cond input channels
-        let gin_channels = cond.as_ref().map(|c| c.weight.dims()[0]).unwrap_or(512);
-
         Ok(Self {
             conv_pre,
             ups,
             resblocks,
             conv_post,
             cond,
-            gin_channels,
         })
     }
 
@@ -361,35 +355,6 @@ impl Decoder {
 
         let padding = (kernel_size - 1) / 2;
         Conv1dWeightNorm::new_with_cached(weight_g, weight_v, bias, 1, padding, 1)
-    }
-
-    fn load_conv_plain_weight(
-        state_dict: &StateDict,
-        prefix: &str,
-        device: &Device,
-        dtype: DType,
-    ) -> Result<Conv1d> {
-        // For conv_post, the weight is stored directly (not weight_norm)
-        let weight = state_dict
-            .get(&format!("{}.weight", prefix))?
-            .to_device(device)?
-            .to_dtype(dtype)?;
-        let bias = state_dict
-            .get(&format!("{}.bias", prefix))
-            .ok()
-            .cloned()
-            .map(|t| t.to_device(device).and_then(|t| t.to_dtype(dtype)))
-            .transpose()?;
-
-        let weight_dims = weight.dims();
-        let kernel_size = if weight_dims.len() >= 3 {
-            weight_dims[2]
-        } else {
-            1
-        };
-
-        let padding = (kernel_size - 1) / 2;
-        Ok(Conv1d::new(weight, bias, 1, padding, 1))
     }
 
     /// Generate waveform from latent features
@@ -587,6 +552,37 @@ impl Decoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decoder_plain_projections_preserve_weights_and_optional_biases() -> Result<()> {
+        for bias in [None, Some(0.25f32)] {
+            let mut weights = std::collections::HashMap::new();
+            for (prefix, weight) in [("dec.conv_pre", 2f32), ("dec.conv_post", 0.5)] {
+                weights.insert(
+                    format!("{prefix}.weight"),
+                    Tensor::new(&[[[weight]]], &Device::Cpu)?,
+                );
+                if let Some(bias) = bias {
+                    weights.insert(
+                        format!("{prefix}.bias"),
+                        Tensor::new(&[bias], &Device::Cpu)?,
+                    );
+                }
+            }
+            let decoder = Decoder::load(&StateDict::new(weights), &Device::Cpu, DType::F32)?;
+            let samples = [-2f32, 0., 1., 3.];
+            let input = Tensor::new(&[[samples]], &Device::Cpu)?;
+            let actual = decoder.forward(&input, None)?;
+            assert_eq!(actual.len(), samples.len());
+            for (actual, sample) in actual.iter().zip(samples) {
+                let x = sample * 2.0 + bias.unwrap_or(0.0);
+                let x = if x < 0.0 { x * 0.01 } else { x };
+                let expected = (x * 0.5 + bias.unwrap_or(0.0)).tanh();
+                assert!((actual - expected).abs() < 1e-6);
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn leaky_relu_uses_the_requested_negative_slope() -> Result<()> {
