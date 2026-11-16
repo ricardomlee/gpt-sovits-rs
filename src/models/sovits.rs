@@ -132,19 +132,14 @@ fn nearest_upsample_2x(x: &Tensor) -> Result<Tensor> {
         return Ok(x.upsample_nearest1d(time * 2)?);
     }
 
-    // Candle 0.10 has no CUDA nearest-1d kernel, and composing repeat/broadcast
-    // produces invalid output on this path. Use the small, proven host fallback.
-    let original_dtype = x.dtype();
-    let values = x.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?;
-    let mut repeated = Vec::with_capacity(batch * channels * time * 2);
-    for value in values {
-        repeated.push(value);
-        repeated.push(value);
+    if x.elem_count() == 0 {
+        return Ok(x.reshape((batch, channels, time * 2))?);
     }
-    Ok(
-        Tensor::from_vec(repeated, (batch, channels, time * 2), x.device())?
-            .to_dtype(original_dtype)?,
-    )
+
+    // Height 1 lets Candle's 2D kernel repeat only the time axis on device.
+    Ok(x.unsqueeze(2)?
+        .upsample_nearest2d(1, time * 2)?
+        .squeeze(2)?)
 }
 
 impl SoVITSModel {
@@ -764,6 +759,73 @@ impl crate::models::Model for SoVITSModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn check_upsampling(device: &Device) -> Result<()> {
+        for (batch, channels, time) in [
+            (1, 1, 1),
+            (1, 2, 3),
+            (2, 3, 5),
+            (1, 768, 63),
+            (1, 768, 64),
+            (2, 768, 65),
+            (0, 2, 3),
+            (1, 0, 3),
+            (1, 2, 0),
+        ] {
+            for dtype in [DType::F32, DType::F16, DType::BF16] {
+                let source =
+                    Tensor::arange(0f32, ((batch + 1) * channels * time) as f32, &Device::Cpu)?
+                        .affine(1.0 / 256.0, -1.0)?
+                        .to_dtype(dtype)?
+                        .reshape((batch + 1, time, channels))?;
+                let values = source
+                    .narrow(0, 1, batch)?
+                    .transpose(1, 2)?
+                    .to_dtype(DType::F32)?
+                    .flatten_all()?
+                    .to_vec1::<f32>()?;
+                let expected: Vec<f32> = values.iter().flat_map(|&value| [value, value]).collect();
+                let input = source
+                    .to_device(device)?
+                    .narrow(0, 1, batch)?
+                    .transpose(1, 2)?;
+                for contiguous in [false, true] {
+                    let input = if contiguous {
+                        input.contiguous()?
+                    } else {
+                        input.clone()
+                    };
+                    let output = nearest_upsample_2x(&input)?;
+                    assert_eq!(output.dims(), &[batch, channels, time * 2]);
+                    assert_eq!(output.dtype(), dtype);
+                    assert!(output.device().same_device(device));
+                    assert_eq!(
+                        output
+                            .to_device(&Device::Cpu)?
+                            .to_dtype(DType::F32)?
+                            .flatten_all()?
+                            .to_vec1::<f32>()?,
+                        expected,
+                        "shape={:?}, dtype={dtype:?}, contiguous={contiguous}",
+                        input.dims()
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn nearest_upsample_preserves_layout_values_and_dtype() -> Result<()> {
+        check_upsampling(&Device::Cpu)
+    }
+
+    #[cfg(feature = "cuda")]
+    #[test]
+    #[ignore = "requires a CUDA GPU"]
+    fn nearest_upsample_cuda_preserves_layout_values_and_dtype() -> Result<()> {
+        check_upsampling(&Device::new_cuda(0)?)
+    }
 
     #[test]
     fn nearest_upsample_repeats_each_frame() -> Result<()> {

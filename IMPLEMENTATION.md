@@ -82,6 +82,8 @@ EncP 的 attention/FFN 使用 post-norm：`LayerNorm(x + block(x))`。
 Flow 的 gate 先做 `a + b` 再分通道执行 tanh/sigmoid。
 普通 Conv1d 权重由共享加载器原样缓存，保留权重幅度和零值通道；`weight_g` / `weight_v`
 形式仍使用 weight normalization。Flow 投影与训练用 EncQ 的普通卷积共用该加载器。
+CUDA 的两倍最近邻上采样通过高度为 1 的二维张量调用 Candle 现有算子，激活留在设备上；
+CPU 路径保持一维上采样。
 声码器使用项目内的 SoVITS decoder。BigVGAN 尚未接入主推理路径，v3/v4 尚未支持。
 
 [Config](src/config/mod.rs) 当前把 GPT 与 SoVITS 保持在 F32；`--half` 为兼容选项。
