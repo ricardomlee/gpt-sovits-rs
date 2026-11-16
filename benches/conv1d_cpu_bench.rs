@@ -1,8 +1,9 @@
 //! CPU Conv1d benchmark using shapes from the SoVITS decoder residual blocks.
 
 use candle_core::{Device, Tensor};
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use rayon::prelude::*;
+use std::hint::black_box;
 
 #[derive(Clone, Copy)]
 struct ConvCase {
