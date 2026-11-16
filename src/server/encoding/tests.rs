@@ -1,8 +1,10 @@
 use super::*;
 use std::io::Cursor;
 use symphonia::core::{
-    audio::SampleBuffer, codecs::DecoderOptions, errors::Error, formats::FormatOptions,
-    io::MediaSourceStream, meta::MetadataOptions, probe::Hint,
+    codecs::audio::AudioDecoderOptions,
+    formats::{probe::Hint, FormatOptions, TrackType},
+    io::MediaSourceStream,
+    meta::MetadataOptions,
 };
 
 fn tone(len: usize, rate: u32) -> AudioBuffer {
@@ -17,34 +19,26 @@ fn decode_mp3(bytes: Vec<u8>) -> (Vec<f32>, u32) {
     let mut hint = Hint::new();
     hint.with_extension("mp3");
     let mut reader = symphonia::default::get_probe()
-        .format(
+        .probe(
             &hint,
             stream,
-            &FormatOptions {
-                enable_gapless: true,
-                ..Default::default()
-            },
-            &MetadataOptions::default(),
+            FormatOptions::default(),
+            MetadataOptions::default(),
         )
-        .unwrap()
-        .format;
-    let track = reader.default_track().unwrap();
-    let rate = track.codec_params.sample_rate.unwrap();
+        .unwrap();
+    let track = reader.default_track(TrackType::Audio).unwrap();
+    let params = track.codec_params.as_ref().unwrap().audio().unwrap();
+    let rate = params.sample_rate.unwrap();
     let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &DecoderOptions::default())
+        .make_audio_decoder(params, &AudioDecoderOptions::default().gapless(true))
         .unwrap();
     let mut samples = Vec::new();
-    loop {
-        let packet = match reader.next_packet() {
-            Ok(packet) => packet,
-            Err(Error::IoError(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-            Err(e) => panic!("MP3 packet: {e}"),
-        };
+    while let Some(packet) = reader.next_packet().unwrap() {
         let audio = decoder.decode(&packet).unwrap();
-        assert_eq!(audio.spec().channels.count(), 1);
-        let mut buffer = SampleBuffer::<f32>::new(audio.capacity() as u64, *audio.spec());
-        buffer.copy_interleaved_ref(audio);
-        samples.extend_from_slice(buffer.samples());
+        assert_eq!(audio.spec().channels().count(), 1);
+        let start = samples.len();
+        samples.resize(start + audio.samples_interleaved(), 0f32);
+        audio.copy_to_slice_interleaved(&mut samples[start..]);
     }
     (samples, rate)
 }

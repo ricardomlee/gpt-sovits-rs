@@ -1,8 +1,9 @@
 //! Benchmark tests for GPT-SoVITS inference
 
 use candle_core::{DType, Device, Tensor};
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use gpt_sovits_rs::{text_frontend::TextFrontend, AudioBuffer, Language};
+use std::hint::black_box;
 
 fn text_frontend_benchmark(c: &mut Criterion) {
     c.bench_function("text_frontend_init", |b| {

@@ -1,7 +1,7 @@
-use std::io::{Cursor, Write};
+use std::io::{Cursor, Read, Write};
 use std::process::{Command, Output, Stdio};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use tiny_http::{Header, Response, Server, StatusCode};
@@ -260,6 +260,76 @@ fn timeout_does_not_create_audio() {
     assert!(!output.status.success());
     assert!(diagnostics(&output).contains("TTS request failed"));
     assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn download_timeout_preserves_existing_output() {
+    struct StalledBody {
+        initial: Cursor<Vec<u8>>,
+        finish: std::sync::mpsc::Receiver<()>,
+    }
+
+    impl Read for StalledBody {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            let count = self.initial.read(buffer)?;
+            if count == 0 {
+                let _ = self.finish.recv_timeout(Duration::from_secs(5));
+            }
+            Ok(count)
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("reply.wav");
+    std::fs::write(&path, b"keep me").unwrap();
+    let server = Server::http("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", server.server_addr());
+    let (finish, release) = std::sync::mpsc::channel();
+    let body = wav(32_000, 32_000);
+    let length = body.len() + 1;
+    let worker = thread::spawn(move || {
+        let mut request = server
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap()
+            .unwrap();
+        let _: Value = serde_json::from_reader(request.as_reader()).unwrap();
+        let response = Response::new(
+            StatusCode(200),
+            vec![Header::from_bytes("Content-Type", "audio/wav").unwrap()],
+            StalledBody {
+                initial: Cursor::new(body),
+                finish: release,
+            },
+            Some(length),
+            None,
+        );
+        let _ = request.respond(response);
+    });
+    let start = Instant::now();
+    let output = cli()
+        .args([
+            "--url",
+            &url,
+            "--voice",
+            "demo",
+            "--text",
+            "hello",
+            "--timeout",
+            "1",
+            "-o",
+        ])
+        .arg(&path)
+        .output()
+        .unwrap();
+    let elapsed = start.elapsed();
+    let _ = finish.send(());
+    worker.join().unwrap();
+    assert!(!output.status.success());
+    assert!(diagnostics(&output).contains("download WAV"));
+    assert!(elapsed < Duration::from_secs(4), "{elapsed:?}");
+    assert!(output.stdout.is_empty());
+    assert_eq!(std::fs::read(&path).unwrap(), b"keep me");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
 }
 
 #[cfg(unix)]

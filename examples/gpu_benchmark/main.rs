@@ -48,6 +48,10 @@ struct Args {
     seeds: Vec<u64>,
 }
 
+fn hex_digest(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn hash_file(path: &Path) -> Result<Value> {
     let mut file = fs::File::open(path).with_context(|| format!("read {}", path.display()))?;
     let mut digest = Sha256::new();
@@ -61,7 +65,7 @@ fn hash_file(path: &Path) -> Result<Value> {
         digest.update(&buffer[..count]);
         size += count as u64;
     }
-    Ok(json!({"sha256": format!("{:x}", digest.finalize()), "bytes": size}))
+    Ok(json!({"sha256": hex_digest(&digest.finalize()), "bytes": size}))
 }
 
 fn command(program: &str, args: &[&str]) -> Option<String> {
@@ -356,7 +360,7 @@ fn main() -> Result<()> {
             "cuda_visible_devices": std::env::var("CUDA_VISIBLE_DEVICES").ok(),
             "binary": hash_file(&std::env::current_exe()?)?,
             "cargo_lock": hash_file(&Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock"))?,
-            "corpus_sha256": format!("{:x}", Sha256::digest(&corpus)), "inputs": {}}),
+            "corpus_sha256": hex_digest(&Sha256::digest(&corpus)), "inputs": {}}),
     };
     if let Err(error) = benchmark(&args, &mut report) {
         report.fatal_error = Some(format!("{error:#}"));

@@ -201,7 +201,10 @@ fn read_bare_sv_tensor(path: &Path) -> Result<Tensor> {
     let file = fs::File::open(path)?;
     let reader = std::io::BufReader::new(file);
     let mut zip = zip::ZipArchive::new(reader)?;
-    let names: Vec<String> = zip.file_names().map(str::to_string).collect();
+    let names: Vec<String> = zip
+        .file_names()
+        .map(|name| name.map(|name| name.into_owned()))
+        .collect::<std::result::Result<_, _>>()?;
     let data_names: Vec<_> = names
         .iter()
         .filter(|name| {

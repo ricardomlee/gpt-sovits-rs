@@ -78,37 +78,36 @@ fn run(args: Args) -> Result<()> {
     );
 
     let endpoint = format!("{}/tts", args.url.as_str().trim_end_matches('/'));
-    let agent = ureq::AgentBuilder::new()
-        .timeout(Duration::from_secs(args.timeout))
-        .redirects(0)
-        .build();
-    let response = match agent
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(args.timeout)))
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let mut response = agent
         .post(&endpoint)
-        .set("Accept", "audio/wav")
+        .header("Accept", "audio/wav")
         .send_json(serde_json::json!({"voice": args.voice, "text": text.trim()}))
-    {
-        Ok(response) => response,
-        Err(ureq::Error::Status(status, response)) => {
-            let mut detail = Vec::new();
-            response
-                .into_reader()
-                .take(8192)
-                .read_to_end(&mut detail)
-                .ok();
-            bail!(
-                "TTS returned HTTP {status}: {}",
-                String::from_utf8_lossy(&detail).trim()
-            );
-        }
-        Err(error) => return Err(error).context("TTS request failed"),
-    };
-    ensure!(
-        response.status() == 200,
-        "TTS returned HTTP {}",
-        response.status()
-    );
+        .context("TTS request failed")?;
+    let status = response.status().as_u16();
+    if status >= 400 {
+        let mut detail = Vec::new();
+        response
+            .body_mut()
+            .as_reader()
+            .take(8192)
+            .read_to_end(&mut detail)
+            .ok();
+        bail!(
+            "TTS returned HTTP {status}: {}",
+            String::from_utf8_lossy(&detail).trim()
+        );
+    }
+    ensure!(status == 200, "TTS returned HTTP {status}");
     let mime = response
-        .header("Content-Type")
+        .headers()
+        .get("Content-Type")
+        .and_then(|value| value.to_str().ok())
         .unwrap_or("")
         .split(';')
         .next()
@@ -129,7 +128,7 @@ fn run(args: Args) -> Result<()> {
         None => NamedTempFile::new(),
     }
     .context("create temporary WAV file")?;
-    io::copy(&mut response.into_reader(), &mut wav).context("download WAV")?;
+    io::copy(&mut response.body_mut().as_reader(), &mut wav).context("download WAV")?;
     wav.rewind()?;
     validate_wav(&mut wav)?;
 
