@@ -22,14 +22,6 @@ name = "gpt-sovits-convert"
 path = "src/bin/gpt-sovits-convert.rs"
 
 [[example]]
-name = "cli_inference"
-path = "examples/cli_inference.rs"
-
-[[example]]
-name = "profile_kv_cache"
-path = "examples/profile_kv_cache.rs"
-
-[[example]]
 name = "cuda_oxide_candle"
 path = "examples/cuda_oxide_candle.rs"
 required-features = ["cuda"]
@@ -58,7 +50,6 @@ safetensors = "0.8"
 zip = { version = "9.6", default-features = false }
 
 # Text Processing
-# rust-opencc = "0.3"              # Chinese conversion - removed, not available
 jieba-rs = "0.6"                 # Chinese word segmentation
 pinyin = "0.10"                  # Basic pinyin conversion
 tokenizers = { version = "0.23.2", default-features = false, features = ["fancy-regex"] }  # HuggingFace tokenizers for BERT
@@ -115,39 +106,9 @@ opt-level = 2
 lto = false
 debug = false
 
-[[example]]
-name = "test_resblock0"
-path = "examples/test_resblock0.rs"
-
-[[example]]
-name = "test_cpu_vs_cuda_conv1d"
-path = "examples/test_cpu_vs_cuda_conv1d.rs"
-
-[[example]]
-name = "test_conv_pre_weights"
-path = "examples/test_conv_pre_weights.rs"
-
-[[example]]
-name = "e2e_quick"
-path = "examples/e2e_quick.rs"
-
-[[example]]
-name = "check_phonemes"
-path = "examples/check_phonemes.rs"
-
 [[bench]]
 name = "inference_bench"
 harness = false
-
-[[bench]]
-name = "kv_cache_bench"
-harness = false
-required-features = ["cuda"]
-
-[[bench]]
-name = "gpt_dtype_bench"
-harness = false
-required-features = ["cuda"]
 
 [[bench]]
 name = "conv1d_cpu_bench"

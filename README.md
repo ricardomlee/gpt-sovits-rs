@@ -107,7 +107,7 @@ and readiness. [Tell us where you got stuck, or what worked](https://github.com/
 Do not attach private models, recordings, or credentials.
 
 [Deployment](docs/DEPLOYMENT.md) | [API](docs/API.md) |
-[Development](docs/DEVELOPMENT.md) | [Product goal](docs/PRODUCT_GOAL.md)
+[Development](docs/DEVELOPMENT.md)
 
 ## License and Credits
 

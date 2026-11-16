@@ -113,10 +113,7 @@ GPT_SOVITS_SYNC_PROFILE=1 target/release/gpt-sovits \
 
 | 工具 | 用途与限制 |
 | --- | --- |
-| `kv_cache_bench` | 解码路径对照，使用自有贪心参数和参考音频配置，未加载 voice 的 SV |
-| `gpt_dtype_bench` | GPT 阶段的精度实验，依赖本地固定模型和参考素材 |
 | `inference_bench` | 文本前端、音频及合成张量微基准；CUDA 张量操作异步执行 |
-| `profile_kv_cache` / `e2e_quick` | 开发调试例子，依赖各自硬编码素材 |
 | `conv1d_cpu_bench` | CPU Conv1d 微基准 |
 | `cuda_oxide_candle` | F32 LeakyReLU 融合对照，需先生成实验 PTX；包含分配及主机启动开销 |
 

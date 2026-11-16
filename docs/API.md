@@ -285,6 +285,9 @@ pipeline callers use the same limits; values are rejected, not clamped.
 | `speed` | `1.0` | Speech-speed multiplier |
 | `seed` | Random | Optional unsigned 64-bit integer controlling GPT sampling and SoVITS noise |
 
+`speed` interpolates the SoVITS EncP latent time axis, rather than resampling
+the final audio. The reference recording's pace and intonation also affect speech.
+
 The voice field for target language is `language`; the request field is `text_language`.
 Both voice profiles and requests use `prompt_language` for the reference transcript.
 An explicit request overrides the corresponding voice default. To force the same
@@ -321,6 +324,8 @@ Common aliases are accepted for easier client integration:
 | `prompt_text` | `reference_text`, `referenceText` |
 | `sv_embedding` | `svEmbedding`, `speakerEmbedding` |
 
+#### Chunking
+
 Chunking and generation limits use the same request-over-voice precedence:
 
 | Field | Default when absent from the voice | Purpose |
@@ -332,6 +337,12 @@ Chunking and generation limits use the same request-over-voice precedence:
 | `sentence_fade_ms` | `8` | Fade each chunk in/out before concatenation. |
 | `max_tokens` | `500` | Maximum semantic tokens per chunk. |
 | `repetition_penalty` | `1.35` | GPT repetition penalty. |
+
+`sentence` uses soft/hard length thresholds of 32/60 characters for Chinese and
+80/140 for English. Punctuation and short-chunk merging also affect the resulting
+lengths. Splits avoid decimal points, percent signs and digit interiors; oversized
+numbers remain bounded. Each chunk is generated independently, so intonation can
+vary between chunks.
 
 CamelCase aliases such as `splitMethod`, `minSentenceChars`, `maxTokens`, and `repetitionPenalty` are also accepted.
 
