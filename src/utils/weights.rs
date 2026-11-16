@@ -567,7 +567,7 @@ pub struct Conv1dWeightNorm {
     pub stride: usize,
     pub padding: usize,
     pub dilation: usize,
-    /// Pre-computed normalized weight (computed once during loading)
+    /// Effective weight cached during loading, including regular checkpoint tensors.
     cached_weight: Option<Tensor>,
 }
 
