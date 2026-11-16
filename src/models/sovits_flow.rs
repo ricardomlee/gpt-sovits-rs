@@ -3,7 +3,7 @@
 //! Implementation matching the actual model structure
 
 use crate::utils::{Conv1dWeightNorm, StateDict};
-use crate::Result;
+use crate::{Error, Result};
 use candle_core::{DType, Device, Tensor};
 
 /// WaveNet Encoder for Flow-based models
@@ -56,6 +56,29 @@ impl WN {
                 dtype,
             )?);
             i += 1;
+        }
+
+        if in_layers.is_empty() || in_layers.len() != res_skip_layers.len() {
+            return Err(Error::ModelLoadError(format!(
+                "{prefix}: expected nonempty, matching input and residual/skip layers, found {} and {}",
+                in_layers.len(),
+                res_skip_layers.len()
+            )));
+        }
+        for (group, loaded) in [
+            ("in_layers", in_layers.len()),
+            ("res_skip_layers", res_skip_layers.len()),
+        ] {
+            let group_prefix = format!("{prefix}.{group}.");
+            let stored = state_dict
+                .keys()
+                .filter(|key| key.starts_with(&group_prefix) && key.ends_with(".weight_v"))
+                .count();
+            if stored != loaded {
+                return Err(Error::ModelLoadError(format!(
+                    "{prefix}: {group} indices must be contiguous from zero; found {stored} weights but loaded {loaded} layers"
+                )));
+            }
         }
 
         // Load condition layer (optional)
@@ -359,21 +382,40 @@ impl ResidualCouplingBlock {
         state_dict: &StateDict,
         prefix: &str,
         device: &Device,
-        _n_layers: usize,
+        n_layers: usize,
         dtype: DType,
     ) -> Result<Self> {
-        let mut layers = Vec::new();
-
-        // Flow layers may be at even indices (0, 2, 4, 6) - check up to 8
-        // Pre layers use regular "weight" key, not "weight_v"
-        for i in 0..8 {
-            let layer_prefix = format!("{}.{}", prefix, i);
-            if state_dict.contains(&format!("{}.pre.weight", layer_prefix)) {
-                let layer =
-                    ResidualCouplingLayer::load(state_dict, &layer_prefix, device, false, dtype)?;
-                layers.push(layer);
-            }
+        let key_prefix = format!("{prefix}.");
+        let mut indices: Vec<usize> = state_dict
+            .keys()
+            .filter_map(|key| {
+                let suffix = key.strip_prefix(&key_prefix)?;
+                let index = suffix
+                    .strip_suffix(".pre.weight")
+                    .or_else(|| suffix.strip_suffix(".pre.weight_v"))?;
+                index.parse().ok()
+            })
+            .collect();
+        indices.sort_unstable();
+        indices.dedup();
+        if indices.len() != n_layers {
+            return Err(Error::ModelLoadError(format!(
+                "{prefix}: expected {n_layers} coupling layers, found {}",
+                indices.len()
+            )));
         }
+        let layers = indices
+            .into_iter()
+            .map(|i| {
+                ResidualCouplingLayer::load(
+                    state_dict,
+                    &format!("{prefix}.{i}"),
+                    device,
+                    false,
+                    dtype,
+                )
+            })
+            .collect::<Result<_>>()?;
 
         Ok(Self { layers })
     }

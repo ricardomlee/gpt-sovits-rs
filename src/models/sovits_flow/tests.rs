@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashMap;
 
 fn assert_close(actual: &Tensor, expected: &[f64]) -> Result<()> {
     let actual = actual.flatten_all()?.to_vec1::<f32>()?;
@@ -79,6 +80,156 @@ fn coupling(mean_only: bool, offset: f32) -> Result<ResidualCouplingLayer> {
         half_channels: 1,
         mean_only,
     })
+}
+
+fn insert_conv(
+    weights: &mut HashMap<String, Tensor>,
+    prefix: &str,
+    conv: &Conv1dWeightNorm,
+    normalized: bool,
+) -> Result<()> {
+    if normalized {
+        weights.insert(format!("{prefix}.weight_g"), conv.weight_g.clone());
+        weights.insert(format!("{prefix}.weight_v"), conv.weight_v.clone());
+    } else {
+        weights.insert(format!("{prefix}.weight"), conv.get_weight()?);
+    }
+    if let Some(bias) = &conv.bias {
+        weights.insert(format!("{prefix}.bias"), bias.clone());
+    }
+    Ok(())
+}
+
+fn checkpoint(indices: &[usize], normalized: bool) -> Result<StateDict> {
+    let mut weights = HashMap::new();
+    for (position, index) in indices.iter().enumerate() {
+        let prefix = format!("flow.flows.{index}");
+        let layer = coupling(false, 0.1 - position as f32 * 0.4)?;
+        insert_conv(
+            &mut weights,
+            &format!("{prefix}.pre"),
+            &layer.pre,
+            normalized,
+        )?;
+        insert_conv(
+            &mut weights,
+            &format!("{prefix}.post"),
+            &layer.post,
+            normalized,
+        )?;
+        for (group, layers) in [
+            ("in_layers", &layer.enc.in_layers),
+            ("res_skip_layers", &layer.enc.res_skip_layers),
+        ] {
+            for (i, conv) in layers.iter().enumerate() {
+                insert_conv(
+                    &mut weights,
+                    &format!("{prefix}.enc.{group}.{i}"),
+                    conv,
+                    true,
+                )?;
+            }
+        }
+        insert_conv(
+            &mut weights,
+            &format!("{prefix}.enc.cond_layer"),
+            layer.enc.cond_layer.as_ref().unwrap(),
+            true,
+        )?;
+    }
+    Ok(StateDict::new(weights))
+}
+
+#[test]
+fn wave_net_loader_rejects_empty_layers() -> Result<()> {
+    let error = WN::load(
+        &StateDict::new(HashMap::new()),
+        "flow.flows.0.enc",
+        &Device::Cpu,
+        DType::F32,
+    )
+    .expect_err("an empty WaveNet must not load as a zero-output encoder");
+    assert!(matches!(error, crate::Error::ModelLoadError(_)));
+    assert!(error.to_string().contains("flow.flows.0.enc"));
+    Ok(())
+}
+
+#[test]
+fn wave_net_loader_rejects_mismatched_input_and_residual_layers() -> Result<()> {
+    for group in ["in_layers", "res_skip_layers"] {
+        let mut weights = checkpoint(&[0], false)?;
+        weights.remove(&format!("flow.flows.0.enc.{group}.1.weight_v"))?;
+        let error = WN::load(&weights, "flow.flows.0.enc", &Device::Cpu, DType::F32)
+            .expect_err("incomplete WaveNet layers must fail before inference");
+        assert!(matches!(error, crate::Error::ModelLoadError(_)));
+        assert!(error.to_string().contains("flow.flows.0.enc"));
+    }
+    Ok(())
+}
+
+#[test]
+fn wave_net_loader_rejects_matching_gaps_in_both_layer_groups() -> Result<()> {
+    let original = checkpoint(&[0], false)?;
+    let weights = StateDict::new(
+        original
+            .keys()
+            .map(|key| {
+                let renamed = key
+                    .replace(".enc.in_layers.1.", ".enc.in_layers.2.")
+                    .replace(".enc.res_skip_layers.1.", ".enc.res_skip_layers.2.");
+                Ok((renamed, original.get(key)?.clone()))
+            })
+            .collect::<Result<_>>()?,
+    );
+    let error = WN::load(&weights, "flow.flows.0.enc", &Device::Cpu, DType::F32)
+        .expect_err("paired gaps must not silently truncate the WaveNet");
+    assert!(matches!(error, crate::Error::ModelLoadError(_)));
+    assert!(error.to_string().contains("flow.flows.0.enc"));
+    Ok(())
+}
+
+#[test]
+fn flow_loader_rejects_missing_and_extra_layers() -> Result<()> {
+    for indices in [&[][..], &[0][..], &[2][..], &[0, 2, 4][..]] {
+        let weights = checkpoint(indices, false)?;
+        let error =
+            ResidualCouplingBlock::load(&weights, "flow.flows", &Device::Cpu, 2, DType::F32)
+                .expect_err("coupling layer count must match the requested architecture");
+        assert!(matches!(error, crate::Error::ModelLoadError(_)));
+        assert!(error.to_string().contains("flow.flows"));
+    }
+    Ok(())
+}
+
+#[test]
+fn flow_loader_preserves_regular_and_normalized_projection_weights() -> Result<()> {
+    let reference = ResidualCouplingBlock {
+        layers: vec![coupling(false, 0.1)?, coupling(false, -0.3)?],
+    };
+    let input = Tensor::new(&[[[0.2f32, -0.6, 7.0], [0.8, -0.3, -9.0]]], &Device::Cpu)?;
+    let mask = Tensor::new(&[[[1f32, 1.0, 0.0]]], &Device::Cpu)?;
+    let g = Tensor::full(0.4f32, (1, 1, 1), &Device::Cpu)?;
+    for indices in [[0, 2], [0, 8]] {
+        for normalized in [false, true] {
+            let weights = checkpoint(&indices, normalized)?;
+            let loaded =
+                ResidualCouplingBlock::load(&weights, "flow.flows", &Device::Cpu, 2, DType::F32)?;
+            for reverse in [false, true] {
+                let expected = reference
+                    .forward(&input, &mask, Some(&g), reverse)?
+                    .flatten_all()?
+                    .to_vec1::<f32>()?
+                    .into_iter()
+                    .map(f64::from)
+                    .collect::<Vec<_>>();
+                assert_close(
+                    &loaded.forward(&input, &mask, Some(&g), reverse)?,
+                    &expected,
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 fn coupling_scalar(
