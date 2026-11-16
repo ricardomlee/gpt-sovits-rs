@@ -44,7 +44,7 @@ impl GPTModel {
     /// * `prompt_tokens` - Prompt audio token IDs (from reference audio)
     ///
     /// # Returns
-    /// Flattened hidden state after the first transformer layer as Vec<f32>
+    /// Flattened hidden state after the first transformer layer as `Vec<f32>`
     pub fn debug_layer0_output(
         &self,
         phoneme_ids: &[usize],

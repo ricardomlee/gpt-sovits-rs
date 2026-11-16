@@ -62,7 +62,7 @@ impl TextFrontend {
 
     /// Process text and return (phoneme_ids, word2ph) for proper BERT alignment.
     ///
-    /// word2ph[i] = number of phonemes for BERT content token i.
+    /// `word2ph[i]` = number of phonemes for BERT content token i.
     /// Only valid for Chinese text; for other languages returns empty word2ph (falls back to nearest-neighbor).
     pub fn process_with_word2ph(
         &self,
