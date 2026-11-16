@@ -2,9 +2,9 @@
 
 本页提供复测方法和已保存的报告。结果以每份报告记录的提交、模型、设备和输入为准。
 
-最近发布基线是 [1.3.1 与 1.3.0 的 Sun CUDA 对照](benchmarks/v1.3.1-sun-cuda.md)：
+最近发布基线是 [1.3.2 与 1.3.1 的 Sun CUDA 对照](benchmarks/v1.3.2-sun-cuda.md)：
 RTX 4060 Ti、Sun v2Pro + SV、12 项输入、每项测量 5 次，
-1.3.1 候选的热推理 RTF 中位数范围为 0.1351–0.1671。
+1.3.2 的热推理 RTF 中位数范围为 0.1260–0.1514。
 后续源码改动需要按下述流程重新测量。
 
 ## 当前推理路径
@@ -92,6 +92,7 @@ cargo bench --locked --bench inference_bench -- text_frontend
 
 | 报告 | 记录 |
 | --- | --- |
+| [1.3.2 / 1.3.1 对照](benchmarks/v1.3.2-sun-cuda.md) | 固定 seed 的 A/B/A 共 252 段波形检查通过，GPU 与 HTTP 共 324 段 ASR 对照通过预设门槛 |
 | [CUDA 转置卷积对照](benchmarks/2026-11-16-cuda-transposed-convolution.md) | 完整 A/B/A/B/A 及英文/混读补测，保留波动项；最大 PCM16 差异一个量化步 |
 | [1.3.1 / 1.3.0 对照](benchmarks/v1.3.1-sun-cuda.md) | A/B/A 共 252 段波形检查通过，ASR 对照通过预设门槛；保留小数和混读偏差 |
 | [1.3.0](benchmarks/v1.3.0-sun-cuda.md) | 候选验收及正式镜像复验；混读单项超限后追加对照，保留全部结果 |
