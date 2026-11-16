@@ -413,3 +413,6 @@ impl ResidualCouplingBlock {
         Ok(x.index_select(&indices_tensor, 1)?)
     }
 }
+
+#[cfg(test)]
+mod tests;
