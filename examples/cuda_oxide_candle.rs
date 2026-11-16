@@ -59,6 +59,8 @@ fn main() -> Result<()> {
     let Device::Cuda(cuda_device) = &device else {
         unreachable!();
     };
+    // Match the pipeline's dedicated-stream policy in Config::candle_device.
+    unsafe { cuda_device.disable_event_tracking() };
     let stream = cuda_device.cuda_stream();
     let module = stream
         .context()
