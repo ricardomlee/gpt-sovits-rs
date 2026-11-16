@@ -172,6 +172,8 @@ gpt-sovits --models-dir models --voices-dir voices --voice demo \
 ```
 
 检查 doctor 输出中的模型、参考音频和 SV 路径，并试听 `test.wav`。
+首次加载会校验 Flow 层数与 WaveNet 层组的完整性。缺层或索引不连续时，错误会包含
+对应权重前缀；请核对源 checkpoint 和转换结果，重新取得或转换完整权重。
 通过后可[启动 HTTP 服务](DEPLOYMENT.md)。
 
 ## 许可证
