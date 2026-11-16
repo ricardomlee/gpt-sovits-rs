@@ -1,107 +1,93 @@
-# cuda-oxide 实验记录
+# cuda-oxide 实验
 
-历史实验（2026 年 7 月），不是当前发布性能基线。以下环境、工具链兼容办法和数字
-仅对应当时的本机实验，没有本轮重新测量；生产路径仍未引入 cuda-oxide。
-当前行为和自动报告见 [性能指南](PERFORMANCE.md)。
+最近复测：2026-11-16。实验使用 Rust 编写 F32 LeakyReLU kernel，生成 PTX 后
+直接读写 Candle Tensor 的显存。生产推理路径保持原样。
 
-## 目的
+## 上游更新
 
-验证 [cuda-oxide](https://github.com/NVlabs/cuda-oxide) 能否用于本项目的自定义 CUDA 融合算子，同时不改变 Candle 的张量、显存和 CUDA context 管理。
+[CUDA Rust](https://github.com/NVIDIA/cuda-rust) 已合并 cuda-oxide 与 cutile-rs
+及共享 host runtime。本轮固定提交 `348895e421a92d13a2c3a843ccb20ed1fb8b7f8b`：
 
-这不是替换 Candle。合适的用法是：cuda-oxide 负责把少量性能关键的 Rust kernel 编译成 PTX，Candle 继续负责模型和运行时。
+- cargo-oxide / cuda-device / cuda-host 0.4.0，cuda-core 0.5.0。
+- 工具链固定为 Rust 1.99.1，自动探测其 LLVM 23；旧的 `llc-22` 兼容名称已移除。
+- `#[cuda_module]` 将设备产物嵌入实验二进制，并生成类型化的 kernel 启动方法。
+- 编译器仍需要 `rustc-dev` 与内部编译器接口；`cargo oxide` 管理
+  `RUSTC_BOOTSTRAP`。工具链声明和 Cargo 依赖限定在独立实验目录。
 
-## 当时的结果
+Candle 互操作示例只加载生成的 PTX，沿用 Candle 的 context 和 stream。
+参考上游 [安装说明](https://github.com/NVIDIA/cuda-rust/blob/348895e421a92d13a2c3a843ccb20ed1fb8b7f8b/cuda-oxide/cuda-oxide-book/getting-started/installation.md)
+及 [类型化启动接口](https://github.com/NVIDIA/cuda-rust/blob/348895e421a92d13a2c3a843ccb20ed1fb8b7f8b/cuda-oxide/README.md)。
 
-测试环境：
+## 本机结果
 
-- NVIDIA RTX 4060 Ti，计算能力 8.9
-- CUDA 13.2，驱动 610.62
-- cuda-oxide 0.2.1，固定提交 `ae41d1edce943d2f8c8f720e7024a9ef5e98ade9`
-- `nightly-2026-04-03`
-- LLVM 23
+- RTX 4060 Ti，sm89，驱动 630.20，CUDA 13.2.51，WSL2。
+- 主项目：Candle 0.11.1，Rust 1.95.0，release，F32，独立 CUDA stream。
+- 实验编译器：Rust 1.99.1，自带 LLVM 23.1.1。
+- 每组预热 20 次、计时 500 次，重复 3 轮。下表为三轮平均调用耗时的中位数，单位 us。
+  包含主机启动开销和末尾同步；分配路径还包含输出分配及清零。
 
-测试算子是 SoVITS 中可用的 fused LeakyReLU，输入为 1,048,576 个 F32 元素。20 次预热、500 次执行后：
+| 元素数 | slope | 融合，复用输出 | 融合，分配输出 | 项目当前实现 | Candle 自带实现 |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 257 | 0.1 | 6.52 | 13.22 | 40.83 | 41.68 |
+| 257 | 0.01 | 7.45 | 12.50 | 63.73 | 55.97 |
+| 16,384 | 0.1 | 5.58 | 10.35 | 61.48 | 49.80 |
+| 16,384 | 0.01 | 6.10 | 16.65 | 42.29 | 31.54 |
+| 65,536 | 0.1 | 6.46 | 9.91 | 41.77 | 45.62 |
+| 65,536 | 0.01 | 5.67 | 12.99 | 40.96 | 37.96 |
+| 262,144 | 0.1 | 7.70 | 20.66 | 41.77 | 39.12 |
+| 262,144 | 0.01 | 12.52 | 13.05 | 47.28 | 34.58 |
+| 1,048,576 | 0.1 | 12.73 | 18.16 | 80.21 | 59.00 |
+| 1,048,576 | 0.01 | 15.81 | 17.44 | 68.55 | 57.23 |
 
-| 路径 | 平均调用耗时（含主机开销） | 最大误差 |
-| --- | ---: | ---: |
-| cuda-oxide 自带 host runtime | 7.97 us | 0 |
-| cuda-oxide + Candle，复用输出 | 11.83-16.59 us | 0 |
-| cuda-oxide + Candle，每次分配输出 | 19.36-30.71 us | 0 |
-| Candle 四算子 LeakyReLU | 76.57-91.80 us | 0 |
+项目基线直接调用 `sovits_decoder::leaky_relu`，Candle 基线调用
+`candle_nn::ops::leaky_relu`。30 组对照的最大误差均为 0。检查覆盖两个负斜率、
+非整线程块长度及偏移 7 个元素的连续视图；错误检查会拒绝长度不符、NaN 和无穷值。
+Compute Sanitizer memcheck 对独立 kernel 和 Candle 互操作均报告 0 errors。
 
-输入为 1,048,576 个 F32 元素。表中时间包含 host launch 和 Candle 输出分配开销，不是只看 GPU event 的 kernel 时间。每次分配输出的 cuda-oxide 路径更接近生产用法，相比当前由 `maximum/minimum/multiply/add` 组成的 Candle 实现快 3 倍以上。
+测量存在主机调度波动；这些数值用于评估算子融合，不代表上游版本间的速度变化。
 
-已经验证：
+## 实际推理热点
 
-- Rust kernel 可以生成适用于 `sm_89` 的 PTX。
-- PTX 可以通过 Candle 使用的 cudarc context 动态加载。
-- kernel 可以直接读写 Candle F32 Tensor 的显存，不需要设备间复制。
-- 主 crate 仍使用 stable Rust；nightly 和 cuda-oxide 依赖只存在于独立实验目录。
+在提交 `cd1549b` 的推理实现上采集 Sun v2Pro + SV：3 段文本、seeds 11/42、
+每段预热一次，共 9 次合成。auto 模式实际使用 CUDA Graph。所有信号检查通过，
+9 个 WAV 与依赖升级验收样本逐字节一致。
+
+Nsight Systems 2025.6.3 开启 CUDA Graph node trace，采集包含模型及参考加载：
+
+- 识别到 864 条连续的 `maximum → minimum → const_set → multiply → add`
+  激活链，每次合成约 96 条；其 GPU kernel 时间合计 101.97 ms。
+- 全部 GPU kernel 时间合计 2798.19 ms，上述激活链占 3.64%。
+- 转置卷积与 im2col1d 合计 563.27 ms，约占 20.1%。
+
+上述比例统计设备 kernel 时间。主机分配、launch、同步及 profiler 开销需在端到端
+对照中另外衡量；本轮没有接入融合 kernel 的 TTS 候选版本。
+
+结论：保留独立实验。融合算子有明确局部收益，下一步先做小范围端到端 A/B/A，
+再决定是否承担预编译 PTX 的发布、架构覆盖和运行时维护成本。
 
 ## 复现
 
-当时固定版本使用 Linux、CUDA Toolkit 12 以上、指定 nightly，以及带 `rust-src`、`rustc-dev` 的工具链。
+Linux 需要 CUDA Toolkit 13+、兼容驱动、Clang/libclang 21+。
+在仓库根目录安装固定版本：
 
 ```bash
-rustup toolchain install nightly-2026-04-03 \
-  --component rust-src,rustc-dev,rust-analyzer
-cargo +nightly-2026-04-03 install \
-  --git https://github.com/NVlabs/cuda-oxide.git \
-  --rev ae41d1edce943d2f8c8f720e7024a9ef5e98ade9 cargo-oxide --force
+rustup toolchain install 1.99.1 --profile minimal \
+  --component rust-src,rustc-dev,llvm-tools --no-self-update
+cargo +1.99.1 install --locked \
+  --git https://github.com/NVIDIA/cuda-rust.git \
+  --rev 348895e421a92d13a2c3a843ccb20ed1fb8b7f8b cargo-oxide
 
 cd experiments/cuda-oxide
-cargo oxide setup
 cargo oxide doctor
 cargo oxide run --arch sm_89
-```
-
-本机 LLVM 23 需要给当前版本的探测逻辑提供兼容名称：
-
-```bash
-mkdir -p /tmp/cuda-oxide-tools
-ln -sf /usr/lib/llvm-23/bin/llc /tmp/cuda-oxide-tools/llc-22
-PATH=/tmp/cuda-oxide-tools:$PATH \
-CUDA_OXIDE_OPT=/usr/lib/llvm-23/bin/opt \
-cargo oxide build --arch sm_89
 
 cd ../..
-cargo run --release --features cuda --example cuda_oxide_candle
+cargo run --locked --release --features cuda --example cuda_oxide_candle
+cargo test --locked --release --features cuda --example cuda_oxide_candle
+compute-sanitizer --tool memcheck --error-exitcode 1 \
+  target/release/examples/cuda_oxide_candle
 ```
 
-生成的 `.ll` 和 `.ptx` 是本机实验产物，不提交到仓库。
-
-## 判断
-
-cuda-oxide 可以继续实验，但目前不应进入默认推理路径：
-
-- 项目仍处于早期阶段，编译器和 API 变化快。
-- 工具链要求比主项目严格，部署时直接编译不够轻量。
-- 单次激活仍只有几十微秒，但 SoVITS 会反复调用。融合 LeakyReLU 有明确的局部收益，是否进入生产路径取决于 E2E 收益和部署成本。
-- 真正有价值的是融合多个操作，减少中间 Tensor 和 kernel launch；需要先用 profiler 找到稳定热点。
-
-下一次实验应选择一个实际占时明显、边界清楚的 SoVITS 操作链，并同时对比 Candle 基线、数值误差和端到端耗时。没有稳定收益时，不引入生产依赖。
-
-## 端到端分析
-
-Nsight Systems 对同一次短文本的 plain 和 KV 推理汇总显示：
-
-- GPT FFN 用 `clamp(0, MAX)` 实现 ReLU，产生了约 1200 对 `maximum/minimum` kernel。
-- 改用 Candle 原生 `relu()` 后，这部分变成单 kernel，约 1200 次合计 3.15 ms。
-- 原实现同等调用量的 `maximum/minimum` 约需 16 ms，GPU 时间预计减少约 13 ms。
-- WaveNet 门控的 `tanh/sigmoid` 各只有约 38 次、总计不足 0.1 ms，不值得优先融合。
-- 剩余约 194 对 `maximum/minimum` 来自 SoVITS LeakyReLU，适合作为下一项 cuda-oxide 融合实验。
-
-这些数字会随 GPT 生成 token 数变化，因此用于判断热点和 kernel 数量，不当作稳定的端到端基准。
-
-采集命令：
-
-```bash
-cargo build --release --features cuda --example e2e_quick
-nsys profile --trace=cuda --sample=none --cpuctxsw=none \
-  --output=/tmp/gpt-sovits-profile \
-  target/release/examples/e2e_quick
-nsys stats --report cuda_gpu_kern_sum,cuda_api_sum \
-  /tmp/gpt-sovits-profile.nsys-rep
-```
-
-下一步应把 cuda-oxide LeakyReLU 作为显式实验开关接入 SoVITS，使用预编译 PTX，并比较相同输入、相同随机种子下的 E2E 延迟和音频逐样本误差。默认路径暂时不依赖 PTX。
+设备 `.ll`、`.ptx` 及其他生成物不提交；模型、WAV、原始 profile 和报告保留在本地
+`outputs/cuda-oxide-20261116/`。当前发布基准见 [性能指南](PERFORMANCE.md)。
+旧工具链和 2026 年 7 月数据见 [历史记录](https://github.com/ricardomlee/gpt-sovits-rs/blob/cd1549be6e51dd16294615ff35f349726d18b570/docs/CUDA_OXIDE_EXPERIMENT.md)。
