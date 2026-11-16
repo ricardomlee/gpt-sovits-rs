@@ -604,7 +604,7 @@ impl G2PConverter {
     /// Uses jieba word segmentation + full ToneSandhi rules (不/一/轻声/三声连读),
     /// matching the Python GPT-SoVITS text frontend.
     ///
-    /// Returns (phoneme_string, word2ph) where word2ph[i] = number of phonemes for BERT
+    /// Returns `(phoneme_string, word2ph)` where `word2ph[i]` = number of phonemes for BERT
     /// content token i (after CLS/SEP removal). Includes ALL characters; supported
     /// punctuation produces one phone, while spaces and unsupported characters produce zero.
     pub fn convert_chinese_with_word2ph(&self, text: &str) -> Result<(String, Vec<usize>)> {

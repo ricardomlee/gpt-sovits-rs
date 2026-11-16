@@ -70,6 +70,11 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --all-targets --features http-api -- -D warnings
 
+      - name: Check library documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --no-deps --lib --features http-api
+
       - name: Run tests
         run: |
           cargo test --locked --features http-api

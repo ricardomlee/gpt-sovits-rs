@@ -85,7 +85,7 @@ impl SemanticTokenizer {
 
     /// Extract semantic tokens from Hubert features
     /// hubert_features: [1, 768, T_hubert]
-    /// Returns: Vec<usize> of codebook indices [T_tokens]
+    /// Returns: `Vec<usize>` of codebook indices `[T_tokens]`
     pub fn extract(&self, hubert_features: &Tensor) -> Result<Vec<usize>> {
         // Apply SSL projection: Conv1d with stride
         let ssl_out = self.ssl_conv.forward(hubert_features)?;

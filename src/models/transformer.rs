@@ -41,7 +41,7 @@ impl MultiHeadAttention {
     }
 
     /// Constructor that keeps the fused QKV weight for a single matmul at inference time.
-    /// `w_qkv` weight is [3*hidden, hidden], bias is [3*hidden].
+    /// `w_qkv` weight is `[3*hidden, hidden]`, bias is `[3*hidden]`.
     pub fn new_fused(
         q: Linear,
         k: Linear,

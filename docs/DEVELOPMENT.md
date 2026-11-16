@@ -107,6 +107,7 @@ cargo test --locked --release --features cuda --lib nearest_upsample -- --includ
 
 ```bash
 cargo fmt --all -- --check
+RUSTDOCFLAGS="-D warnings" cargo doc --locked --no-deps --lib --features http-api
 cargo test --locked
 cargo test --locked --features http-api
 cargo test --locked --example speech_regression
@@ -118,6 +119,7 @@ cargo check --locked --bin gpt-sovits-convert
 Default tests do not need models, a GPU, private audio, or network access.
 Documentation tests check local Markdown link paths, JSON examples, Bash syntax
 and documented CLI flags; the Rust API example is compiled as a no-run doctest.
+CI also builds the library reference with Rustdoc warnings treated as errors.
 These checks do not execute deployment snippets or verify external URLs.
 
 Keep public interfaces stable and implementation responsibilities clear. Reuse

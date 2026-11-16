@@ -18,7 +18,7 @@ impl GPTModel {
     ///
     /// Flow:
     ///  1. Prefill with dynamic KV — captured graphs don't help here (variable shapes).
-    ///  2. Convert KV to pre-allocated static buffers (fixed [max_kv_len] shapes).
+    ///  2. Convert KV to pre-allocated static buffers (fixed `[max_kv_len]` shapes).
     ///  3. Pre-allocate stable input/mask buffers for the graph boundary.
     ///  4. Warmup 3 decode steps to prime CUDA's stream-ordered allocator pool.
     ///  5. Capture one full decode step into a CUDA graph.

@@ -296,7 +296,7 @@ impl Embedding {
     }
 
     /// Lookup embeddings for input indices
-    /// Handles both 1D [seq_len] and 2D [batch, seq_len] inputs
+    /// Handles both 1D `[seq_len]` and 2D `[batch, seq_len]` inputs
     /// Output: [batch, seq_len, hidden_dim] or [seq_len, hidden_dim] for 1D input
     pub fn embedding(&self, input: &Tensor) -> Result<Tensor> {
         let input_dims = input.dims();
