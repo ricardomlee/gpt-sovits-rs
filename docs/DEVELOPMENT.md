@@ -120,6 +120,9 @@ Documentation tests check local Markdown link paths, JSON examples, Bash syntax
 and documented CLI flags; the Rust API example is compiled as a no-run doctest.
 These checks do not execute deployment snippets or verify external URLs.
 
+Keep public interfaces stable and implementation responsibilities clear. Reuse
+existing modules; add abstractions when they reduce actual repetition or complexity.
+Maintain shared defaults in one place.
 Keep CLI, HTTP fields, defaults and model-format documentation in the same PR as
 their implementation. Put a procedure in one guide and link to it from other pages.
 Rust library callers using Candle Tensor/Device types must match this project's
@@ -169,9 +172,6 @@ Run the [local GPU benchmark](PERFORMANCE.md) **before every release**, and reta
 JSON/Markdown report plus the audio/ASR evidence. Check speech completeness with ASR
 and listening. [Release acceptance](RELEASE_ACCEPTANCE.md) covers candidate images,
 HTTP regression, ASR, and upgrade/rollback without touching the existing service.
-
-The old `e2e_quick`, `profile_kv_cache`, and dtype examples have their own fixtures
-and measurement boundaries described in the performance guide.
 
 ## Docker Checks
 

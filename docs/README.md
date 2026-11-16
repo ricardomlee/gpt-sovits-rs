@@ -14,7 +14,7 @@ GPT-SoVITS-RS 将已有音色变成本地 HTTP 语音服务。先跑出声音，
 | 接入 Hermes 或自己的 Agent | [Agent 接入](AGENT_INTEGRATION.md) |
 | 查 HTTP 字段、CLI 选项或 Rust 调用 | [API](API.md) |
 | 从 shell 调用已有服务 | [HTTP 命令行客户端](../client/README.md) |
-| 调整分段、停顿和语速 | [韵律与分段](PROSODY.md) |
+| 调整分段、停顿和语速 | [API 分段参数](API.md#chunking) |
 
 首次体验使用 **9881** 端口和 `demo` 音色；正式部署及 API 示例使用 **9880**。
 接入时先查询 `GET /voices`，将示例中的音色名换成自己的配置。
@@ -27,7 +27,6 @@ GPT-SoVITS-RS 将已有音色变成本地 HTTP 语音服务。先跑出声音，
 | 编译、代码目录、测试和 CI | [开发](DEVELOPMENT.md) |
 | 测量方法、GPU 自动报告和历史结果 | [性能](PERFORMANCE.md) |
 | 发版验收、语音回归和回滚 | [发布验收](RELEASE_ACCEPTANCE.md) |
-| 项目范围与工程原则 | [产品目标](PRODUCT_GOAL.md) |
 
 文档随仓库代码维护。使用固定版本时，从[对应 tag](https://github.com/ricardomlee/gpt-sovits-rs/tags)
 进入该版本的文档；变更记录见 [Releases](https://github.com/ricardomlee/gpt-sovits-rs/releases)。
