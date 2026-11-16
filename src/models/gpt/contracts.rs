@@ -4,6 +4,10 @@ use std::collections::HashMap;
 
 // Zero attention/FFN and EOS-dominant logits isolate decoder policy from learned behavior.
 fn model() -> GPTModel {
+    model_on(&Device::Cpu)
+}
+
+fn model_on(target_device: &Device) -> GPTModel {
     let device = &Device::Cpu;
     let mut weights = HashMap::new();
     for (key, rows, offset) in [
@@ -84,7 +88,7 @@ fn model() -> GPTModel {
     }
     let file = tempfile::NamedTempFile::new().unwrap();
     candle_core::safetensors::save(&weights, file.path()).unwrap();
-    GPTModel::load(file.path().to_str().unwrap()).unwrap()
+    GPTModel::load_with_device(file.path().to_str().unwrap(), target_device, DType::F32).unwrap()
 }
 
 fn generate(model: &GPTModel, mode: &str, phones: &[usize], max_tokens: usize) -> Vec<usize> {
@@ -136,6 +140,47 @@ fn generate(model: &GPTModel, mode: &str, phones: &[usize], max_tokens: usize) -
         _ => unreachable!(),
     }
     .unwrap()
+}
+
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore = "requires a CUDA GPU"]
+fn cuda_graph_param_cache_preserves_seeded_decode_across_capacities() {
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
+    let device = crate::Config::builder()
+        .with_device("cuda")
+        .build()
+        .candle_device();
+    assert!(device.is_cuda(), "CUDA test must not fall back to CPU");
+    let mut model = model_on(&device);
+    let mut output = vec![0f32; 7 * 16];
+    output[6 * 16] = -100.0;
+    model.ar_predict_layer = Tensor::from_vec(output, (7, 16), &device).unwrap();
+    model.ar_predict_layer_t = model.ar_predict_layer.t().unwrap().contiguous().unwrap();
+    let phones = &[1, 3, 2];
+    let prompt = &[2, 4];
+    let bert = Tensor::full(0.125f32, (1, phones.len(), 16), &device).unwrap();
+    for (seed, capacity) in [(11, 64), (42, 80), (11, 64)] {
+        model.set_sampling_seed(Some(seed)).unwrap();
+        let expected = model
+            .generate_with_prompts_aligned_bert_kv_cache(
+                phones,
+                prompt,
+                Some(&bert),
+                0,
+                1.0,
+                0.8,
+                1.0,
+                48,
+            )
+            .unwrap();
+        model.set_sampling_seed(Some(seed)).unwrap();
+        let actual = model
+            .generate_with_cuda_graph(phones, prompt, Some(&bert), 0, 1.0, 0.8, 1.0, 48, capacity)
+            .unwrap();
+        assert_eq!(actual.len(), 48);
+        assert_eq!(actual, expected, "seed={seed}, capacity={capacity}");
+    }
 }
 
 #[test]

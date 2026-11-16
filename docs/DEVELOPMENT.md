@@ -105,6 +105,13 @@ dimensions. Run the GPU variant on a CUDA host:
 cargo test --locked --release --features cuda --lib nearest_upsample -- --include-ignored
 ```
 
+The controlled GPT fixture also checks fixed-seed Graph decoding across KV
+capacities and repeated requests with Candle's capture parameter cache:
+
+```bash
+cargo test --locked --release --features cuda --lib cuda_graph_param_cache -- --ignored
+```
+
 ```bash
 cargo fmt --all -- --check
 cargo test --locked

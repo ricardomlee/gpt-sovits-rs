@@ -56,6 +56,7 @@ G2P 与 BERT 使用同一份规范化文本，数字展开和读音覆盖通过�
 
 Graph 前 32 步使用 eager/static KV，短生成可能在 capture 前结束。首次 replay 做结果检查，
 出现不适用情形时有 KV 回退保护。每次生成分别创建 Graph。
+捕获前用同一条固定形状路径预热 Candle 的小参数缓存；缓存作用域在 capture 结束时关闭。
 `GPT_SOVITS_DISABLE_CUDA_GRAPH=1` 让自动选择退回 KV；旧的 experimental 开关已删除。
 
 各后端共用[输入准备](src/models/gpt/conditioning.rs)：Prefill 使用文本双向、音频因果的

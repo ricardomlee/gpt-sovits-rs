@@ -70,9 +70,7 @@ impl Config {
             Device::Cuda => {
                 let dev = candle_core::Device::new_cuda_with_stream(0)
                     .unwrap_or(candle_core::Device::Cpu);
-                // Disable cudarc event tracking — we use a single dedicated stream so
-                // cross-stream synchronization events are unnecessary, and they cause
-                // error-state cascade failures when stream wait events fail after ORT init.
+                // All pipeline operations share one dedicated stream; cross-stream events are redundant.
                 #[cfg(feature = "cuda")]
                 if let candle_core::Device::Cuda(ref cuda_dev) = dev {
                     unsafe { cuda_dev.disable_event_tracking() };

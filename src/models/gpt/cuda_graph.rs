@@ -20,7 +20,7 @@ impl GPTModel {
     ///  1. Prefill with dynamic KV — captured graphs don't help here (variable shapes).
     ///  2. Convert KV to pre-allocated static buffers (fixed [max_kv_len] shapes).
     ///  3. Pre-allocate stable input/mask buffers for the graph boundary.
-    ///  4. Warmup 3 decode steps to prime CUDA's stream-ordered allocator pool.
+    ///  4. Run an eager prefix, then warm the fixed-shape path and its parameter cache.
     ///  5. Capture one full decode step into a CUDA graph.
     ///  6. For each remaining step:
     ///     a. Compute new token embedding (eager, ~3 fast kernels).
@@ -352,7 +352,19 @@ impl GPTModel {
                 update_pos_idx_raw(layer_idx, &layer.pos_idx, cache_len_before_capture)?;
             }
             update_mask_raw(cache_len_before_capture)?;
-            // Flush all H2D copies before capture begins
+
+            let graph_step = || -> Result<Tensor> {
+                Ok(self
+                    .transformer
+                    .forward_from_embedding_graphable(&input_buf, &static_kv, &attn_mask_buf)?
+                    .squeeze(0)?
+                    .matmul(&self.ar_predict_layer_t)?
+                    .squeeze(0)?)
+            };
+            // Populate Candle's small host-parameter cache using the exact capture path.
+            let param_cache = cuda_dev.enable_cuda_graph_htod_cache();
+            drop(graph_step()?);
+            // Finish warmup and parameter uploads before capture begins.
             stream
                 .synchronize()
                 .map_err(|e| candle_core::Error::Msg(format!("sync before capture: {e:?}")))?;
@@ -396,12 +408,7 @@ impl GPTModel {
             // become valid after graph.launch(). logits_tmp MUST be dropped before end_capture
             // so its free_async is also captured (graph owns the full alloc/free lifecycle).
             {
-                let logits_tmp = self
-                    .transformer
-                    .forward_from_embedding_graphable(&input_buf, &static_kv, &attn_mask_buf)?
-                    .squeeze(0)?
-                    .matmul(&self.ar_predict_layer_t)?
-                    .squeeze(0)?;
+                let logits_tmp = graph_step()?;
                 let logits_tmp_ptr = get_cuda_ptr(&logits_tmp)?;
                 unsafe {
                     cudarc_result::memcpy_dtod_async(
@@ -422,6 +429,7 @@ impl GPTModel {
                     CUgraphInstantiate_flags::CUDA_GRAPH_INSTANTIATE_FLAG_AUTO_FREE_ON_LAUNCH,
                 )
                 .map_err(|e| candle_core::Error::Msg(format!("end_capture: {e:?}")))?;
+            drop(param_cache);
 
             let Some(graph) = graph_opt else {
                 tracing::warn!("[GPT cuda-graph] empty graph; falling back to dynamic KV");
