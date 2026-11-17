@@ -162,8 +162,8 @@ the environment variable to `0.0.0.0` for port forwarding.
 
 ### `GET /health`
 
-Returns HTTP 200 with `OK` while accepting work. During shutdown it returns
-HTTP 503 with `STOPPING`.
+Returns HTTP 200 with `OK` while accepting work. A health request handled during
+shutdown returns HTTP 503 with `STOPPING`.
 
 ```bash
 curl --fail http://127.0.0.1:9880/health
@@ -196,8 +196,9 @@ waiting for the serialized inference slot; `busy` includes model loading, warmup
 Synthesis requests that cannot enter the inference slot within `--queue-timeout-secs` receive HTTP 503. The
 timeout only covers queue waiting; model loading and inference are not cancelled midway.
 
-On SIGTERM or Ctrl+C, `status` changes to `stopping`. New synthesis/warmup work and
-queued requests receive 503. Active requests, including streaming responses and
+On SIGTERM or Ctrl+C, the listener stops accepting new connections and `status`
+changes to `stopping`. Requests waiting for the inference slot receive 503.
+Active requests, including streaming responses and
 inference still running after a client disconnect, have up to 30 seconds to finish.
 After that deadline the process exits with an error; unfinished responses are interrupted.
 Compose allows 45 seconds before its force-kill deadline.

@@ -583,7 +583,10 @@ mod tests {
 
         assert_eq!(resolved.language, Language::Chinese);
         assert_eq!(resolved.options.prompt_language, Language::Auto);
-        assert_eq!(resolved.refer_path, ref_path.to_string_lossy());
+        assert_eq!(
+            resolved.refer_path,
+            ref_path.canonicalize().unwrap().to_string_lossy()
+        );
         assert_eq!(resolved.prompt_text, "prompt");
         assert_eq!(resolved.options.top_k, 20);
         assert!((resolved.options.top_p - 0.9).abs() < 0.001);
@@ -777,7 +780,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolved.language, Language::English);
-        assert_eq!(resolved.refer_path, request_ref.to_string_lossy());
+        assert_eq!(
+            resolved.refer_path,
+            request_ref.canonicalize().unwrap().to_string_lossy()
+        );
         assert_eq!(resolved.prompt_text, "request prompt");
         assert_eq!(resolved.options.seed, Some(0));
         assert_eq!(resolved.options.prompt_language, Language::Chinese);
@@ -821,9 +827,10 @@ mod tests {
         )
         .unwrap();
 
+        let canonical_sv = sv_path.canonicalize().unwrap();
         assert_eq!(
             resolved.options.sv_embedding.as_deref(),
-            Some(sv_path.as_path())
+            Some(canonical_sv.as_path())
         );
     }
 
@@ -1040,7 +1047,45 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(resolved.refer_path, outside.to_string_lossy());
+        assert_eq!(
+            resolved.refer_path,
+            outside.canonicalize().unwrap().to_string_lossy()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_voice_roots_preserve_canonical_paths_and_reject_escapes() {
+        let temp = tempfile::tempdir().unwrap();
+        let voices = temp.path().join("voices");
+        let alias = temp.path().join("voices-alias");
+        std::fs::create_dir(&voices).unwrap();
+        std::os::unix::fs::symlink(&voices, &alias).unwrap();
+        let reference = voices.join("ref.wav");
+        let outside = temp.path().join("outside.wav");
+        write_ref_audio(&reference);
+        write_ref_audio(&outside);
+        std::os::unix::fs::symlink(&outside, voices.join("escape.wav")).unwrap();
+        for (name, allowed) in [("ref.wav", true), ("escape.wav", false)] {
+            let result = resolve_synthesis(
+                None,
+                Some("zh"),
+                Some(alias.join(name).to_string_lossy().into_owned()),
+                Some("prompt".into()),
+                SynthesisOverrides::default(),
+                &alias,
+                temp.path(),
+                RequestPathPolicy::default(),
+            );
+            if allowed {
+                assert_eq!(
+                    result.unwrap().refer_path,
+                    reference.canonicalize().unwrap().to_string_lossy()
+                );
+            } else {
+                assert!(result.err().unwrap().contains("must be inside"));
+            }
+        }
     }
 
     #[test]
