@@ -194,6 +194,7 @@ jobs:
           DEMO_PULL_POLICY: never
           DEMO_PORT: "9882"
           VERIFY_SPEECH_FORMATS: "1"
+          VERIFY_GRACEFUL_SHUTDOWN: "1"
         run: |
           export DEMO_EXPECTED_VERSION
           DEMO_EXPECTED_VERSION=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "gpt-sovits-rs") | .version')
@@ -274,6 +275,7 @@ jobs:
           DEMO_IMAGE: gpt-sovits-rs:ci
           DEMO_PULL_POLICY: never
           VERIFY_SPEECH_FORMATS: "1"
+          VERIFY_GRACEFUL_SHUTDOWN: "1"
         run: |
           export DEMO_EXPECTED_VERSION
           DEMO_EXPECTED_VERSION=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "gpt-sovits-rs") | .version')

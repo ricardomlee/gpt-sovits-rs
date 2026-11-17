@@ -16,6 +16,7 @@ struct Compose {
 struct Service {
     command: Vec<String>,
     environment: HashMap<String, String>,
+    stop_grace_period: String,
 }
 
 #[test]
@@ -40,6 +41,7 @@ fn compose_commands_are_accepted_by_container_image() {
         let config: Compose = serde_json::from_slice(&config.stdout).unwrap();
         let service = &config.services["gpt-sovits"];
         assert_eq!(service.environment["GPT_SOVITS_HOST"], "0.0.0.0");
+        assert_eq!(service.stop_grace_period, "45s");
 
         let mut command = Command::new("docker");
         command.args(["run", "--rm", "--pull", "never", "--network", "none"]);

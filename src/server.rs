@@ -17,13 +17,17 @@ mod encoding;
 mod handlers;
 mod lifecycle;
 mod pipeline_registry;
+#[cfg(all(test, unix))]
+mod process_tests;
 mod request;
 mod response;
+mod shutdown;
 mod state;
 
 use handlers::{openai_speech_handler, tts_batch_handler, tts_handler, tts_stream_handler};
 use lifecycle::{health_handler, status_handler, voices_handler, warm_voice, warmup_handler};
 use pipeline_registry::PipelineRegistry;
+use shutdown::Shutdown;
 use state::AppState;
 
 fn print_server_ready(addr: SocketAddr, max_cached_pipelines: usize) {
@@ -87,62 +91,91 @@ pub fn run(
         .with_device(device)
         .with_half_precision(half_precision)
         .build();
-    let pipelines = PipelineRegistry::load(
-        config,
-        gpt_model,
-        sovits_model,
-        bigvgan_model,
-        bert_model,
-        hubert_model,
-        max_cached_pipelines,
-    )?;
-
-    let state = AppState {
-        pipelines,
-        voices_dir: Arc::new(voices_dir.to_path_buf()),
-        models_dir: Arc::new(models_dir.to_path_buf()),
-        path_policy: request::RequestPathPolicy {
-            allow_external_reference_paths,
-        },
-        max_text_chars,
-        max_batch_items,
-        queue_timeout: std::time::Duration::from_secs(queue_timeout_secs as u64),
-    };
-    let startup_state = state.clone();
-
-    let app = Router::new()
-        .route("/tts", post(tts_handler))
-        .route("/tts/stream", post(tts_stream_handler))
-        .route("/tts/batch", post(tts_batch_handler))
-        .route("/v1/audio/speech", post(openai_speech_handler))
-        .route("/health", get(health_handler))
-        .route("/status", get(status_handler))
-        .route("/warmup", post(warmup_handler))
-        .route("/voices", get(voices_handler))
-        .layer(TraceLayer::new_for_http())
-        .with_state(state);
-
-    tokio::runtime::Runtime::new()
-        .map_err(|e| format!("Failed to create Tokio runtime: {e}"))?
-        .block_on(async {
-            let listener = tokio::net::TcpListener::from_std(listener)
-                .map_err(|e| format!("Failed to register listener at {addr}: {e}"))?;
-            for voice in preload_voices.iter().map(|voice| voice.trim()) {
-                if voice.is_empty() {
-                    continue;
-                }
-                info!(voice, "Preloading voice");
-                warm_voice(&startup_state, voice)
-                    .await
-                    .map_err(|e| format!("Failed to preload voice '{voice}': {e}"))?;
-            }
-            info!("Starting HTTP server on {addr}");
-            print_server_ready(addr, max_cached_pipelines);
-            axum::serve(listener, app)
-                .await
-                .map_err(|e| format!("Server error: {e}"))?;
-            Ok::<(), String>(())
+    let gpt_model = gpt_model.map(std::path::PathBuf::from);
+    let sovits_model = sovits_model.map(std::path::PathBuf::from);
+    let bigvgan_model = bigvgan_model.map(std::path::PathBuf::from);
+    let bert_model = bert_model.map(std::path::PathBuf::from);
+    let hubert_model = hubert_model.map(std::path::PathBuf::from);
+    let shutdown = Shutdown::default();
+    shutdown::run(shutdown.clone(), shutdown::GRACE_PERIOD, async {
+        let loading_shutdown = shutdown.clone();
+        let pipelines = tokio::task::spawn_blocking(move || {
+            PipelineRegistry::load(
+                config,
+                gpt_model.as_deref(),
+                sovits_model.as_deref(),
+                bigvgan_model.as_deref(),
+                bert_model.as_deref(),
+                hubert_model.as_deref(),
+                max_cached_pipelines,
+                loading_shutdown,
+            )
         })
+        .await
+        .map_err(|error| format!("Model loading task failed: {error}"))??;
+        if shutdown.is_stopping() {
+            return Ok(());
+        }
+        let state = AppState {
+            pipelines: pipelines.clone(),
+            voices_dir: Arc::new(voices_dir.to_path_buf()),
+            models_dir: Arc::new(models_dir.to_path_buf()),
+            path_policy: request::RequestPathPolicy {
+                allow_external_reference_paths,
+            },
+            max_text_chars,
+            max_batch_items,
+            queue_timeout: std::time::Duration::from_secs(queue_timeout_secs as u64),
+        };
+        for voice in preload_voices.iter().map(|voice| voice.trim()) {
+            if shutdown.is_stopping() {
+                pipelines.wait_for_idle().await;
+                return Ok(());
+            }
+            if voice.is_empty() {
+                continue;
+            }
+            info!(voice, "Preloading voice");
+            if let Err(error) = warm_voice(&state, voice).await {
+                if shutdown.is_stopping() {
+                    pipelines.wait_for_idle().await;
+                    return Ok(());
+                }
+                return Err(format!("Failed to preload voice '{voice}': {error}"));
+            }
+        }
+        let app = Router::new()
+            .route("/tts", post(tts_handler))
+            .route("/tts/stream", post(tts_stream_handler))
+            .route("/tts/batch", post(tts_batch_handler))
+            .route("/v1/audio/speech", post(openai_speech_handler))
+            .route("/health", get(health_handler))
+            .route("/status", get(status_handler))
+            .route("/warmup", post(warmup_handler))
+            .route("/voices", get(voices_handler))
+            .layer(TraceLayer::new_for_http())
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::from_std(listener)
+            .map_err(|e| format!("Failed to register listener at {addr}: {e}"))?;
+        info!("Starting HTTP server on {addr}");
+        print_server_ready(addr, max_cached_pipelines);
+        serve(listener, app, pipelines).await
+    })
+}
+
+async fn serve(
+    listener: tokio::net::TcpListener,
+    app: Router,
+    pipelines: PipelineRegistry,
+) -> Result<(), String> {
+    let shutdown = pipelines.shutdown.clone();
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move { shutdown.cancelled().await })
+        .await
+        .map_err(|error| format!("Server error: {error}"))?;
+    pipelines.wait_for_idle().await;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -161,7 +194,9 @@ mod tests {
         let task = tokio::spawn(async move {
             axum::serve(
                 listener,
-                Router::new().route("/health", get(health_handler)),
+                Router::new()
+                    .route("/health", get(health_handler))
+                    .with_state(Shutdown::default()),
             )
             .await
             .unwrap();

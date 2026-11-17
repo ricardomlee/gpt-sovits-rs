@@ -39,6 +39,11 @@ packaged binaries, runs conversion and real HTTP synthesis through the same
 verifier, then synthesizes offline with read-only model/voice mounts. Evidence
 is retained as `packaged-binary-acceptance`; downloaded models are excluded.
 
+Candidate-image and packaged-binary CI also set `VERIFY_GRACEFUL_SHUTDOWN=1`.
+After synthesis, the verifier stops its Compose service and requires exit code 0
+with no OOM kill, retaining `stop.log` and `stopped.json`. Older published-image
+compatibility checks leave this flag unset.
+
 ## Local GPU Performance
 
 Before each tag, run the candidate's [GPU benchmark](PERFORMANCE.md) on the local

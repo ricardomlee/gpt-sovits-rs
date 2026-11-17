@@ -184,6 +184,11 @@ curl --fail http://localhost:9880/status
 CPU 部署改用 `compose.cpu.yml`。回滚时把 `.env` 的镜像标签改回之前的固定版本，
 再运行相同命令。模型、音色和输出均为宿主机目录挂载，重建容器不会覆盖它们。
 
+服务收到 SIGTERM 或 Ctrl+C 后停止接收新任务，排队请求返回 503，在途请求最多有
+30 秒收尾时间。超过期限时服务以非零状态退出，未完成的响应中断。Compose 的
+`stop_grace_period` 为 45 秒，为服务收尾预留余量。停止时使用 `docker compose stop`
+或 `docker compose down`；`/status` 在收尾期间显示 `stopping`。
+
 ## 音色目录
 
 每个音色放在 `voices/<name>/voice.json`。参考音频和 SV embedding 的相对路径按该 voice

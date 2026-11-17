@@ -15,7 +15,6 @@ use axum::{
 };
 use base64::Engine as _;
 use gpt_sovits_rs::{AudioBuffer, Pipeline};
-use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt as _};
 use tracing::{error, info, warn};
 
@@ -205,9 +204,7 @@ pub(super) async fn tts_stream_handler(
     let text_chars = text.chars().count();
     let voice = resolved.voice.clone();
     let language = resolved.language;
-    let (tx, rx) = mpsc::channel::<Result<Vec<u8>, String>>(8);
-
-    lease.spawn(move |pipeline| {
+    let rx = lease.spawn_stream(8, move |pipeline, tx| {
         if let Err(e) = pipeline.preload_speaker_with_options(
             &resolved.refer_path,
             &resolved.prompt_text,
@@ -396,9 +393,7 @@ pub(super) async fn tts_batch_handler(
 
     let language_code = resolved.language.code();
     let texts = req.texts;
-    let (tx, rx) = mpsc::channel::<Vec<u8>>(2);
-
-    lease.spawn(move |pipeline| {
+    let rx = lease.spawn_stream(2, move |pipeline, tx| {
         if let Err(e) = pipeline.preload_speaker_with_options(
             &resolved.refer_path,
             &resolved.prompt_text,
@@ -459,7 +454,7 @@ pub(super) async fn tts_batch_handler(
             let mut line = serde_json::to_vec(&item).unwrap_or_default();
             line.push(b'\n');
             let duration_s = item.duration_s;
-            if tx.blocking_send(line).is_err() {
+            if tx.blocking_send(Ok(line)).is_err() {
                 break;
             }
             info!(
@@ -472,10 +467,7 @@ pub(super) async fn tts_batch_handler(
         }
     });
 
-    let stream =
-        ReceiverStream::new(rx).map(|bytes| -> Result<axum::body::Bytes, std::io::Error> {
-            Ok(axum::body::Bytes::from(bytes))
-        });
+    let stream = ReceiverStream::new(rx).map(|item| item.map_err(std::io::Error::other));
     let mut builder = Response::builder();
     if let Some(seed) = req.seed {
         builder = builder.header("x-tts-seed", seed.to_string());

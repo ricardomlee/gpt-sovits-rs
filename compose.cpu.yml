@@ -4,6 +4,7 @@ services:
     pull_policy: always
     container_name: gpt-sovits-rs
     restart: unless-stopped
+    stop_grace_period: 45s
     environment:
       # v1.2.0 ignores this variable and already listens on all interfaces.
       GPT_SOVITS_HOST: 0.0.0.0
