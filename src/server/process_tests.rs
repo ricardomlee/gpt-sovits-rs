@@ -73,7 +73,12 @@ fn child_server() {
                 return Ok(());
             }
             if mode == "background" {
-                tokio::task::spawn_blocking(wait_for_release);
+                let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+                tokio::task::spawn_blocking(move || {
+                    started_tx.send(()).unwrap();
+                    wait_for_release();
+                });
+                started_rx.await.unwrap();
             }
             let app = Router::new()
                 .route("/health", get(super::health_handler))
