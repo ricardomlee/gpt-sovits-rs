@@ -1,5 +1,6 @@
 //! Bounded model-pipeline cache and global inference serialization.
 
+use super::shutdown::Shutdown;
 use gpt_sovits_rs::voice::VoiceModelPaths;
 use gpt_sovits_rs::{Config, Pipeline, SharedPipelineResources};
 use std::collections::{HashMap, VecDeque};
@@ -7,8 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, OwnedMutexGuard};
-use tracing::info;
+use tokio::sync::{mpsc, Mutex, OwnedMutexGuard};
+use tracing::{error, info};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PipelineKey {
@@ -72,6 +73,7 @@ impl PipelineCache {
 
 #[derive(Clone)]
 pub(super) struct PipelineRegistry {
+    pub(super) shutdown: Shutdown,
     config: Arc<Config>,
     defaults: Arc<PipelineKey>,
     shared_resources: Arc<SharedPipelineResources>,
@@ -97,10 +99,33 @@ impl PipelineLease {
             work(&mut pipeline)
         })
     }
+
+    pub(super) fn spawn_stream(
+        self,
+        capacity: usize,
+        work: impl FnOnce(&mut Pipeline, mpsc::Sender<Result<Vec<u8>, String>>) + Send + 'static,
+    ) -> mpsc::Receiver<Result<Vec<u8>, String>> {
+        let (tx, rx) = mpsc::channel(capacity);
+        let worker_tx = tx.clone();
+        let task = self.spawn(move |pipeline| work(pipeline, worker_tx));
+        tokio::spawn(async move {
+            if let Err(failure) = task.await {
+                error!(
+                    panic = failure.is_panic(),
+                    "Streaming inference task failed"
+                );
+                let _ = tx
+                    .send(Err("streaming inference task failed".to_string()))
+                    .await;
+            }
+        });
+        rx
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct PipelineStatus {
+    pub(super) stopping: bool,
     pub(super) cached: usize,
     pub(super) capacity: usize,
     pub(super) cache_hits: u64,
@@ -143,6 +168,7 @@ impl PipelineRegistry {
         bert_model: Option<&Path>,
         hubert_model: Option<&Path>,
         cache_capacity: usize,
+        shutdown: Shutdown,
     ) -> Result<Self, String> {
         let defaults = PipelineKey {
             gpt: gpt_model.map(PathBuf::from),
@@ -168,6 +194,7 @@ impl PipelineRegistry {
             defaults,
             default_pipeline,
             cache_capacity,
+            shutdown,
         ))
     }
 
@@ -176,9 +203,11 @@ impl PipelineRegistry {
         defaults: PipelineKey,
         default_pipeline: Pipeline,
         cache_capacity: usize,
+        shutdown: Shutdown,
     ) -> Self {
         let shared_resources = default_pipeline.shared_resources();
         Self {
+            shutdown,
             config: Arc::new(config),
             defaults: Arc::new(defaults.clone()),
             shared_resources: Arc::new(shared_resources),
@@ -212,19 +241,28 @@ impl PipelineRegistry {
         models: &VoiceModelPaths,
         queue_timeout: Duration,
     ) -> Result<PipelineLease, String> {
+        if self.shutdown.is_stopping() {
+            return Err("Service is stopping".to_string());
+        }
         // Cover cold loading and inference with one lease so waiting requests cannot
         // retain extra pipelines or start duplicate loads.
         let queued = QueueGuard::new(Arc::clone(&self.metrics));
-        let operation =
-            tokio::time::timeout(queue_timeout, Arc::clone(&self.operation).lock_owned())
-                .await
-                .map_err(|_| {
+        let operation = tokio::select! {
+            biased;
+            _ = self.shutdown.cancelled() => return Err("Service is stopping".to_string()),
+            result = tokio::time::timeout(queue_timeout, Arc::clone(&self.operation).lock_owned()) => {
+                result.map_err(|_| {
                     format!(
                         "Inference queue timed out after {} second(s)",
                         queue_timeout.as_secs()
                     )
-                })?;
+                })?
+            }
+        };
         drop(queued);
+        if self.shutdown.is_stopping() {
+            return Err("Service is stopping".to_string());
+        }
         let key = self.key_for(models);
         if let Some(pipeline) = self.cache.lock().await.get(&key) {
             self.metrics.cache_hits.fetch_add(1, Ordering::Relaxed);
@@ -266,6 +304,7 @@ impl PipelineRegistry {
     pub(super) async fn status(&self) -> PipelineStatus {
         let cache = self.cache.lock().await;
         PipelineStatus {
+            stopping: self.shutdown.is_stopping(),
             cached: cache.len(),
             capacity: cache.capacity,
             cache_hits: self.metrics.cache_hits.load(Ordering::Relaxed),
@@ -274,6 +313,27 @@ impl PipelineRegistry {
             queued_requests: self.metrics.queued_requests.load(Ordering::Relaxed),
             busy: self.operation.try_lock().is_err(),
         }
+    }
+
+    pub(super) async fn wait_for_idle(&self) {
+        let _operation = self.operation.lock().await;
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_test() -> Self {
+        let config = Config::builder().with_device("cpu").build();
+        let pipeline = Pipeline::new(config.clone()).unwrap();
+        Self::new(
+            config,
+            PipelineKey {
+                gpt: None,
+                sovits: None,
+                bigvgan: None,
+            },
+            pipeline,
+            1,
+            Shutdown::default(),
+        )
     }
 }
 
@@ -341,6 +401,7 @@ mod tests {
                 bert,
                 hubert,
                 1,
+                Shutdown::default(),
             );
             let error = result
                 .err()
@@ -359,6 +420,7 @@ mod tests {
             None,
             None,
             1,
+            Shutdown::default(),
         )
         .is_ok());
     }
@@ -376,16 +438,7 @@ mod tests {
     }
 
     fn empty_registry() -> PipelineRegistry {
-        PipelineRegistry::new(
-            Config::builder().with_device("cpu").build(),
-            PipelineKey {
-                gpt: None,
-                sovits: None,
-                bigvgan: None,
-            },
-            empty_pipeline(),
-            1,
-        )
+        PipelineRegistry::for_test()
     }
 
     #[tokio::test]
@@ -456,6 +509,105 @@ mod tests {
         assert!(!registry.status().await.busy);
     }
 
+    #[tokio::test]
+    async fn streaming_panics_are_errors_before_eof() {
+        for after_chunk in [false, true] {
+            let registry = empty_registry();
+            let lease = registry
+                .acquire_pipeline(&VoiceModelPaths::default(), Duration::from_secs(1))
+                .await
+                .unwrap();
+            let mut receiver = lease.spawn_stream(1, move |_, tx| {
+                if after_chunk {
+                    tx.blocking_send(Ok(vec![1, 2, 3])).unwrap();
+                }
+                panic!("private panic payload");
+            });
+            tokio::time::timeout(Duration::from_secs(2), async {
+                if after_chunk {
+                    assert_eq!(receiver.recv().await.unwrap().unwrap(), [1, 2, 3]);
+                }
+                assert_eq!(
+                    receiver.recv().await.unwrap().unwrap_err(),
+                    "streaming inference task failed"
+                );
+                assert!(receiver.recv().await.is_none());
+            })
+            .await
+            .unwrap();
+            registry.wait_for_idle().await;
+            assert!(!registry.status().await.busy);
+        }
+    }
+
+    #[tokio::test]
+    async fn successful_streams_end_without_an_error() {
+        let registry = empty_registry();
+        let lease = registry
+            .acquire_pipeline(&VoiceModelPaths::default(), Duration::from_secs(1))
+            .await
+            .unwrap();
+        let mut receiver = lease.spawn_stream(1, |_, tx| {
+            tx.blocking_send(Ok(vec![1])).unwrap();
+            tx.blocking_send(Ok(vec![2])).unwrap();
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            assert_eq!(receiver.recv().await.unwrap().unwrap(), [1]);
+            assert_eq!(receiver.recv().await.unwrap().unwrap(), [2]);
+            assert!(receiver.recv().await.is_none());
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_rejects_new_and_queued_work_without_loading_models() {
+        let registry = empty_registry();
+        let active = registry
+            .acquire_pipeline(&VoiceModelPaths::default(), Duration::from_secs(1))
+            .await
+            .unwrap();
+        let waiting_registry = registry.clone();
+        let waiting = tokio::spawn(async move {
+            waiting_registry
+                .acquire_pipeline(&VoiceModelPaths::default(), Duration::from_secs(60))
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while registry.status().await.queued_requests != 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        registry.shutdown.begin(Duration::from_secs(1));
+        let error = tokio::time::timeout(Duration::from_secs(2), waiting)
+            .await
+            .unwrap()
+            .unwrap()
+            .err()
+            .unwrap();
+        assert_eq!(error, "Service is stopping");
+        let missing = VoiceModelPaths {
+            gpt: Some(PathBuf::from("missing-gpt.safetensors")),
+            ..Default::default()
+        };
+        assert_eq!(
+            registry
+                .acquire_pipeline(&missing, Duration::from_secs(1))
+                .await
+                .err()
+                .unwrap(),
+            "Service is stopping"
+        );
+        let status = registry.status().await;
+        assert!(status.stopping && status.busy);
+        assert_eq!(status.queued_requests, 0);
+        assert_eq!(status.cache_misses, 0);
+        drop(active);
+        registry.wait_for_idle().await;
+    }
+
     #[test]
     fn cache_evicts_the_least_recently_used_entry() {
         let first = key("first");
@@ -489,6 +641,7 @@ mod tests {
             },
             empty_pipeline(),
             2,
+            Shutdown::default(),
         );
         let first = registry
             .acquire_pipeline(&VoiceModelPaths::default(), Duration::from_secs(1))
@@ -528,6 +681,7 @@ mod tests {
             },
             empty_pipeline(),
             1,
+            Shutdown::default(),
         );
         let active = registry
             .acquire_pipeline(&VoiceModelPaths::default(), Duration::from_secs(1))

@@ -54,4 +54,11 @@ FIRST_RUN_WAV="$artifacts/first.wav" cargo test --locked --test first_run \
 if [[ ${VERIFY_SPEECH_FORMATS:-0} == 1 ]]; then
   bash "$root/examples/verify-http-formats.sh" "$url" demo "$artifacts/formats"
 fi
+if [[ ${VERIFY_GRACEFUL_SHUTDOWN:-0} == 1 ]]; then
+  jq -e '.services.tts.stop_grace_period == "45s"' "$artifacts/compose.json"
+  "${compose[@]}" stop > "$artifacts/stop.log" 2>&1
+  docker inspect "$container" > "$artifacts/stopped.json"
+  jq -e '.[0].State | .Status == "exited" and .ExitCode == 0 and .OOMKilled == false' \
+    "$artifacts/stopped.json"
+fi
 printf 'Acceptance passed; evidence: %s\n' "$artifacts"

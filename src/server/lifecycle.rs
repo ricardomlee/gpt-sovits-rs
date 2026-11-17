@@ -1,5 +1,6 @@
 use super::request::{resolve_synthesis, SynthesisOverrides};
 use super::response::json_error;
+use super::shutdown::Shutdown;
 use super::state::AppState;
 use axum::{
     body::Body,
@@ -10,8 +11,12 @@ use axum::{
 };
 use gpt_sovits_rs::voice::list_voice_profiles;
 
-pub(super) async fn health_handler() -> &'static str {
-    "OK"
+pub(super) async fn health_handler(State(shutdown): State<Shutdown>) -> (StatusCode, &'static str) {
+    if shutdown.is_stopping() {
+        (StatusCode::SERVICE_UNAVAILABLE, "STOPPING")
+    } else {
+        (StatusCode::OK, "OK")
+    }
 }
 
 pub(super) async fn status_handler(
@@ -19,7 +24,7 @@ pub(super) async fn status_handler(
 ) -> Result<Response<Body>, StatusCode> {
     let pipeline = state.pipelines.status().await;
     let body = serde_json::json!({
-        "status": "ready",
+        "status": if pipeline.stopping { "stopping" } else { "ready" },
         "cached_pipelines": pipeline.cached,
         "pipeline_cache_capacity": pipeline.capacity,
         "pipeline_cache_hits": pipeline.cache_hits,
@@ -92,7 +97,14 @@ pub(super) async fn warmup_handler(
                 .body(Body::from(body.to_string()))
                 .unwrap())
         }
-        Err(e) => Ok(json_error(StatusCode::BAD_REQUEST, e)),
+        Err(e) => Ok(json_error(
+            if state.pipelines.shutdown.is_stopping() {
+                StatusCode::SERVICE_UNAVAILABLE
+            } else {
+                StatusCode::BAD_REQUEST
+            },
+            e,
+        )),
     }
 }
 
@@ -109,5 +121,31 @@ pub(super) async fn voices_handler(
                 .unwrap())
         }
         Err(e) => Ok(json_error(StatusCode::INTERNAL_SERVER_ERROR, e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stopping_is_reflected_in_health_and_status() {
+        let state = AppState::for_test();
+        let shutdown = state.pipelines.shutdown.clone();
+        assert_eq!(
+            health_handler(State(shutdown.clone())).await,
+            (StatusCode::OK, "OK")
+        );
+        shutdown.begin(std::time::Duration::from_secs(1));
+        assert_eq!(
+            health_handler(State(shutdown)).await,
+            (StatusCode::SERVICE_UNAVAILABLE, "STOPPING")
+        );
+        let response = status_handler(State(state)).await.unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["status"], "stopping");
     }
 }

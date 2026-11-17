@@ -114,11 +114,11 @@ jobs:
       - run: brew install libsoxr lame cmake
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Decode MP3 and Ogg Opus roundtrips
+      - name: Test HTTP lifecycle and audio codecs
         run: |
           LAME_LIB_DIR="$(brew --prefix lame)/lib"
           export LAME_LIB_DIR
-          cargo test --locked --features http-api --bin gpt-sovits server::encoding
+          cargo test --locked --features http-api --bin gpt-sovits server::
 
   release-binary:
     name: Compile release binary
@@ -194,6 +194,7 @@ jobs:
           DEMO_PULL_POLICY: never
           DEMO_PORT: "9882"
           VERIFY_SPEECH_FORMATS: "1"
+          VERIFY_GRACEFUL_SHUTDOWN: "1"
         run: |
           export DEMO_EXPECTED_VERSION
           DEMO_EXPECTED_VERSION=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "gpt-sovits-rs") | .version')
@@ -274,6 +275,7 @@ jobs:
           DEMO_IMAGE: gpt-sovits-rs:ci
           DEMO_PULL_POLICY: never
           VERIFY_SPEECH_FORMATS: "1"
+          VERIFY_GRACEFUL_SHUTDOWN: "1"
         run: |
           export DEMO_EXPECTED_VERSION
           DEMO_EXPECTED_VERSION=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "gpt-sovits-rs") | .version')

@@ -162,7 +162,8 @@ the environment variable to `0.0.0.0` for port forwarding.
 
 ### `GET /health`
 
-Health check.
+Returns HTTP 200 with `OK` while accepting work. A health request handled during
+shutdown returns HTTP 503 with `STOPPING`.
 
 ```bash
 curl --fail http://127.0.0.1:9880/health
@@ -194,6 +195,13 @@ The counters are process-local and reset when the service restarts. `queued_requ
 waiting for the serialized inference slot; `busy` includes model loading, warmup, and synthesis.
 Synthesis requests that cannot enter the inference slot within `--queue-timeout-secs` receive HTTP 503. The
 timeout only covers queue waiting; model loading and inference are not cancelled midway.
+
+On SIGTERM or Ctrl+C, the listener stops accepting new connections and `status`
+changes to `stopping`. Requests waiting for the inference slot receive 503.
+Active requests, including streaming responses and
+inference still running after a client disconnect, have up to 30 seconds to finish.
+After that deadline the process exits with an error; unfinished responses are interrupted.
+Compose allows 45 seconds before its force-kill deadline.
 
 ### `POST /warmup`
 
@@ -510,6 +518,8 @@ A batch may return
 HTTP 200 with an individual line containing `error` and no `wav_base64`, so check
 each line before decoding `wav_base64`. A broken WAV stream fails at the transport
 level rather than appending a JSON error to its PCM bytes.
+If a streaming or batch worker panics, the response also fails at the transport
+level, so clients can detect incomplete output instead of accepting a clean EOF.
 
 Configured BERT and HuBERT models must load successfully for CLI/server startup.
 Feature extraction, device transfer, semantic encoding, and BERT alignment failures
