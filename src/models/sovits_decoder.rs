@@ -1,13 +1,13 @@
 //! SoVITS Decoder Module - HiFi-GAN style vocoder
 
-use crate::utils::profiling::{sync_profile_enabled, sync_profile_stage};
+use crate::utils::profiling::{sync_profile_enabled, sync_profile_stage, Instant};
 use crate::utils::{Conv1d, Conv1dWeightNorm, StateDict};
 use crate::Result;
 use candle_core::backend::BackendStorage;
 use candle_core::{cpu_backend, CpuStorage, CustomOp1, DType, Device, Layout, Shape, Tensor};
 use half::{bf16, f16};
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 struct FusedLeakyRelu {
     slope: f32,

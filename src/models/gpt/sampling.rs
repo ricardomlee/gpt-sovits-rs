@@ -105,6 +105,7 @@ impl SamplingScratch {
 }
 
 impl GPTModel {
+    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn set_sampling_seed(&self, seed: Option<u64>) -> Result<()> {
         self.sampling_rng.set_seed(seed)
     }

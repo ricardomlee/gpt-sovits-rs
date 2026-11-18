@@ -114,18 +114,16 @@ fn conv1d_forward(
 
 /// Load weights from a safetensors file
 pub fn load_safetensors<P: AsRef<Path>>(path: P) -> Result<HashMap<String, Tensor>> {
-    let path = path.as_ref();
-
-    // Read file contents
     let mut file = File::open(path)
         .map_err(|e| Error::ModelLoadError(format!("Failed to open file: {}", e)))?;
-
     let mut buffer = Vec::new();
     file.read_to_end(&mut buffer)
         .map_err(|e| Error::ModelLoadError(format!("Failed to read file: {}", e)))?;
+    decode_safetensors(&buffer)
+}
 
-    // Parse safetensors
-    let safetensors = SafeTensors::deserialize(&buffer)
+pub(crate) fn decode_safetensors(buffer: &[u8]) -> Result<HashMap<String, Tensor>> {
+    let safetensors = SafeTensors::deserialize(buffer)
         .map_err(|e| Error::ModelLoadError(format!("Failed to parse safetensors: {}", e)))?;
 
     // Convert to Candle tensors
@@ -936,6 +934,23 @@ mod tests {
                 .to_scalar::<f32>()?;
             assert!(max_error < 1e-5, "time={time}, max_error={max_error}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn weight_buffer_matches_file_loader_and_rejects_corruption() -> Result<()> {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let weights = HashMap::from([(
+            "weight".to_string(),
+            Tensor::new(&[0.5f32, -2.0], &Device::Cpu)?,
+        )]);
+        candle_core::safetensors::save(&weights, file.path())?;
+        let bytes = std::fs::read(file.path()).unwrap();
+        assert_eq!(
+            decode_safetensors(&bytes)?["weight"].to_vec1::<f32>()?,
+            load_safetensors(file.path())?["weight"].to_vec1::<f32>()?,
+        );
+        assert!(decode_safetensors(&bytes[..bytes.len() - 1]).is_err());
         Ok(())
     }
 

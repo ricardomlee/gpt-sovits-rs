@@ -41,7 +41,6 @@ half = { version = "2.4", features = ["num-traits", "zerocopy"] }
 # Audio Processing
 hound = "3.5"                    # WAV I/O
 rustfft = "6.1"                  # FFT for mel spectrogram extraction
-soxr = "0.6"                     # libsoxr bindings — exact match to librosa's soxr_hq
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
@@ -75,6 +74,13 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2.0"
 anyhow = "1.0"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+soxr = "0.6" # matches librosa's soxr_hq
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.3.4", features = ["wasm_js"] }
+web-time = "1.1"
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }

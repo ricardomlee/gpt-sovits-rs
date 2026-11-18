@@ -26,6 +26,7 @@
 
 pub mod audio_checks;
 pub mod config;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod inference;
 #[cfg(feature = "mkl")]
 mod mkl_compat;
@@ -33,10 +34,12 @@ pub mod model_paths;
 pub mod models;
 pub mod text_frontend;
 pub mod utils;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod voice;
 
 // Re-export main types
 pub use config::Config;
+#[cfg(not(target_arch = "wasm32"))]
 pub use inference::{
     split_cut5_for_language, split_sentences, split_sentences_for_language, InferenceOptions,
     Pipeline, SharedPipelineResources, SplitMethod,

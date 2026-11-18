@@ -9,6 +9,7 @@ pub mod bert_candle {
 }
 pub mod bigvgan;
 pub mod gpt;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod hubert;
 pub mod mrte;
 pub mod semantic_tokenizer;
@@ -24,6 +25,7 @@ pub mod wav2vec2;
 pub use bert::{BertCandleModel, BertModel};
 pub use bigvgan::BigVGAN;
 pub use gpt::GPTModel;
+#[cfg(not(target_arch = "wasm32"))]
 pub use hubert::HubertModel;
 pub use mrte::MRTE;
 pub use semantic_tokenizer::SemanticTokenizer;

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SoVITS Wasm Lab</title>
+<style>
+  :root { color-scheme: light dark; font: 16px system-ui; }
+  body { margin: 3rem auto; padding: 0 1.25rem; max-width: 42rem; }
+  h1 { font-size: 1.6rem; }
+  form, label { display: grid; gap: .6rem; }
+  form { gap: 1rem; }
+  button, input { font: inherit; max-width: 100%; }
+  button { justify-self: start; padding: .45rem .8rem; }
+  audio:not([hidden]) { display: block; width: 100%; margin: 1rem 0; }
+  output { display: block; margin-top: 1rem; overflow-wrap: anywhere; }
+</style>
+<h1>SoVITS Wasm Lab</h1>
+<form>
+  <label>SoVITS weights <input id="weights" type="file" accept=".safetensors" required></label>
+  <label>Prepared case <input id="case" type="file" accept=".safetensors" required></label>
+  <button>Render WAV</button>
+</form>
+<output id="result" role="status"></output>
+<audio controls hidden></audio>
+<a id="download" download="sovits-wasm.wav" hidden>Download WAV</a>
+<script type="module">
+  const form = document.querySelector('form');
+  const button = form.querySelector('button');
+  const result = document.querySelector('#result');
+  const audio = document.querySelector('audio');
+  const download = document.querySelector('#download');
+  const mib = (bytes) => (bytes / 2 ** 20).toFixed(1);
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (audio.src) URL.revokeObjectURL(audio.src);
+    audio.removeAttribute('src');
+    audio.load();
+    audio.hidden = download.hidden = true;
+    button.disabled = true;
+    result.textContent = 'Rendering...';
+    const worker = new Worker('./worker.js', { type: 'module' });
+    const finish = () => {
+      worker.terminate();
+      button.disabled = false;
+    };
+    worker.onmessage = ({ data }) => {
+      finish();
+      if (data.error) {
+        result.textContent = data.error;
+        return;
+      }
+      const { wav, loadMs, renderMs, loadBytes, peakBytes } = data;
+      const url = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }));
+      audio.src = download.href = url;
+      audio.hidden = download.hidden = false;
+      result.textContent = `Load ${Math.round(loadMs)} ms · Render ${Math.round(renderMs)} ms · Wasm memory ${mib(loadBytes)} → ${mib(peakBytes)} MiB`;
+    };
+    worker.onerror = (error) => {
+      finish();
+      result.textContent = error.message || 'Worker failed';
+    };
+    worker.postMessage({ weights: form.querySelector('#weights').files[0], caseFile: form.querySelector('#case').files[0] });
+  });
+</script>
+</html>
