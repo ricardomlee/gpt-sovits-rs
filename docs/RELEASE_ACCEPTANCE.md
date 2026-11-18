@@ -3,11 +3,12 @@
 Test a candidate before tagging, without replacing an existing service. No private
 weights, embeddings, reference recordings, or generated regression audio belong in Git.
 The public first-run default stays on the last verified published image until the
-new release exists; old-version compatibility is tested separately from the candidate.
+new release exists.
 
 ## Candidate CPU Image
 
-Requires Docker Compose, curl, jq, Rust, and the normal build dependencies. From the repo:
+To reproduce the release image check locally, use Docker Compose, curl, jq,
+FFmpeg, Rust, and the normal build dependencies. From the repo:
 
 ```bash
 docker build -t gpt-sovits-rs:candidate .
@@ -25,29 +26,26 @@ the image ID, configuration, headers, and logs. Its exit trap removes only its o
 container/network, including on failures. Downloaded models stay in the demo directory.
 Do not rerun preparation on a production voice directory.
 
-The CPU-container job runs for deployment changes and manual CI runs. Before
-tagging, start a full CI run on the pushed candidate branch:
+## Linux Release Artifacts
+
+On a version tag, the [release workflow](../.github/workflows/release.yml) pulls
+the newly built CPU image by digest. It checks the deployment Compose commands,
+runs the public first-run demo, decodes WAV/PCM/MP3/Opus, and requires a clean
+shutdown. Only after acceptance does that digest receive its public version and
+`latest` tags.
+
+The same job extracts the Linux archive destined for GitHub Release into a
+runtime-only container. Its packaged converter and CLI turn the public SoVITS
+checkpoint into an offline WAV using the models already prepared for the image.
+To repeat that check locally:
 
 ```bash
-gh workflow run ci.yml --ref "$(git branch --show-current)"
+bash examples/first-run/verify-archive.sh /path/to/linux-x86_64.tar.gz /tmp/tts-candidate-demo /tmp/tts-archive-check
 ```
 
-Require the run for the exact candidate commit to pass. The full run includes
-both macOS architectures, Linux packaged-binary acceptance and v1.2.0 container
-compatibility. Run `first-run.yml` on demand to verify both pinned published
-images, including after updating the first-run default. Local GPU and speech
-checks follow below.
-
-The Linux binary job also extracts its actual archive into a runtime-only image,
-without system libsoxr/libmp3lame, Python, Cargo, or rustc. It checks all three
-packaged binaries, runs conversion and real HTTP synthesis through the same
-verifier, then synthesizes offline with read-only model/voice mounts. Evidence
-is retained as `packaged-binary-acceptance`; downloaded models are excluded.
-
-Candidate-image and packaged-binary CI also set `VERIFY_GRACEFUL_SHUTDOWN=1`.
-After synthesis, the verifier stops its Compose service and requires exit code 0
-with no OOM kill, retaining `stop.log` and `stopped.json`. Older published-image
-compatibility checks leave this flag unset.
+The `linux-acceptance` artifact retains audio and diagnostics. Each macOS runner
+also extracts its archive, checks the bundled audio library paths, and starts
+all three binaries.
 
 ## Local GPU Performance
 
@@ -178,8 +176,7 @@ host port exposure is separate. The server still has no built-in authentication.
    file's directory context on a Release page. After publication, open each link
    from the actual Release page, not just from the repository Markdown preview.
 4. Watch all Linux/macOS and CPU/CUDA release jobs; verify all three packaged binaries and hashes.
-5. After the versioned image exists, run the same verifier against it with pulling
-   enabled. Then update the first-run defaults in `prepare.sh` and `compose.yml`,
-   and the README/first-run guide. Include the new published version in the
-   first-run matrix and keep the 1.2.0 compatibility baseline pinned.
+5. Confirm the public version tag resolves to the tested CPU digest, then update
+   the first-run defaults in `prepare.sh` and `compose.yml`, their fixture tests,
+   and the README/first-run guide.
 6. Only then update a running personal deployment, retaining its old image tag for rollback.

@@ -9,6 +9,10 @@ the Rust `ogg` crate for Ogg framing. No codec source is modified by this projec
   carry the replaceable shared library; containers install the distribution's
   `libmp3lame0` package. Upstream source: https://sourceforge.net/projects/lame/files/lame/ .
   License texts and distribution copyright information are in `licenses/`.
+- macOS archives also carry the replaceable libmpg123 shared library used by
+  Homebrew's LAME build. [mpg123 source](https://www.mpg123.de/download/) is
+  licensed under LGPL-2.1; its AUTHORS and COPYING files are included in the
+  archive's `licenses/mpg123/` directory.
 - `lame-sys` 0.1.2: https://github.com/ebarnard/lame-sys . Its Rust bindings are
   offered under MIT/Apache-2.0; the LGPL bundled implementation is not enabled.
 - libopus (`opusic-sys`): https://opus-codec.org/ . Built from the Cargo-locked

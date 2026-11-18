@@ -139,8 +139,8 @@ cd gpt-sovits-1.3.1-linux-x86_64
   --http --port 9880
 ```
 
-macOS 包携带 `libsoxr.0.dylib` 和 `libmp3lame.0.dylib`。首次运行若被 Gatekeeper 阻止，需要在
-系统设置中确认允许该二进制。
+macOS 解压后请把程序和同目录的 `.dylib` 文件放在一起。1.3.2 的包如果提示找不到
+`libmpg123.0.dylib`，运行 `brew install mpg123`。首次运行若被 Gatekeeper 阻止，在系统设置中允许该程序。
 
 已发布的 Linux/macOS 二进制是 CPU 构建；macOS 构建未启用 Metal，`--device mps`
 不会让这些发行物自动获得 GPU 加速。NVIDIA 推理使用 CUDA 镜像，或带 `cuda` feature 的源码构建。

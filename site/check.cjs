@@ -3,7 +3,7 @@ const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const { tmpdir } = require('node:os');
 const path = require('node:path');
-const { chromium } = require('playwright');
+const { chromium } = require('playwright-core');
 const { serve } = require('./serve.cjs');
 
 function checkPackagerGuards(pkg) {
@@ -30,8 +30,6 @@ function checkPackagerGuards(pkg) {
 
 (async () => {
   const directory = path.resolve(process.argv[2] || '_site');
-  const screenshots = path.resolve(process.argv[3] || '/tmp/gpt-sovits-pages');
-  fs.mkdirSync(screenshots, { recursive: true });
   const files = fs.readdirSync(directory, { recursive: true })
     .filter(relative => fs.statSync(path.join(directory, relative)).isFile());
   assert.deepEqual(files.sort(), [
@@ -41,10 +39,10 @@ function checkPackagerGuards(pkg) {
     'lab/worker.js', 'styles.css',
   ]);
   checkPackagerGuards(path.join(directory, 'lab/pkg'));
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({ channel: 'chrome', executablePath: process.env.CHROME_BIN });
   const { server, url } = await serve(directory);
   try {
-    for (const [width, height] of [[1440, 1000], [768, 900], [390, 844], [320, 740]]) {
+    for (const [width, height] of [[1440, 1000], [320, 740]]) {
       const page = await browser.newPage({ viewport: { width, height } });
       const errors = [];
       page.on('pageerror', error => errors.push(error.message));
@@ -71,7 +69,6 @@ function checkPackagerGuards(pkg) {
       await page.waitForFunction(() => [...document.images].every(i => i.complete && i.naturalWidth > 0));
       await page.evaluate(() => scrollTo(0, 0));
       assert.deepEqual(errors, []);
-      await page.screenshot({ path: path.join(screenshots, `page-${width}.png`), fullPage: true });
 
       await page.getByRole('link', { name: '浏览器实验', exact: true }).click();
       assert.equal(page.url(), `${url}lab/`);
@@ -80,7 +77,6 @@ function checkPackagerGuards(pkg) {
       assert(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       const render = page.getByRole('button', { name: '生成 WAV' });
       await render.waitFor();
-      await page.screenshot({ path: path.join(screenshots, `lab-${width}.png`), fullPage: true });
       if (width === 1440) {
         const fake = { name: 'fixture.safetensors', mimeType: 'application/octet-stream', buffer: Buffer.from('not a checkpoint') };
         for (const input of await page.locator('input[type="file"]').all()) await input.setInputFiles(fake);

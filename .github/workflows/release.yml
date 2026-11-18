@@ -75,9 +75,6 @@ jobs:
           strip "dist/${package}/gpt-sovits"
           strip "dist/${package}/gpt-sovits-convert"
           strip "dist/${package}/gpt-sovits-client"
-          "dist/${package}/gpt-sovits" --version
-          "dist/${package}/gpt-sovits-convert" --version
-          "dist/${package}/gpt-sovits-client" --version
           tar -C dist -czf "dist/${package}.tar.gz" "${package}"
 
       - uses: actions/upload-artifact@v7
@@ -138,15 +135,41 @@ jobs:
           old_lame="$(otool -L "dist/${package}/gpt-sovits" | awk '/libmp3lame/ { print $1; exit }')"
           install_name_tool -change "${old_lame}" \
             '@loader_path/libmp3lame.0.dylib' "dist/${package}/gpt-sovits"
+          mpg123="$(brew --prefix mpg123)"
+          cp -L "$mpg123/lib/libmpg123.0.dylib" "dist/${package}/"
+          old_mpg123="$(otool -L "$lame" | awk '/libmpg123/ { print $1; exit }')"
+          chmod u+w "dist/${package}/libmp3lame.0.dylib"
+          install_name_tool -change "$old_mpg123" \
+            '@loader_path/libmpg123.0.dylib' "dist/${package}/libmp3lame.0.dylib"
+          codesign --force --sign - "dist/${package}/libmp3lame.0.dylib"
           cp LICENSE THIRD_PARTY.md "dist/${package}/"
           cp -R licenses "dist/${package}/"
+          mkdir "dist/${package}/licenses/mpg123"
+          cp "$mpg123"/{AUTHORS,COPYING} "dist/${package}/licenses/mpg123/"
           strip -x "dist/${package}/gpt-sovits"
           strip -x "dist/${package}/gpt-sovits-convert"
           strip -x "dist/${package}/gpt-sovits-client"
-          "dist/${package}/gpt-sovits" --version
-          "dist/${package}/gpt-sovits-convert" --version
-          "dist/${package}/gpt-sovits-client" --version
+          codesign --force --sign - "dist/${package}/gpt-sovits"
           tar -C dist -czf "dist/${package}.tar.gz" "${package}"
+
+      - name: Check the extracted binaries and bundled audio libraries
+        shell: bash
+        run: |
+          tar -xzf dist/*.tar.gz -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP/gpt-sovits-${GITHUB_REF_NAME#v}-macos-${{ matrix.arch }}"
+          otool -l ./gpt-sovits* ./*.dylib | awk '
+            $1 == "cmd" { dep = ($2 ~ /DYLIB$/ && $2 != "LC_ID_DYLIB") }
+            dep && $1 == "name" {print $2}' | sort -u | while read -r lib; do
+            case "$lib" in
+              /usr/lib/*|/System/Library/*) continue ;;
+              @loader_path/*) [[ -f "${lib#@loader_path/}" ]] && continue ;;
+            esac
+            echo "Unbundled dependency: $lib" >&2
+            exit 1
+          done
+          ./gpt-sovits --version
+          ./gpt-sovits-convert --version
+          ./gpt-sovits-client --version
 
       - uses: actions/upload-artifact@v7
         with:
@@ -156,8 +179,11 @@ jobs:
 
   cpu-image:
     needs: preflight
-    name: CPU container
+    name: Build CPU image
     runs-on: ubuntu-24.04
+    outputs:
+      image: ${{ steps.repo.outputs.name }}@${{ steps.build.outputs.digest }}
+      tags: ${{ steps.meta.outputs.tags }}
     steps:
       - uses: actions/checkout@v7
 
@@ -180,14 +206,17 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=raw,value=latest
 
-      - name: Build and push
+      - id: repo
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Build CPU image by digest
+        id: build
         uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile
           platforms: linux/amd64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type=image,name=${{ steps.repo.outputs.name }},push-by-digest=true,name-canonical=true,push=true
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -236,9 +265,11 @@ jobs:
           cache-to: type=gha,mode=max
 
   github-release:
-    name: Publish GitHub Release
+    name: Verify and publish release
     needs: [linux-binary, macos-binary, cpu-image, cuda-image]
     runs-on: ubuntu-24.04
+    env:
+      DEMO_IMAGE: ${{ needs.cpu-image.outputs.image }}
     steps:
       - uses: actions/checkout@v7
 
@@ -248,26 +279,57 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install acceptance tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsoxr-dev ffmpeg jq
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Verify Compose, HTTP audio and the extracted archive
+        env:
+          DEMO_PULL_POLICY: never
+        run: |
+          export DEMO_EXPECTED_VERSION="${GITHUB_REF_NAME#v}"
+          docker pull "$DEMO_IMAGE"
+          GPT_SOVITS_SMOKE_IMAGE="$DEMO_IMAGE" cargo test --locked --test deployment_smoke -- --ignored --nocapture
+          bash examples/first-run/verify.sh "$RUNNER_TEMP/demo" "$RUNNER_TEMP/evidence"
+          bash examples/first-run/verify-archive.sh "dist/gpt-sovits-$DEMO_EXPECTED_VERSION-linux-x86_64.tar.gz" \
+            "$RUNNER_TEMP/demo" "$RUNNER_TEMP/verified-archive"
+
+      - name: Upload acceptance audio and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-acceptance
+          path: |
+            ${{ runner.temp }}/evidence/
+            ${{ runner.temp }}/verified-archive/offline.wav
+          retention-days: 7
+          if-no-files-found: ignore
+
       - name: Create checksums
         working-directory: dist
         run: sha256sum ./*.tar.gz > SHA256SUMS
 
-      - name: Select release notes
-        id: release-notes
-        shell: bash
+      - name: Publish CPU tags for the verified digest
+        env:
+          TAGS: ${{ needs.cpu-image.outputs.tags }}
         run: |
-          set -euo pipefail
-          body_path="docs/releases/${GITHUB_REF_NAME}.md"
-          if [[ ! -f "${body_path}" ]]; then
-            echo "::error file=${body_path}::Release notes file is missing"
-            exit 1
-          fi
-          echo "path=${body_path}" >> "${GITHUB_OUTPUT}"
+          args=()
+          while IFS= read -r tag; do args+=(--tag "$tag"); done <<< "$TAGS"
+          docker buildx imagetools create --prefer-index=false "${args[@]}" "$DEMO_IMAGE"
 
       - name: Publish release
         uses: softprops/action-gh-release@v3
         with:
-          body_path: ${{ steps.release-notes.outputs.path }}
+          body_path: docs/releases/${{ github.ref_name }}.md
           files: |
             dist/*.tar.gz
             dist/SHA256SUMS

@@ -49,24 +49,10 @@ jobs:
             target/wasm32-unknown-unknown/release/wasm_sovits.wasm
       - name: Build only public assets
         run: bash site/build.sh _site
-      - name: Install browser test tools
-        run: |
-          npm install --prefix "$RUNNER_TEMP/pages-test" --no-save --ignore-scripts playwright@1.59.1
-          export NODE_PATH="$RUNNER_TEMP/pages-test/node_modules"
-          playwright="$NODE_PATH/.bin/playwright"
-          "$playwright" install --only-shell chromium
-          if ! node -e 'require("playwright").chromium.launch({ timeout: 10000 }).then(browser => browser.close())'; then
-            "$playwright" install-deps chromium
-          fi
       - name: Test playback and browser engine on the Pages subpath
-        env:
-          NODE_PATH: ${{ runner.temp }}/pages-test/node_modules
-        run: node site/check.cjs _site "$RUNNER_TEMP/screenshots"
-      - name: Upload screenshots
-        uses: actions/upload-artifact@v7
-        with:
-          name: audio-showcase-screenshots
-          path: ${{ runner.temp }}/screenshots
+        run: |
+          npm install --prefix "$RUNNER_TEMP/pages-test" --no-save --ignore-scripts playwright-core@1.59.1
+          NODE_PATH="$RUNNER_TEMP/pages-test/node_modules" node site/check.cjs _site
       - uses: actions/upload-pages-artifact@v4
         with:
           path: _site

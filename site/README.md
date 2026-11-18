@@ -28,18 +28,16 @@ node site/serve.cjs _site
 Open `http://127.0.0.1:9898/gpt-sovits-rs/`. Use an empty output directory for
 `build.sh`. The preview uses the same path prefix as the public site.
 
-Chromium checks cover both sample players, images, downloads, responsive layout,
-the artifact's file list, and real lab Worker/Wasm startup under the Pages prefix:
+To check playback and Worker/Wasm startup on the staged site, use an installed
+Google Chrome (or set `CHROME_BIN` to your Chromium executable):
 
 ```bash
-npm install --prefix /tmp/pages-test --no-save --ignore-scripts playwright@1.59.1
-/tmp/pages-test/node_modules/.bin/playwright install --with-deps --only-shell chromium
+npm install --prefix /tmp/pages-test --no-save --ignore-scripts playwright-core@1.59.1
 NODE_PATH=/tmp/pages-test/node_modules node site/check.cjs _site
 ```
 
-The Pages workflow installs Playwright outside the repository and uploads
-screenshots. Its lab check uses an invalid checkpoint to test startup and error
-handling without private model files.
+The Pages workflow uses the runner's Chrome on the same directory it publishes.
+An invalid checkpoint exercises the lab's Worker and error handling without model files.
 
 ## Publish
 
