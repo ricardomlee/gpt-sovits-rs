@@ -122,6 +122,5 @@ inspection. Signal checks are not a substitute for listening.
 
 ## Browser Playback
 
-The [static showcase](../../site/README.md) contains native browser audio players.
-Build it with `bash site/build.sh /tmp/gpt-sovits-site`, then open that directory's
-`index.html`. GitHub Pages deployment is handled separately from software releases.
+The [GitHub Pages showcase](https://ricardomlee.github.io/gpt-sovits-rs/) plays
+the two Sun samples. See the [site guide](../../site/README.md) for local preview.

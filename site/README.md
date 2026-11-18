@@ -33,7 +33,7 @@ the artifact's file list, and real lab Worker/Wasm startup under the Pages prefi
 
 ```bash
 npm install --prefix /tmp/pages-test --no-save --ignore-scripts playwright@1.59.1
-/tmp/pages-test/node_modules/.bin/playwright install --with-deps chromium
+/tmp/pages-test/node_modules/.bin/playwright install --with-deps --only-shell chromium
 NODE_PATH=/tmp/pages-test/node_modules node site/check.cjs _site
 ```
 
