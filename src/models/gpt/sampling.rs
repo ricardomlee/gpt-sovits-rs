@@ -105,7 +105,8 @@ impl SamplingScratch {
 }
 
 impl GPTModel {
-    pub(crate) fn set_sampling_seed(&self, seed: Option<u64>) -> Result<()> {
+    /// Set the semantic sampling seed for this model instance.
+    pub fn set_sampling_seed(&self, seed: Option<u64>) -> Result<()> {
         self.sampling_rng.set_seed(seed)
     }
 

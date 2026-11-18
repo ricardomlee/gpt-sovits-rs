@@ -7,6 +7,7 @@ use crate::text_frontend::TextFrontend;
 use crate::utils::load_safetensors;
 use crate::{Error, InferenceOptions, Language, Result};
 use candle_core::{Device, Tensor};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -96,6 +97,47 @@ impl Pipeline {
         options.validate()?;
         self.get_ref_features(ref_audio, ref_text, options)
             .map(|_| ())
+    }
+
+    /// Save computed speaker conditioning for reuse without HuBERT or reference audio.
+    /// The file contains voice-derived tensors and should be treated like the reference audio.
+    pub fn export_reference_features(
+        &mut self,
+        reference: &Path,
+        transcript: &str,
+        options: &InferenceOptions,
+        output: &Path,
+    ) -> Result<()> {
+        options.validate()?;
+        let reference = self.get_ref_features(reference, transcript, options)?;
+        let stft = reference
+            .ref_mel
+            .ok_or_else(|| Error::InferenceError("Missing reference STFT".into()))?;
+        let ids = |values: Vec<usize>| {
+            let len = values.len();
+            Tensor::from_vec(
+                values.into_iter().map(|id| id as i64).collect(),
+                len,
+                &Device::Cpu,
+            )
+        };
+        let mut weights = HashMap::from([
+            ("prompt_tokens", ids(reference.prompt_tokens)?),
+            ("prompt_phonemes", ids(reference.ref_phoneme_ids)?),
+            ("reference_stft", stft),
+        ]);
+        weights.extend(
+            reference
+                .ref_bert_aligned
+                .map(|tensor| ("prompt_bert", tensor)),
+        );
+        weights.extend(
+            reference
+                .sv_embedding
+                .map(|tensor| ("sv_embedding", tensor)),
+        );
+        candle_core::safetensors::save(&weights, output)?;
+        Ok(())
     }
 
     /// Drop all cached speaker features.

@@ -6,13 +6,13 @@
 //! Inference path: semantic tokens + text + reference mel speaker embedding
 //! → enc_p → flow → decoder
 
-use crate::utils::profiling::{sync_profile_enabled, sync_profile_stage};
+use crate::utils::profiling::{sync_profile_enabled, sync_profile_stage, Instant};
 use crate::utils::sampling::SamplingRng;
+use crate::utils::weights::decode_safetensors;
 use crate::utils::{load_safetensors, Linear, StateDict};
 use crate::{Error, Result};
 use candle_core::{DType, Device, Tensor};
 use std::path::Path;
-use std::time::Instant;
 
 use crate::models::sovits_decoder::Decoder;
 use crate::models::sovits_encp::EncP;
@@ -121,11 +121,14 @@ impl SoVITSModel {
         Self::from_state_dict(&state_dict, device, dtype)
     }
 
-    pub(crate) fn from_state_dict(
-        state_dict: &StateDict,
-        device: &Device,
-        dtype: DType,
-    ) -> Result<Self> {
+    /// Load a CPU F32 model from a safetensors buffer.
+    pub fn from_safetensors(buffer: &[u8]) -> Result<Self> {
+        let state_dict = StateDict::new(decode_safetensors(buffer)?);
+        Self::from_state_dict(&state_dict, &Device::Cpu, DType::F32)
+    }
+
+    /// Construct the model from decoded tensors without reading a checkpoint file.
+    pub fn from_state_dict(state_dict: &StateDict, device: &Device, dtype: DType) -> Result<Self> {
         // Configuration
         let hidden_channels = 192;
         let n_layers = 6;
@@ -483,7 +486,8 @@ impl SoVITSModel {
         Ok(positive.add(&negative.broadcast_mul(&alpha)?)?)
     }
 
-    pub(crate) fn set_sampling_seed(&self, seed: Option<u64>) -> Result<()> {
+    /// Set the acoustic noise seed for this model instance.
+    pub fn set_sampling_seed(&self, seed: Option<u64>) -> Result<()> {
         self.sampling_rng.set_seed(seed)
     }
 

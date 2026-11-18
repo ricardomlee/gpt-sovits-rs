@@ -1,6 +1,11 @@
 use candle_core::Device;
 use std::sync::OnceLock;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) use std::time::Instant;
+#[cfg(target_arch = "wasm32")]
+pub(crate) use web_time::Instant;
+
 pub fn sync_profile_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED.get_or_init(|| {

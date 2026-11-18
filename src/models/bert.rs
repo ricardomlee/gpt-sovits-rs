@@ -9,7 +9,7 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{
     BertModel as CandleBertModel, Config, HiddenAct, PositionEmbeddingType,
 };
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 use tokenizers::Tokenizer;
 
 pub const DTYPE_F32: DType = DType::F32;
@@ -147,18 +147,37 @@ impl BertCandleModel {
         device: &Device,
         dtype: DType,
     ) -> Result<Self> {
+        let weights = candle_core::safetensors::load(weights_path, device)?;
+        Self::from_weights(weights, device, dtype, || {
+            Tokenizer::from_file(tokenizer_path)
+        })
+    }
+
+    /// Construct a CPU model from decoded tensors and a tokenizer JSON buffer.
+    pub fn from_cpu_weights(weights: HashMap<String, Tensor>, tokenizer: &[u8]) -> Result<Self> {
+        Self::from_weights(weights, &Device::Cpu, DType::F32, || {
+            Tokenizer::from_bytes(tokenizer)
+        })
+    }
+
+    fn from_weights(
+        weights: HashMap<String, Tensor>,
+        device: &Device,
+        dtype: DType,
+        tokenizer: impl FnOnce() -> tokenizers::Result<Tokenizer>,
+    ) -> Result<Self> {
         // Converted checkpoints use lowercase layer_norm; Candle expects LayerNorm.
-        let weights = candle_core::safetensors::load(weights_path, device)?
+        let weights = weights
             .into_iter()
             .map(|(k, v)| (k.replace("layer_norm", "LayerNorm"), v))
-            .collect::<std::collections::HashMap<_, _>>();
+            .collect();
 
         let vb = VarBuilder::from_tensors(weights, dtype, device);
         let config = chinese_roberta_large_config();
         let model = CandleBertModel::load(vb, &config)?;
 
-        let tokenizer = Tokenizer::from_file(tokenizer_path)
-            .map_err(|e| crate::Error::ModelLoadError(format!("tokenizer: {e}")))?;
+        let tokenizer =
+            tokenizer().map_err(|e| crate::Error::ModelLoadError(format!("tokenizer: {e}")))?;
 
         Ok(Self {
             model,

@@ -43,10 +43,13 @@ impl GPTModel {
 
     /// Load model with specific device
     pub fn load_with_device(path: &str, device: &Device, dtype: DType) -> Result<Self> {
-        // Load weights from safetensors
         let weights_map = load_safetensors(path)?;
         let state_dict = StateDict::new(weights_map);
+        Self::from_state_dict(&state_dict, device, dtype)
+    }
 
+    /// Construct the model from decoded tensors without reading a checkpoint file.
+    pub fn from_state_dict(state_dict: &StateDict, device: &Device, dtype: DType) -> Result<Self> {
         // Load text embedding: [vocab_size, hidden_size]
         let text_emb_key = "model.ar_text_embedding.word_embeddings.weight";
         let text_embedding = state_dict
@@ -135,7 +138,7 @@ impl GPTModel {
         };
 
         // Create transformer with GPT-SoVITS style weights
-        let transformer = TransformerGPTSoVITS::new(config, &state_dict, device, dtype)?;
+        let transformer = TransformerGPTSoVITS::new(config, state_dict, device, dtype)?;
 
         // Load output projection: [vocab_size, hidden_size]
         // Load positional encoding alpha parameters

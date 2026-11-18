@@ -1,6 +1,7 @@
 use crate::{Error, Result};
 use candle_core::Tensor;
-use rand::{rngs::StdRng, Rng, SeedableRng};
+use rand::SeedableRng;
+use rand::{rngs::StdRng, Rng};
 use rand_distr::{Distribution, StandardNormal};
 use std::sync::{Mutex, MutexGuard};
 
