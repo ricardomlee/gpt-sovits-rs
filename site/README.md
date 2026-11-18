@@ -1,41 +1,54 @@
-# Public audio showcase
+# GitHub Pages
 
-A buildless, static GitHub Pages site. No backend, analytics, inference endpoint,
-third-party fonts, or browser framework. Only explicitly reviewed public audio is published.
+The homepage plays two reviewed Sun samples and links to the browser lab at
+`lab/`. GitHub Pages serves the lab's WebAssembly, JavaScript and CSS. The lab
+reads local model files and synthesizes in a browser Worker.
 
-The two showcase players use the maintainer's Sun v2Pro voice with its SV embedding.
-The model, embedding, and reference recording are not published. The installable
-first-run demo still uses standard v2 weights and an LJ Speech reference; it does
-not install or reproduce Sun.
+`build.sh` packages only named public images, samples, page files and compiled
+Wasm assets. The lab uses the same source as the
+[standalone experiment](../experiments/wasm-sovits/README.md).
 
 ## Preview
 
+With Rust, `wasm-bindgen` CLI 0.2.130 and Node installed, run from the repo root:
+
 ```bash
-bash site/build.sh /tmp/gpt-sovits-site
+rustup target add wasm32-unknown-unknown
+(
+  cd experiments/wasm-sovits
+  CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS='-C target-feature=+simd128' \
+    cargo build --locked --release --target wasm32-unknown-unknown --lib
+  wasm-bindgen --target web --no-typescript --out-dir web/pkg \
+    target/wasm32-unknown-unknown/release/wasm_sovits.wasm
+)
+bash site/build.sh _site
+node site/serve.cjs _site
 ```
 
-Open `/tmp/gpt-sovits-site/index.html` in a browser; no development server is needed.
-The output contains only HTML, CSS, the existing banner, and the two public WAV files.
+Open `http://127.0.0.1:9898/gpt-sovits-rs/`. Use an empty output directory for
+`build.sh`. The preview uses the same path prefix as the public site.
 
-Browser checks (Playwright 1.59.1, Chromium) cover desktop and narrow mobile layouts,
-both audio players actually advancing, loaded images, and download targets:
+Chromium checks cover both sample players, images, downloads, responsive layout,
+the artifact's file list, and real lab Worker/Wasm startup under the Pages prefix:
 
 ```bash
 npm install --prefix /tmp/pages-test --no-save --ignore-scripts playwright@1.59.1
 /tmp/pages-test/node_modules/.bin/playwright install --with-deps chromium
-NODE_PATH=/tmp/pages-test/node_modules node site/check.cjs /tmp/gpt-sovits-site
+NODE_PATH=/tmp/pages-test/node_modules node site/check.cjs _site
 ```
 
-Playwright is a development-only dependency. The Pages workflow installs it outside
-the repository and uploads screenshots; the published site needs no JavaScript.
+The Pages workflow installs Playwright outside the repository and uploads
+screenshots. Its lab check uses an invalid checkpoint to test startup and error
+handling without private model files.
 
 ## Publish
 
 In repository **Settings > Pages > Build and deployment**, select **GitHub Actions**
 once. The **Audio showcase** workflow validates and deploys relevant changes on `master`.
-Pull requests only build and test, never deploy. Later changes to public samples or
-the site redeploy automatically. The live URL (verified 2026-11-06) is:
+Pull requests build and test. Merges touching the site, lab, or Rust dependencies
+trigger publication. The live URL is:
 
 `https://ricardomlee.github.io/gpt-sovits-rs/`
 
-Forks need to adjust repository links in `index.html` and enable their own Pages site.
+The hero and lab illustrations in `assets/pages-*.webp` are generated artwork.
+Forks can update repository links and enable their own Pages site.

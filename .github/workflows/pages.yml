@@ -3,9 +3,9 @@ name: Audio showcase
 on:
   push:
     branches: [master]
-    paths: [site/**, examples/samples/**, assets/**, .github/workflows/pages.yml]
+    paths: [site/**, examples/samples/**, assets/**, experiments/wasm-sovits/**, src/**, Cargo.toml, Cargo.lock, .github/workflows/pages.yml]
   pull_request:
-    paths: [site/**, examples/samples/**, assets/**, .github/workflows/pages.yml]
+    paths: [site/**, examples/samples/**, assets/**, experiments/wasm-sovits/**, src/**, Cargo.toml, Cargo.lock, .github/workflows/pages.yml]
   workflow_dispatch:
 
 permissions:
@@ -23,13 +23,37 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: experiments/wasm-sovits
+          shared-key: pages-wasm
+      - name: Install pinned wasm-bindgen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          archive=wasm-bindgen-0.2.130-x86_64-unknown-linux-musl.tar.gz
+          gh release download 0.2.130 --repo wasm-bindgen/wasm-bindgen --pattern "$archive" --dir "$RUNNER_TEMP"
+          printf '%s  %s\n' 9687f3bb551b9f66f37ed32a40d7913a00f7962db653054e56857bc306c3227f "$RUNNER_TEMP/$archive" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$archive" -C "$RUNNER_TEMP"
+          printf '%s\n' "$RUNNER_TEMP/${archive%.tar.gz}" >> "$GITHUB_PATH"
+      - name: Build browser engine
+        working-directory: experiments/wasm-sovits
+        env:
+          CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -C target-feature=+simd128
+        run: |
+          cargo build --locked --release --target wasm32-unknown-unknown --lib
+          wasm-bindgen --target web --no-typescript --out-dir web/pkg \
+            target/wasm32-unknown-unknown/release/wasm_sovits.wasm
       - name: Build only public assets
         run: bash site/build.sh _site
       - name: Install browser test tools
         run: |
           npm install --prefix "$RUNNER_TEMP/pages-test" --no-save --ignore-scripts playwright@1.59.1
           "$RUNNER_TEMP/pages-test/node_modules/.bin/playwright" install --with-deps chromium
-      - name: Test desktop and mobile playback
+      - name: Test playback and browser engine on the Pages subpath
         env:
           NODE_PATH: ${{ runner.temp }}/pages-test/node_modules
         run: node site/check.cjs _site "$RUNNER_TEMP/screenshots"
