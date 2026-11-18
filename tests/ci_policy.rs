@@ -84,6 +84,18 @@ fn build_runtime_and_startup_changes_keep_full_container_acceptance() {
     ] {
         check_scope(&["site/check.cjs", path], true, false, true);
     }
-    check_scope(&[".github/workflows/ci.yml"], true, true, true);
-    check_scope(&[".github/ci-scope.sh"], true, true, true);
+}
+
+#[test]
+fn ci_routing_changes_do_not_rebuild_the_runtime_image() {
+    check_scope(
+        &[
+            "site/index.html",
+            ".github/workflows/ci.yml",
+            ".github/ci-scope.sh",
+        ],
+        true,
+        true,
+        false,
+    );
 }

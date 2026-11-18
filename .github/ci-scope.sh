@@ -15,7 +15,7 @@ while IFS= read -r -d '' path; do
     case "$path" in
         Dockerfile*|.dockerignore|compose.*.yml|.env.example|Cargo.toml|Cargo.lock|build.rs|rust-toolchain*|.cargo/*|\
         src/cli.rs|src/main.rs|src/mkl_compat.rs|\
-        .github/workflows/ci.yml|.github/workflows/release.yml|.github/ci-scope.sh|\
+        .github/workflows/release.yml|\
         examples/first-run/*|examples/verify-http-formats.sh|tests/deployment_smoke.rs|\
         LICENSE|THIRD_PARTY.md|licenses/*)
             container=true
