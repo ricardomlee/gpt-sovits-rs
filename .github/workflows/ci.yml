@@ -23,31 +23,34 @@ jobs:
     name: Validate workflows
     runs-on: ubuntu-24.04
     outputs:
-      container: ${{ steps.container.outputs.required }}
+      quality: ${{ steps.scope.outputs.quality }}
+      client: ${{ steps.scope.outputs.client }}
+      container: ${{ steps.scope.outputs.container }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 2
 
-      - name: Select container acceptance
-        id: container
+      - name: Select checks
+        id: scope
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
-          required=true
-          if [[ "$EVENT_NAME" == pull_request ]]; then
-            if git diff --no-renames --name-only -z "$PR_BASE_SHA" HEAD > "$RUNNER_TEMP/ci-changes"; then
-              required=$(bash .github/container-needed.sh < "$RUNNER_TEMP/ci-changes")
-            fi
+          if [[ "$EVENT_NAME" != workflow_dispatch && -n "$BASE_SHA" ]] &&
+            git diff --no-renames --name-only -z "$BASE_SHA" HEAD -- > "$RUNNER_TEMP/ci-changes"; then
+            bash .github/ci-scope.sh < "$RUNNER_TEMP/ci-changes" >> "$GITHUB_OUTPUT"
+          else
+            printf 'quality=true\nclient=true\ncontainer=true\n' >> "$GITHUB_OUTPUT"
           fi
-          echo "required=$required" >> "$GITHUB_OUTPUT"
 
       - name: Run actionlint
         uses: rhysd/actionlint@v1.7.9
 
   quality:
     name: Format, lint, and test
+    needs: workflow-lint
+    if: needs.workflow-lint.outputs.quality == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -83,6 +86,8 @@ jobs:
 
   http-client:
     name: Standalone HTTP client
+    needs: workflow-lint
+    if: needs.workflow-lint.outputs.client == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -104,6 +109,7 @@ jobs:
 
   macos-audio-codecs:
     name: Audio codecs (${{ matrix.runner }})
+    if: github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
@@ -122,6 +128,7 @@ jobs:
 
   release-binary:
     name: Compile release binary
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -264,6 +271,7 @@ jobs:
         run: cargo test --locked --features http-api --test deployment_smoke -- --ignored --nocapture
 
       - name: Check compatibility with the pinned v1.2.0 image
+        if: github.event_name == 'workflow_dispatch'
         env:
           GPT_SOVITS_SMOKE_IMAGE: ghcr.io/ricardomlee/gpt-sovits-rs:1.2.0
         run: |

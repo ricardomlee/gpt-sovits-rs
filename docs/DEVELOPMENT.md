@@ -7,7 +7,8 @@ The HTTP command-line client builds separately under `client/`.
 
 Use stable Rust and Cargo, a C/C++ build toolchain, pkg-config, and libsoxr headers.
 HTTP builds also need CMake and libmp3lame. Cargo builds the bundled libopus source.
-Codec roundtrip tests run on Linux and both macOS architectures in CI.
+Codec roundtrip tests run in Linux CI. The full pre-release run also checks both
+macOS architectures.
 For a running v2/v2Pro service, install FFmpeg and jq and run
 `bash examples/verify-http-formats.sh http://127.0.0.1:9880 demo /tmp/speech-formats`.
 This maintainer check retains the requests, response headers, encoded files and
@@ -189,14 +190,14 @@ The deployment smoke test uses an empty env file and no model mounts. It must re
 the expected missing-model diagnostic, catching unsupported Compose arguments and
 missing shared libraries. Readiness and audio quality are checked in real-model acceptance.
 For a CUDA image, also set `GPT_SOVITS_SMOKE_GPUS=all` on a GPU host.
-CI retains v1.2.0 as a compatibility baseline.
+PRs and pushes to `master` use [the path policy](../.github/ci-scope.sh): Linux
+quality checks for native changes, standalone client checks for client changes,
+and CPU image acceptance for build or deployment changes. Pages-only changes
+run workflow lint and the Pages checks.
 
-Every PR runs packaged-binary conversion, HTTP synthesis and offline acceptance.
-The full CPU-container job also runs for build, dependency, Compose, CLI/startup,
-and acceptance-script changes, selected by
-[the path policy](../.github/container-needed.sh). Other PRs skip that
-duplicate build. Pushes to `master` and manual CI runs always include it; newer
-commits cancel superseded CI runs on the same PR.
+Run full CI before tagging for macOS, packaged-binary and offline synthesis
+checks, and the v1.2.0 container compatibility baseline. See
+[release acceptance](RELEASE_ACCEPTANCE.md#candidate-cpu-image).
 
 ## Incremental CUDA Work
 

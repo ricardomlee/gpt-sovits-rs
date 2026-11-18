@@ -1,8 +1,32 @@
 const assert = require('node:assert/strict');
+const { spawnSync } = require('node:child_process');
 const fs = require('node:fs');
+const { tmpdir } = require('node:os');
 const path = require('node:path');
 const { chromium } = require('playwright');
 const { serve } = require('./serve.cjs');
+
+function checkPackagerGuards(pkg) {
+  const scratch = fs.mkdtempSync(path.join(tmpdir(), 'gpt-sovits-pages-'));
+  const output = path.join(scratch, 'public site');
+  const build = assets => spawnSync('bash', [path.join(__dirname, 'build.sh'), output, assets], { encoding: 'utf8' });
+  try {
+    const missing = build(path.join(scratch, 'missing package'));
+    assert.equal(missing.status, 1);
+    assert.match(missing.stderr, /Missing browser artifact/);
+    assert(!fs.existsSync(output));
+
+    fs.mkdirSync(output);
+    const leftover = path.join(output, 'private.txt');
+    fs.writeFileSync(leftover, 'keep unchanged');
+    const occupied = build(pkg);
+    assert.equal(occupied.status, 1);
+    assert.match(occupied.stderr, /Refusing nonempty output directory/);
+    assert.equal(fs.readFileSync(leftover, 'utf8'), 'keep unchanged');
+  } finally {
+    fs.rmSync(scratch, { recursive: true });
+  }
+}
 
 (async () => {
   const directory = path.resolve(process.argv[2] || '_site');
@@ -16,6 +40,7 @@ const { serve } = require('./serve.cjs');
     'lab/index.html', 'lab/lab.css', 'lab/pkg/wasm_sovits.js', 'lab/pkg/wasm_sovits_bg.wasm',
     'lab/worker.js', 'styles.css',
   ]);
+  checkPackagerGuards(path.join(directory, 'lab/pkg'));
   const browser = await chromium.launch({ headless: true });
   const { server, url } = await serve(directory);
   try {

@@ -25,13 +25,18 @@ the image ID, configuration, headers, and logs. Its exit trap removes only its o
 container/network, including on failures. Downloaded models stay in the demo directory.
 Do not rerun preparation on a production voice directory.
 
-The main CI's CPU-container job runs this against its newly built image on `master`,
-manual runs, and deployment-related PRs. Before tagging, require a passing full CI
-run for the exact candidate commit. Reuse an existing `master` run; for another
-pushed candidate branch, run
-`gh workflow run ci.yml --ref "$(git branch --show-current)"` from that branch. The
-separate first-run workflow verifies published 1.3.2 and keeps 1.2.0 as a
-compatibility baseline. Local GPU and speech checks follow below.
+The CPU-container job runs for deployment changes and manual CI runs. Before
+tagging, start a full CI run on the pushed candidate branch:
+
+```bash
+gh workflow run ci.yml --ref "$(git branch --show-current)"
+```
+
+Require the run for the exact candidate commit to pass. The full run includes
+both macOS architectures, Linux packaged-binary acceptance and v1.2.0 container
+compatibility. Run `first-run.yml` on demand to verify both pinned published
+images, including after updating the first-run default. Local GPU and speech
+checks follow below.
 
 The Linux binary job also extracts its actual archive into a runtime-only image,
 without system libsoxr/libmp3lame, Python, Cargo, or rustc. It checks all three

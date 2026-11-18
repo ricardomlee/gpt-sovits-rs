@@ -3,9 +3,8 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-fn container_needed(paths: &[&str]) -> bool {
-    let script =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/container-needed.sh");
+fn check_scope(paths: &[&str], quality: bool, client: bool, container: bool) {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(".github/ci-scope.sh");
     let mut child = Command::new("bash")
         .arg(script)
         .stdin(Stdio::piped())
@@ -19,27 +18,42 @@ fn container_needed(paths: &[&str]) -> bool {
     child.stdin.take().unwrap().write_all(&input).unwrap();
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
-    match output.stdout.as_slice() {
-        b"true\n" => true,
-        b"false\n" => false,
-        other => panic!("unexpected policy result: {other:?}"),
-    }
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("quality={quality}\nclient={client}\ncontainer={container}\n"),
+        "{paths:?}"
+    );
 }
 
 #[test]
-fn source_docs_and_client_changes_use_packaged_binary_acceptance() {
-    assert!(!container_needed(&[]));
-    assert!(!container_needed(&[
-        "src/inference/options.rs",
+fn site_and_client_changes_do_not_run_native_jobs() {
+    check_scope(&[], false, false, false);
+    check_scope(
+        &[
+            "site/check.cjs",
+            "assets/pages-voice-console.webp",
+            "examples/samples/README.md",
+            "experiments/wasm-sovits/web/index.html",
+            ".github/workflows/pages.yml",
+        ],
+        false,
+        false,
+        false,
+    );
+    check_scope(&["site/check.cjs", "client/Cargo.toml"], false, true, false);
+}
+
+#[test]
+fn native_and_mixed_changes_keep_linux_quality_checks() {
+    for path in [
         "src/models/gpt.rs",
-        "src/server/handlers.rs",
-        "src/voice.rs",
-        "README.md",
         "docs/API.md",
-        "client/Cargo.toml",
-        "tests/integration_tests.rs",
+        "tests/first_run.rs",
         "src/a name\nwith newline.rs",
-    ]));
+    ] {
+        check_scope(&["site/index.html", path], true, false, false);
+    }
+    check_scope(&["client/Cargo.toml", "src/server.rs"], true, true, false);
 }
 
 #[test]
@@ -59,18 +73,17 @@ fn build_runtime_and_startup_changes_keep_full_container_acceptance() {
         "src/cli.rs",
         "src/main.rs",
         "src/mkl_compat.rs",
-        ".github/workflows/ci.yml",
         ".github/workflows/release.yml",
-        ".github/container-needed.sh",
         "examples/first-run/prepare.sh",
         "examples/first-run/downloads.txt",
         "examples/verify-http-formats.sh",
         "tests/deployment_smoke.rs",
-        "tests/first_run.rs",
         "LICENSE",
         "THIRD_PARTY.md",
         "licenses/CMUDICT.txt",
     ] {
-        assert!(container_needed(&["src/models/gpt.rs", path]), "{path}");
+        check_scope(&["site/check.cjs", path], true, false, true);
     }
+    check_scope(&[".github/workflows/ci.yml"], true, true, true);
+    check_scope(&[".github/ci-scope.sh"], true, true, true);
 }

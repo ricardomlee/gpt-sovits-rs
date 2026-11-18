@@ -116,7 +116,7 @@ and hardware mean reproduction is not a byte-for-byte promise.
 | English WAV | `3ea40c1ff94b4b48ee84773660c068ce4cc4c08890b704c2be40994b34b4d2e5` |
 | Chinese WAV | `86256f06ef8df2ca62738eb2ef05e3b3c07736a12ccae4d2bfe0c3f79d02639f` |
 
-The **First-run acceptance** workflow separately runs the pinned published Docker
+The on-demand **First-run acceptance** workflow runs the pinned published Docker
 image from download through HTTP synthesis and uploads the resulting WAV for
 inspection. Signal checks are not a substitute for listening.
 

@@ -1,17 +1,6 @@
 name: First-run acceptance
 
 on:
-  pull_request:
-    paths:
-      - examples/first-run/**
-      - tests/first_run.rs
-      - .github/workflows/first-run.yml
-  push:
-    branches: [master]
-    paths:
-      - examples/first-run/**
-      - tests/first_run.rs
-      - .github/workflows/first-run.yml
   workflow_dispatch:
 
 permissions:
