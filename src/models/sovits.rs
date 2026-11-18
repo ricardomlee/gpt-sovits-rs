@@ -127,11 +127,8 @@ impl SoVITSModel {
         Self::from_state_dict(&state_dict, &Device::Cpu, DType::F32)
     }
 
-    pub(crate) fn from_state_dict(
-        state_dict: &StateDict,
-        device: &Device,
-        dtype: DType,
-    ) -> Result<Self> {
+    /// Construct the model from decoded tensors without reading a checkpoint file.
+    pub fn from_state_dict(state_dict: &StateDict, device: &Device, dtype: DType) -> Result<Self> {
         // Configuration
         let hidden_channels = 192;
         let n_layers = 6;
@@ -489,8 +486,8 @@ impl SoVITSModel {
         Ok(positive.add(&negative.broadcast_mul(&alpha)?)?)
     }
 
-    #[cfg(any(test, not(target_arch = "wasm32")))]
-    pub(crate) fn set_sampling_seed(&self, seed: Option<u64>) -> Result<()> {
+    /// Set the acoustic noise seed for this model instance.
+    pub fn set_sampling_seed(&self, seed: Option<u64>) -> Result<()> {
         self.sampling_rng.set_seed(seed)
     }
 

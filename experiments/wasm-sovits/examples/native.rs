@@ -1,6 +1,12 @@
 use anyhow::{bail, Context, Result};
 use candle_core::{safetensors, Device, Tensor};
-use gpt_sovits_rs::{models::SoVITSModel, utils::SpectrogramExtractor, AudioBuffer};
+use gpt_sovits_rs::{
+    model_paths::{ModelPathOverrides, ModelPaths},
+    models::SoVITSModel,
+    utils::SpectrogramExtractor,
+    voice::{LoadedVoiceProfile, VoiceDefaults},
+    AudioBuffer, Config, Language, Pipeline,
+};
 use std::{collections::HashMap, fs, path::Path, time::Instant};
 
 fn trace_tokens(dir: &Path, name: &str) -> Result<Tensor> {
@@ -44,9 +50,47 @@ fn prepare(trace: &str, reference: &str, sv: &str, output: &str) -> Result<()> {
     Ok(())
 }
 
+fn prepare_reference(models: &Path, voices: &Path, name: &str, output: &Path) -> Result<()> {
+    let voice = LoadedVoiceProfile::load(name, voices).map_err(anyhow::Error::msg)?;
+    let weights = voice.model_paths(models);
+    let paths = ModelPaths::discover(
+        models,
+        ModelPathOverrides {
+            gpt: weights.gpt,
+            sovits: weights.sovits,
+            ..Default::default()
+        },
+    )
+    .map_err(anyhow::Error::msg)?;
+    let defaults = VoiceDefaults::from_profile(Some(&voice.profile));
+    let mut options = defaults.to_inference_options(Language::Chinese, Default::default());
+    options.sv_embedding = voice.sv_embedding_path();
+
+    let mut pipeline = Pipeline::new(Config::builder().with_device("cpu").build())?;
+    pipeline.load_gpt(paths.gpt)?;
+    pipeline.load_sovits(paths.sovits)?;
+    pipeline.load_bert(paths.bert.context("BERT weights required")?)?;
+    pipeline.load_hubert(paths.hubert.context("HuBERT weights required")?)?;
+    pipeline.export_reference_features(
+        &voice
+            .reference_audio_path()
+            .context("Voice reference audio required")?,
+        voice
+            .reference_text()
+            .filter(|text| !text.trim().is_empty())
+            .context("Voice reference transcript required")?,
+        &options,
+        output,
+    )?;
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args.as_slice() {
+        [mode, models, voices, name, output] if mode == "prepare-reference" => {
+            prepare_reference(Path::new(models), Path::new(voices), name, Path::new(output))
+        }
         [mode, trace, reference, sv, output] if mode == "prepare" => {
             prepare(trace, reference, sv, output)
         }
@@ -63,6 +107,6 @@ fn main() -> Result<()> {
             println!("load_ms={load_ms} render_ms={render_ms} samples={}", audio.len());
             Ok(())
         }
-        _ => bail!("native prepare TRACE_DIR REF_32K_MONO.wav SV.safetensors|- CASE.safetensors\nnative render WEIGHTS.safetensors CASE.safetensors OUTPUT.wav"),
+        _ => bail!("native prepare-reference MODELS_DIR VOICES_DIR VOICE OUTPUT.safetensors\nnative prepare TRACE_DIR REF_32K_MONO.wav SV.safetensors|- CASE.safetensors\nnative render WEIGHTS.safetensors CASE.safetensors OUTPUT.wav"),
     }
 }

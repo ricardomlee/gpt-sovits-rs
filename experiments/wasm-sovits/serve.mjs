@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 const files = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/worker.js', ['worker.js', 'text/javascript']],
+  ['/checkpoint.js', ['checkpoint.js', 'text/javascript']],
   ['/pkg/wasm_sovits.js', ['pkg/wasm_sovits.js', 'text/javascript']],
   ['/pkg/wasm_sovits_bg.wasm', ['pkg/wasm_sovits_bg.wasm', 'application/wasm']],
 ]);

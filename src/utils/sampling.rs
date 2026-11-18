@@ -1,6 +1,5 @@
 use crate::{Error, Result};
 use candle_core::Tensor;
-#[cfg(any(test, not(target_arch = "wasm32")))]
 use rand::SeedableRng;
 use rand::{rngs::StdRng, Rng};
 use rand_distr::{Distribution, StandardNormal};
@@ -17,7 +16,6 @@ impl SamplingRng {
             .map_err(|_| Error::InferenceError("sampling RNG lock poisoned".into()))
     }
 
-    #[cfg(any(test, not(target_arch = "wasm32")))]
     pub(crate) fn set_seed(&self, seed: Option<u64>) -> Result<()> {
         *self.lock()? = seed.map(StdRng::seed_from_u64);
         Ok(())

@@ -1,23 +1,33 @@
-import init, { AcousticModel } from './pkg/wasm_sovits.js';
+import init, { AcousticModel, TextVoice } from './pkg/wasm_sovits.js';
+import { loadCheckpoint } from './checkpoint.js';
 
-self.onmessage = async ({ data: { weights, caseFile } }) => {
-  let model;
+let voice;
+let memory;
+
+self.onmessage = async ({ data: { files, text } }) => {
+  let loadMs;
   try {
-    const { memory } = await init();
-    const bytes = new Uint8Array(await weights.arrayBuffer());
-    const input = new Uint8Array(await caseFile.arrayBuffer());
-    const start = performance.now();
-    model = new AcousticModel(bytes);
-    const loadMs = performance.now() - start;
-    const loadBytes = memory.buffer.byteLength;
+    if (!voice) {
+      ({ memory } = await init());
+      const start = performance.now();
+      self.postMessage({ stage: 'Loading SoVITS...' });
+      const sovits = AcousticModel.from_checkpoint(await loadCheckpoint(files.sovits));
+      self.postMessage({ stage: 'Loading GPT...' });
+      const gpt = await loadCheckpoint(files.gpt);
+      self.postMessage({ stage: 'Loading BERT...' });
+      const bert = await loadCheckpoint(files.bert);
+      const tokenizer = new Uint8Array(await files.tokenizer.arrayBuffer());
+      const reference = new Uint8Array(await files.reference.arrayBuffer());
+      voice = new TextVoice(sovits, gpt, bert, tokenizer, reference);
+      loadMs = performance.now() - start;
+    }
+    self.postMessage({ stage: 'Rendering...' });
     const renderStart = performance.now();
-    const wav = model.render(input);
+    const wav = voice.render(text);
     const renderMs = performance.now() - renderStart;
     const peakBytes = memory.buffer.byteLength;
-    self.postMessage({ wav, loadMs, renderMs, loadBytes, peakBytes }, [wav.buffer]);
+    self.postMessage({ wav, loadMs, renderMs, peakBytes }, [wav.buffer]);
   } catch (error) {
-    self.postMessage({ error: error.message || String(error) });
-  } finally {
-    model?.free();
+    self.postMessage({ error: error.message || String(error), reset: !voice || error instanceof WebAssembly.RuntimeError });
   }
 };

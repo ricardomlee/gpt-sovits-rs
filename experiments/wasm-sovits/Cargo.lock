@@ -1905,6 +1905,9 @@ dependencies = [
  "anyhow",
  "candle-core",
  "gpt-sovits-rs",
+ "safetensors",
+ "serde",
+ "serde_json",
  "wasm-bindgen",
 ]
 
