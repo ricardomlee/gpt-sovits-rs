@@ -3,77 +3,98 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="GPT-SoVITS-RS：无需 Python 的本地语音推理服务。试听真实合成音频，使用 Docker 跑出第一段语音。">
+  <meta name="description" content="GPT-SoVITS-RS：用 Rust 在本机合成语音。试听 Sun 音色，试用浏览器实验，或部署到自己的电脑。">
   <meta name="color-scheme" content="light">
-  <title>GPT-SoVITS-RS | 本地语音试听</title>
+  <title>GPT-SoVITS-RS | 本地语音合成</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
   <a class="skip" href="#samples">跳到试听</a>
   <header class="masthead">
-    <nav aria-label="主导航">
-      <span>GPT-SoVITS-RS</span>
-      <div>
+    <nav class="wrap" aria-label="主导航">
+      <a class="wordmark" href="./"><span aria-hidden="true"></span>GPT-SoVITS-RS</a>
+      <div class="nav-links">
+        <a href="#samples">试听</a>
+        <a href="lab/">实验室</a>
         <a href="https://github.com/ricardomlee/gpt-sovits-rs">GitHub</a>
-        <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/API.md">API</a>
-        <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/README.md" lang="en">English</a>
       </div>
     </nav>
   </header>
+
   <main>
-    <section class="intro" aria-labelledby="title">
-      <img class="brand" src="assets/gpt-sovits-rs-banner.png" width="1983" height="793" alt="" fetchpriority="high">
-      <h1 id="title">GPT-SoVITS-RS</h1>
-      <p class="lead">无需 Python 的本地语音推理服务。</p>
-      <p>把已有的 GPT-SoVITS 音色接入你的助手。Rust 转换与推理，Docker 或独立二进制部署。</p>
-    </section>
-
-    <section id="samples" aria-labelledby="samples-title">
-      <div class="section-heading">
-        <h2 id="samples-title">真实合成试听</h2>
-        <span class="metadata">Sun / v2Pro + SV / CPU</span>
-      </div>
-      <article class="sample" aria-labelledby="greeting-title">
-        <div class="sample-label"><h3 id="greeting-title">Sun · 日常问候</h3><span>32 kHz WAV</span></div>
-        <p class="transcript">你好，欢迎回来。今天有什么想和我聊聊的吗？</p>
-        <audio controls preload="metadata" aria-label="播放 Sun 日常问候" src="audio/sun-greeting.wav"></audio>
-        <a class="download" href="audio/sun-greeting.wav" download>下载 WAV</a>
-      </article>
-      <article class="sample" aria-labelledby="zh-title">
-        <div class="sample-label"><h3 id="zh-title">Sun · 服务确认</h3><span>32 kHz WAV</span></div>
-        <p class="transcript">你的本地语音服务已经准备好了。接下来的语音会在这台电脑上生成。</p>
-        <audio controls preload="metadata" aria-label="播放 Sun 中文合成音频" src="audio/sun-zh.wav"></audio>
-        <a class="download" href="audio/sun-zh.wav" download>下载 WAV</a>
-      </article>
-      <p class="note">两段均由本地 Sun 音色合成，无后期编辑。Sun 的模型、SV 和参考录音由维护者私下保管；
-        Docker 首次体验使用公开可下载的通用 v2 模型。
-        <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/examples/samples/README.md">来源、参数与复现</a></p>
-    </section>
-
-    <section class="start" aria-labelledby="start-title">
-      <h2 id="start-title">在自己的电脑上运行</h2>
-      <p>首次体验：Linux x86_64、Docker Compose v2、Bash 和 curl。至少 6 GiB 磁盘、4 GiB 可用内存。</p>
-      <a class="primary" href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/FIRST_RUN.zh-CN.md">开始 Docker 试用</a>
-      <div class="links">
-        <a href="https://github.com/ricardomlee/gpt-sovits-rs/releases/latest">下载独立二进制</a>
-        <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/MODELS.md">使用自己的模型</a>
-        <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/AGENT_INTEGRATION.md">接入 Agent</a>
+    <section class="hero" aria-labelledby="title">
+      <img src="assets/pages-voice-console.webp" width="1881" height="836" alt="" fetchpriority="high">
+      <div class="wrap hero-content">
+        <p class="eyebrow"><span aria-hidden="true"></span> RUST VOICE ENGINE</p>
+        <h1 id="title">GPT-SoVITS-RS</h1>
+        <p class="lead">用 Rust 在本机合成语音。<br>把 GPT-SoVITS 音色接入你的助手。</p>
+        <div class="actions">
+          <a class="button primary" href="#samples">试听 Sun</a>
+          <a class="button outline" href="lab/">浏览器实验</a>
+        </div>
       </div>
     </section>
 
-    <section class="boundaries" aria-labelledby="limits-title">
-      <h2 id="limits-title">适合你的场景吗？</h2>
-      <dl>
-        <div><dt>适合</dt><dd>已有 v2 / v2Pro 模型，希望在本机长期运行一个 HTTP 语音服务。</dd></div>
-        <div><dt>仍需准备</dt><dd>清晰参考录音和准确转写。v2Pro 完整音色条件还需要 SV embedding。</dd></div>
-        <div><dt>使用建议</dt><dd>训练使用上游 GPT-SoVITS。长文本可能漏读，建议按完整短句生成和播放，重要内容试听确认。</dd></div>
-      </dl>
+    <section id="samples" class="band" aria-labelledby="samples-title">
+      <div class="wrap">
+        <div class="section-head">
+          <div><p class="eyebrow">01 / LISTEN</p><h2 id="samples-title">先听一段</h2></div>
+          <span class="metadata">SUN / v2Pro + SV / CPU</span>
+        </div>
+        <div class="tracks">
+          <article class="track" aria-labelledby="greeting-title">
+            <div class="track-head"><h3 id="greeting-title">日常问候</h3><span class="metadata">32 kHz WAV</span></div>
+            <p class="transcript">你好，欢迎回来。今天有什么想和我聊聊的吗？</p>
+            <audio controls preload="metadata" aria-label="播放 Sun 日常问候" src="audio/sun-greeting.wav"></audio>
+            <a class="text-link" href="audio/sun-greeting.wav" download>下载 WAV <span aria-hidden="true">↓</span></a>
+          </article>
+          <article class="track" aria-labelledby="zh-title">
+            <div class="track-head"><h3 id="zh-title">服务确认</h3><span class="metadata">32 kHz WAV</span></div>
+            <p class="transcript">你的本地语音服务已经准备好了。接下来的语音会在这台电脑上生成。</p>
+            <audio controls preload="metadata" aria-label="播放 Sun 服务确认" src="audio/sun-zh.wav"></audio>
+            <a class="text-link" href="audio/sun-zh.wav" download>下载 WAV <span aria-hidden="true">↓</span></a>
+          </article>
+        </div>
+        <a class="text-link provenance" href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/examples/samples/README.md">样本来源与参数 <span aria-hidden="true">↗</span></a>
+      </div>
+    </section>
+
+    <section class="band lab-band" aria-labelledby="lab-title">
+      <div class="wrap lab-layout">
+        <div>
+          <p class="eyebrow">02 / WEBASSEMBLY</p>
+          <h2 id="lab-title">在浏览器里合成</h2>
+          <p class="section-copy">用自己的模型生成中文 WAV。模型和文字留在设备上。</p>
+          <p class="metadata lab-meta">实验功能 · 桌面浏览器 · 自备权重</p>
+          <div class="actions">
+            <a class="button dark" href="lab/">打开实验室 <span aria-hidden="true">↗</span></a>
+            <a class="text-link" href="https://github.com/ricardomlee/gpt-sovits-rs/tree/master/experiments/wasm-sovits#prepare-a-voice">准备音色</a>
+          </div>
+        </div>
+        <img src="assets/pages-browser-lab.webp" width="960" height="540" loading="lazy" alt="笔记本屏幕上的语音波形和一台铝制音频接口">
+      </div>
+    </section>
+
+    <section class="band deploy" aria-labelledby="deploy-title">
+      <div class="wrap">
+        <p class="eyebrow">03 / RUN LOCALLY</p>
+        <h2 id="deploy-title">部署到本机</h2>
+        <div class="deploy-links">
+          <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/FIRST_RUN.zh-CN.md"><strong>Docker 快速上手</strong><span>Linux x86_64</span><span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/ricardomlee/gpt-sovits-rs/releases/latest"><strong>下载独立二进制</strong><span>Linux / macOS</span><span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/AGENT_INTEGRATION.md"><strong>接入你的助手</strong><span>HTTP / Hermes</span><span aria-hidden="true">↗</span></a>
+        </div>
+      </div>
     </section>
   </main>
-  <footer>
-    <p>没有遥测、登录或云端推理。本页只提供静态试听。</p>
-    <a href="https://github.com/ricardomlee/gpt-sovits-rs/issues/new?template=first-run.yml">反馈首次试用结果</a>
-    <p class="credits">Code: MIT. 模型许可独立。感谢 GPT-SoVITS、Candle 和 LJ Speech。</p>
+
+  <footer class="wrap">
+    <span>GPT-SoVITS-RS · MIT</span>
+    <nav aria-label="文档">
+      <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/MODELS.md">模型</a>
+      <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/API.md">API</a>
+      <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/README.md" lang="en">English</a>
+    </nav>
   </footer>
 </body>
 </html>

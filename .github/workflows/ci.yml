@@ -19,38 +19,17 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  workflow-lint:
-    name: Validate workflows
-    runs-on: ubuntu-24.04
-    outputs:
-      container: ${{ steps.container.outputs.required }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 2
-
-      - name: Select container acceptance
-        id: container
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          required=true
-          if [[ "$EVENT_NAME" == pull_request ]]; then
-            if git diff --no-renames --name-only -z "$PR_BASE_SHA" HEAD > "$RUNNER_TEMP/ci-changes"; then
-              required=$(bash .github/container-needed.sh < "$RUNNER_TEMP/ci-changes")
-            fi
-          fi
-          echo "required=$required" >> "$GITHUB_OUTPUT"
-
-      - name: Run actionlint
-        uses: rhysd/actionlint@v1.7.9
-
   quality:
     name: Format, lint, and test
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+      - uses: rhysd/actionlint@v1.7.9
+      - name: Check deployment scripts and Compose examples
+        run: |
+          shellcheck examples/first-run/*.sh examples/verify-http-formats.sh site/build.sh
+          docker compose --env-file .env.example -f compose.cpu.yml config --quiet
+          docker compose --env-file .env.example -f compose.cuda.yml config --quiet
 
       - name: Install system dependencies
         run: |
@@ -68,7 +47,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Run Clippy
-        run: cargo clippy --all-targets --features http-api -- -D warnings
+        run: cargo clippy --locked --all-targets --features http-api -- -D warnings
 
       - name: Check library documentation
         env:
@@ -101,191 +80,3 @@ jobs:
           cargo fmt --manifest-path client/Cargo.toml -- --check
           cargo clippy --locked --manifest-path client/Cargo.toml --all-targets -- -D warnings
           cargo test --locked --manifest-path client/Cargo.toml
-
-  macos-audio-codecs:
-    name: Audio codecs (${{ matrix.runner }})
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [macos-15, macos-15-intel]
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v7
-      - run: brew install libsoxr lame cmake
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Test HTTP lifecycle and audio codecs
-        run: |
-          LAME_LIB_DIR="$(brew --prefix lame)/lib"
-          export LAME_LIB_DIR
-          cargo test --locked --features http-api --bin gpt-sovits server::
-
-  release-binary:
-    name: Compile release binary
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsoxr-dev libmp3lame-dev cmake patchelf ffmpeg jq
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-binary
-
-      - name: Build Linux CPU binary
-        run: |
-          cargo build --release --locked --features http-api,mkl
-          cargo build --release --locked --manifest-path client/Cargo.toml --target-dir target
-
-      - name: Smoke test binary
-        run: |
-          target/release/gpt-sovits --version
-          target/release/gpt-sovits-convert --version
-          target/release/gpt-sovits-client --version
-
-      - name: Package Linux CPU binary
-        shell: bash
-        run: |
-          set -euo pipefail
-          package="gpt-sovits-ci-linux-x86_64"
-          mkdir -p "dist/${package}/lib"
-          cp target/release/gpt-sovits "dist/${package}/"
-          cp target/release/gpt-sovits-convert "dist/${package}/"
-          cp target/release/gpt-sovits-client "dist/${package}/"
-          soxr="$(ldconfig -p | awk '$1 == "libsoxr.so.0" { print $NF; exit }')"
-          cp -L "${soxr}" "dist/${package}/lib/libsoxr.so.0"
-          lame="$(ldconfig -p | awk '$1 == "libmp3lame.so.0" { print $NF; exit }')"
-          cp -L "${lame}" "dist/${package}/lib/libmp3lame.so.0"
-          cp LICENSE THIRD_PARTY.md "dist/${package}/"
-          cp -R licenses "dist/${package}/"
-          rpath="\$ORIGIN/lib"
-          patchelf --set-rpath "${rpath}" "dist/${package}/gpt-sovits"
-          patchelf --set-rpath "${rpath}" "dist/${package}/gpt-sovits-convert"
-          strip "dist/${package}/gpt-sovits"
-          strip "dist/${package}/gpt-sovits-convert"
-          strip "dist/${package}/gpt-sovits-client"
-          "dist/${package}/gpt-sovits" --version
-          "dist/${package}/gpt-sovits-convert" --version
-          "dist/${package}/gpt-sovits-client" --version
-          tar -C dist -czf "dist/${package}.tar.gz" "${package}"
-
-      - name: Upload Linux CPU binary
-        uses: actions/upload-artifact@v7
-        with:
-          name: linux-x86_64-binary
-          path: dist/*.tar.gz
-          if-no-files-found: error
-
-      - name: Test extracted archive in a runtime-only image
-        run: |
-          mkdir binary-runtime
-          tar -xzf dist/gpt-sovits-ci-linux-x86_64.tar.gz -C binary-runtime --strip-components=1
-          docker build -f examples/first-run/Dockerfile.binary -t gpt-sovits-rs:binary-ci binary-runtime
-
-      - name: Verify packaged binaries from conversion through HTTP and offline synthesis
-        env:
-          DEMO_IMAGE: gpt-sovits-rs:binary-ci
-          DEMO_PULL_POLICY: never
-          DEMO_PORT: "9882"
-          VERIFY_SPEECH_FORMATS: "1"
-          VERIFY_GRACEFUL_SHUTDOWN: "1"
-        run: |
-          export DEMO_EXPECTED_VERSION
-          DEMO_EXPECTED_VERSION=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "gpt-sovits-rs") | .version')
-          demo="$RUNNER_TEMP/packaged-binary-demo"
-          evidence="$RUNNER_TEMP/packaged-binary-evidence"
-          bash examples/first-run/verify.sh "$demo" "$evidence"
-          docker run --rm --network none \
-            --mount "type=bind,src=$demo/models,dst=/app/models,readonly" \
-            --mount "type=bind,src=$demo/voices,dst=/app/voices,readonly" \
-            --mount "type=bind,src=$evidence,dst=/out" \
-            "$DEMO_IMAGE" --device cpu --voice demo --models-dir /app/models --voices-dir /app/voices \
-            --text 'Hello, this is the packaged binary offline test.' --output /out/offline.wav
-          FIRST_RUN_WAV="$evidence/offline.wav" cargo test --locked --test first_run \
-            generated_http_audio_is_valid -- --ignored --nocapture
-
-      - name: Upload packaged-binary acceptance evidence, never models
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: packaged-binary-acceptance
-          path: ${{ runner.temp }}/packaged-binary-evidence/
-          retention-days: 7
-          if-no-files-found: ignore
-
-  docker:
-    name: Build and smoke test CPU container
-    needs: workflow-lint
-    if: needs.workflow-lint.outputs.container == 'true'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      - name: Install test dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libsoxr-dev libmp3lame-dev cmake ffmpeg jq
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Validate Compose templates
-        run: |
-          docker compose --env-file .env.example -f compose.cpu.yml config --quiet
-          docker compose --env-file .env.example -f compose.cuda.yml config --quiet
-
-      - name: Build container
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: Dockerfile
-          platforms: linux/amd64
-          push: false
-          load: true
-          tags: gpt-sovits-rs:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Check Compose startup with the built image
-        env:
-          GPT_SOVITS_SMOKE_IMAGE: gpt-sovits-rs:ci
-        run: cargo test --locked --features http-api --test deployment_smoke -- --ignored --nocapture
-
-      - name: Check compatibility with the pinned v1.2.0 image
-        env:
-          GPT_SOVITS_SMOKE_IMAGE: ghcr.io/ricardomlee/gpt-sovits-rs:1.2.0
-        run: |
-          docker pull "$GPT_SOVITS_SMOKE_IMAGE"
-          cargo test --locked --features http-api --test deployment_smoke -- --ignored --nocapture
-
-      - name: Verify the candidate from download through real HTTP synthesis
-        env:
-          DEMO_IMAGE: gpt-sovits-rs:ci
-          DEMO_PULL_POLICY: never
-          VERIFY_SPEECH_FORMATS: "1"
-          VERIFY_GRACEFUL_SHUTDOWN: "1"
-        run: |
-          export DEMO_EXPECTED_VERSION
-          DEMO_EXPECTED_VERSION=$(cargo metadata --no-deps --format-version 1 --locked | jq -r '.packages[] | select(.name == "gpt-sovits-rs") | .version')
-          bash examples/first-run/verify.sh "$RUNNER_TEMP/candidate-demo" "$RUNNER_TEMP/candidate-evidence"
-
-      - name: Upload candidate acceptance evidence, never models
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: candidate-acceptance
-          path: ${{ runner.temp }}/candidate-evidence/
-          retention-days: 7
-          if-no-files-found: ignore

@@ -1,41 +1,48 @@
 <!doctype html>
-<html lang="en">
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SoVITS Wasm Lab</title>
-<style>
-  :root { color-scheme: light dark; font: 16px system-ui; }
-  body { margin: 3rem auto; padding: 0 1.25rem; max-width: 42rem; }
-  h1 { font-size: 1.6rem; }
-  form, label, fieldset { display: grid; grid-template-columns: minmax(0, 1fr); gap: .6rem; }
-  form { gap: 1rem; }
-  fieldset { margin: 0; min-width: 0; }
-  button, input, textarea { font: inherit; max-width: 100%; }
-  input[type="file"] { width: 100%; min-width: 0; }
-  textarea { resize: vertical; }
-  button { justify-self: start; padding: .45rem .8rem; }
-  audio:not([hidden]) { display: block; width: 100%; margin: 1rem 0; }
-  output { display: block; margin-top: 1rem; overflow-wrap: anywhere; }
-</style>
-<h1>SoVITS Wasm Lab</h1>
-<form>
-  <fieldset>
-    <legend>Local voice</legend>
-    <label>SoVITS weights <input name="sovits" type="file" accept=".safetensors" required></label>
-    <label>GPT weights <input name="gpt" type="file" accept=".safetensors" required></label>
-    <label>BERT weights <input name="bert" type="file" accept=".safetensors" required></label>
-    <label>BERT tokenizer <input name="tokenizer" type="file" accept=".json" required></label>
-    <label>Prepared reference <input name="reference" type="file" accept=".safetensors" required></label>
-  </fieldset>
-  <label>Mandarin text <textarea name="text" rows="2" maxlength="80" required></textarea></label>
-  <div>
-    <button type="submit">Render WAV</button>
-    <button id="unload" type="button" disabled>Unload voice</button>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>浏览器语音实验 | GPT-SoVITS-RS</title>
+  <link rel="stylesheet" href="lab.css">
+</head>
+<body>
+<header class="topbar">
+  <nav class="wrap" aria-label="主导航">
+    <a class="wordmark" href="../"><span aria-hidden="true"></span>GPT-SoVITS-RS</a>
+    <span class="mono">WASM LAB</span>
+  </nav>
+</header>
+<main class="wrap">
+  <div class="heading">
+    <p class="mono">WEBASSEMBLY / 实验</p>
+    <h1>浏览器语音实验</h1>
+    <p>桌面浏览器 · Sun 实测约 2 GiB Wasm 内存</p>
   </div>
-</form>
-<output id="result" role="status"></output>
-<audio controls hidden></audio>
-<a id="download" download="sovits-wasm.wav" hidden>Download WAV</a>
+  <noscript><p>生成语音需要启用 JavaScript。</p></noscript>
+  <form class="workspace">
+    <fieldset>
+      <legend>本地模型</legend>
+      <label>SoVITS 权重 <input name="sovits" type="file" accept=".safetensors" required></label>
+      <label>GPT 权重 <input name="gpt" type="file" accept=".safetensors" required></label>
+      <label>BERT 权重 <input name="bert" type="file" accept=".safetensors" required></label>
+      <label>BERT tokenizer <input name="tokenizer" type="file" accept=".json" required></label>
+      <label>参考特征 <input name="reference" type="file" accept=".safetensors" required></label>
+      <a href="https://github.com/ricardomlee/gpt-sovits-rs/tree/master/experiments/wasm-sovits#prepare-a-voice">准备音色 <span aria-hidden="true">↗</span></a>
+    </fieldset>
+    <div class="compose">
+      <label>中文文本 <textarea name="text" rows="4" maxlength="80" placeholder="你好，很高兴见到你。" required></textarea></label>
+      <div class="actions">
+        <button type="submit" disabled>生成 WAV</button>
+        <button id="unload" type="button" disabled>卸载模型</button>
+      </div>
+      <output id="result" role="status" class="mono"></output>
+      <audio controls aria-label="播放生成的语音" hidden></audio>
+      <a id="download" download="sovits-wasm.wav" hidden>下载 WAV <span aria-hidden="true">↓</span></a>
+    </div>
+  </form>
+</main>
 <script type="module">
   const form = document.querySelector('form');
   const inputs = form.querySelector('fieldset');
@@ -64,7 +71,7 @@
 
   unload.addEventListener('click', () => {
     reset();
-    result.textContent = 'Voice unloaded';
+    result.textContent = '模型已卸载';
   });
 
   function startWorker() {
@@ -86,13 +93,13 @@
       const url = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }));
       audio.src = download.href = url;
       audio.hidden = download.hidden = false;
-      const load = loadMs === undefined ? '' : `Load ${Math.round(loadMs)} ms · `;
-      result.textContent = `${load}Render ${Math.round(renderMs)} ms · Wasm memory ${mib(peakBytes)} MiB`;
+      const load = loadMs === undefined ? '' : `加载 ${Math.round(loadMs)} ms · `;
+      result.textContent = `${load}合成 ${Math.round(renderMs)} ms · Wasm 内存 ${mib(peakBytes)} MiB`;
     };
     current.onerror = (error) => {
       if (current !== worker) return;
       reset();
-      result.textContent = error.message || 'Worker failed';
+      result.textContent = error.message || '语音 Worker 启动失败';
     };
   }
 
@@ -106,8 +113,10 @@
     }
     inputs.disabled = button.disabled = true;
     unload.disabled = false;
-    result.textContent = 'Rendering...';
+    result.textContent = '正在生成…';
     worker.postMessage({ files, text: form.elements.text.value });
   });
+  button.disabled = false;
 </script>
+</body>
 </html>

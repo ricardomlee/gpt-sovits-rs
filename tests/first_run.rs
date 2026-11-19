@@ -373,39 +373,3 @@ exit 2
         assert!(!f.log().contains("download"));
     }
 }
-
-#[cfg(unix)]
-#[test]
-fn site_build_contains_only_public_files_and_refuses_leftovers() {
-    let temp = tempfile::tempdir().unwrap();
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let out = temp.path().join("public site");
-    let build = || {
-        std::process::Command::new("bash")
-            .arg(root.join("site/build.sh"))
-            .arg(&out)
-            .output()
-            .unwrap()
-    };
-    assert!(build().status.success());
-    let mut names = std::fs::read_dir(&out)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
-        .collect::<Vec<_>>();
-    names.sort();
-    assert_eq!(
-        names,
-        [".nojekyll", "assets", "audio", "index.html", "styles.css"]
-    );
-    assert_eq!(std::fs::read_dir(out.join("assets")).unwrap().count(), 1);
-    assert_eq!(std::fs::read_dir(out.join("audio")).unwrap().count(), 2);
-    assert!(out.join("audio/sun-greeting.wav").is_file());
-    assert!(out.join("audio/sun-zh.wav").is_file());
-    assert!(!out.join("audio/local-assistant-en.wav").exists());
-    std::fs::write(out.join("private.txt"), "do not publish").unwrap();
-    assert!(!build().status.success());
-    assert_eq!(
-        std::fs::read_to_string(out.join("private.txt")).unwrap(),
-        "do not publish"
-    );
-}

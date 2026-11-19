@@ -36,7 +36,7 @@ node serve.mjs
 
 Open `http://127.0.0.1:9898/`. Select the SoVITS, GPT and BERT safetensors,
 BERT's `tokenizer.json`, and the prepared reference. Enter a Mandarin sentence
-of up to 80 characters. **Unload voice** releases the Worker's model memory.
+of up to 80 characters. **卸载模型** releases the Worker's model memory.
 
 The experiment uses CPU SIMD, seed 42 and the standard sampling defaults
 with a 256-token cap. It has been exercised on desktop Chromium. Reference
