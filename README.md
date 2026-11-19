@@ -32,7 +32,7 @@ Allow at least 6 GiB free disk and 4 GiB available memory. Downloads are about
 1.1 GB plus the container; conversion and the first model load take time.
 No Rust, Python, API key, or GPU is needed for this CPU demo.
 
-The script verifies upstream weights, converts them with the pinned `1.3.2` CPU
+The script verifies upstream weights, converts them with the pinned `1.3.3` CPU
 image, and checks the setup.
 [Downloads](examples/first-run/downloads.txt), [script](examples/first-run/prepare.sh),
 and [setup details](docs/FIRST_RUN.zh-CN.md) are available for review.
