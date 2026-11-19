@@ -73,7 +73,7 @@ docker run --rm \
   -v "$PWD/models:/models" \
   -v "/path/to/source-models:/source:ro" \
   --entrypoint gpt-sovits-convert \
-  ghcr.io/ricardomlee/gpt-sovits-rs:1.3.1 \
+  ghcr.io/ricardomlee/gpt-sovits-rs:1.3.3 \
   sovits /source/gsv-v2final-pretrained/s2G2333k.pth /models/sovits-model.safetensors
 ```
 

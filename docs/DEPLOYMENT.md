@@ -27,7 +27,7 @@ cp .env.example .env
 
 ```env
 GPT_SOVITS_PORT=127.0.0.1:9880
-GPT_SOVITS_IMAGE_TAG=1.3.1
+GPT_SOVITS_IMAGE_TAG=1.3.3
 ```
 
 路径按配置位置解析：
@@ -80,7 +80,7 @@ docker compose -f compose.cpu.yml up -d --wait --wait-timeout 900
 docker compose -f compose.cpu.yml ps
 ```
 
-CPU 固定版本镜像为 `ghcr.io/ricardomlee/gpt-sovits-rs:1.3.1`。
+CPU 固定版本镜像为 `ghcr.io/ricardomlee/gpt-sovits-rs:1.3.3`。
 
 ## CUDA
 
@@ -88,10 +88,10 @@ CPU 固定版本镜像为 `ghcr.io/ricardomlee/gpt-sovits-rs:1.3.1`。
 里设置 `CUDA_IMAGE_TAG`：
 
 ```text
-RTX 20: 1.3.1-cuda-sm75
-RTX 30: 1.3.1-cuda-sm86
-RTX 40: 1.3.1-cuda-sm89
-H100:   1.3.1-cuda-sm90
+RTX 20: 1.3.3-cuda-sm75
+RTX 30: 1.3.3-cuda-sm86
+RTX 40: 1.3.3-cuda-sm89
+H100:   1.3.3-cuda-sm90
 ```
 
 ```bash
@@ -131,8 +131,8 @@ Docker 镜像包含相同的编码能力。第三方库说明见 [Audio Codec No
 
 ```bash
 sha256sum --check SHA256SUMS --ignore-missing
-tar -xzf gpt-sovits-1.3.1-linux-x86_64.tar.gz
-cd gpt-sovits-1.3.1-linux-x86_64
+tar -xzf gpt-sovits-1.3.3-linux-x86_64.tar.gz
+cd gpt-sovits-1.3.3-linux-x86_64
 ./gpt-sovits-convert --version
 ./gpt-sovits --models-dir /path/to/models \
   --voices-dir /path/to/voices \
