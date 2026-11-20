@@ -25,7 +25,7 @@ impl GPTModel {
     ///  6. For each remaining step:
     ///     a. Add the sampled token embedding and its position on the CPU.
     ///     b. H2D-copy the result into the pre-allocated input buffer.
-    ///     c. H2D-copy new position value into each layer's `pos_idx` buffer.
+    ///     c. H2D-copy the current position once for all attention layers.
     ///     d. H2D-copy updated mask into the mask buffer.
     ///     e. Launch graph (replays ~160 kernels as a single submission).
     ///     f. Sample from the (still-live) logits tensor written by the graph.
@@ -244,11 +244,6 @@ impl GPTModel {
             let mask_esize = attn_mask_buf.dtype().size_in_bytes() as u64;
             let logits_out_ptr = get_cuda_ptr(&logits_out)?;
             let mut input_staging = vec![0.0f32; hidden_size];
-            let mut pos_staging: Vec<Vec<i64>> = static_kv
-                .layers
-                .iter()
-                .map(|layer| vec![0; layer.pos_idx.elem_count()])
-                .collect();
             let zero_staging = [0u8; 4];
 
             // Update input_buf from the exact precomputed embedding and positional values.
@@ -272,19 +267,6 @@ impl GPTModel {
                 }
                 Ok(())
             };
-
-            // Update pos_idx: H2D copy of [new_pos; n_elements] — zero pool allocations.
-            let mut update_pos_idx_raw =
-                |layer_idx: usize, pos_idx: &Tensor, new_pos: usize| -> candle_core::Result<()> {
-                    let values = &mut pos_staging[layer_idx];
-                    values.fill(new_pos as i64);
-                    let ptr = get_cuda_ptr(pos_idx)?;
-                    unsafe {
-                        cudarc_result::memcpy_htod_async(ptr, values.as_slice(), raw_stream)
-                            .map_err(|e| candle_core::Error::Msg(format!("htod pos_idx: {e:?}")))?;
-                    }
-                    Ok(())
-                };
 
             // Update mask: H2D write zero-bytes at strided positions for `cache_len` in all heads.
             // mask_buf is [1, n_heads, 1, max_kv_len] C-contiguous.
@@ -356,9 +338,24 @@ impl GPTModel {
                 update_input_raw(prev, pe_pos)?;
             }
             let cache_len_before_capture = static_kv.len();
-            for (layer_idx, layer) in static_kv.layers.iter().enumerate() {
-                update_pos_idx_raw(layer_idx, &layer.pos_idx, cache_len_before_capture)?;
+            // Every layer appends at the same position. Bind their captured scatter
+            // operations to one index buffer; the K/V buffers stay per-layer.
+            let (first, rest) = static_kv.layers.split_first_mut().ok_or_else(|| {
+                candle_core::Error::Msg("CUDA graph requires at least one transformer layer".into())
+            })?;
+            for layer in rest {
+                layer.pos_idx = first.pos_idx.clone();
             }
+            let pos_ptr = get_cuda_ptr(&first.pos_idx)?;
+            let mut pos_staging = vec![0i64; first.pos_idx.elem_count()];
+            let mut update_position = |pos: usize| {
+                pos_staging.fill(pos as i64);
+                unsafe {
+                    cudarc_result::memcpy_htod_async(pos_ptr, pos_staging.as_slice(), raw_stream)
+                }
+                .map_err(|e| candle_core::Error::Msg(format!("htod pos_idx: {e:?}")))
+            };
+            update_position(cache_len_before_capture)?;
             update_mask_raw(cache_len_before_capture)?;
             // Flush all H2D copies before capture begins
             stream
@@ -516,9 +513,7 @@ impl GPTModel {
                     tracing::warn!("[GPT cuda-graph] KV cache overflow: cur_len={cur_len} >= max_kv_len={max_kv_len}, stopping");
                     break;
                 }
-                for (layer_idx, layer) in static_kv.layers.iter().enumerate() {
-                    update_pos_idx_raw(layer_idx, &layer.pos_idx, cur_len)?;
-                }
+                update_position(cur_len)?;
 
                 // 3. Update mask: unmask the new position (H2D copy, zero pool allocations)
                 update_mask_raw(cur_len)?;
