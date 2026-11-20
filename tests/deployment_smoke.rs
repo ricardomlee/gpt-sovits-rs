@@ -5,6 +5,7 @@
 
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::path::Path;
 use std::process::Command;
 
 #[derive(Deserialize)]
@@ -16,7 +17,37 @@ struct Compose {
 struct Service {
     command: Vec<String>,
     environment: HashMap<String, String>,
+    ports: Vec<Port>,
     stop_grace_period: String,
+}
+
+#[derive(Deserialize)]
+struct Port {
+    host_ip: Option<String>,
+}
+
+fn compose_defaults(file: &str, env_file: &Path) -> Service {
+    let output = Command::new("docker")
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .env_remove("GPT_SOVITS_PORT")
+        .args(["compose", "--env-file"])
+        .arg(env_file)
+        .args(["-f", file, "config", "--format", "json"])
+        .output()
+        .expect("Docker Compose must be installed");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let mut config: Compose = serde_json::from_slice(&output.stdout).unwrap();
+    let service = config.services.remove("gpt-sovits").unwrap();
+    assert!(
+        matches!(service.ports.as_slice(), [p] if p.host_ip.as_deref() == Some("127.0.0.1")),
+        "{file} with {} should publish only on loopback",
+        env_file.display()
+    );
+    service
 }
 
 #[test]
@@ -26,20 +57,8 @@ fn compose_commands_are_accepted_by_container_image() {
         .expect("set GPT_SOVITS_SMOKE_IMAGE to the image under test");
     let env_file = tempfile::NamedTempFile::new().unwrap();
     for file in ["compose.cpu.yml", "compose.cuda.yml"] {
-        let config = Command::new("docker")
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .args(["compose", "--env-file"])
-            .arg(env_file.path())
-            .args(["-f", file, "config", "--format", "json"])
-            .output()
-            .expect("Docker Compose must be installed");
-        assert!(
-            config.status.success(),
-            "{}",
-            String::from_utf8_lossy(&config.stderr)
-        );
-        let config: Compose = serde_json::from_slice(&config.stdout).unwrap();
-        let service = &config.services["gpt-sovits"];
+        compose_defaults(file, Path::new(".env.example"));
+        let service = compose_defaults(file, env_file.path());
         assert_eq!(service.environment["GPT_SOVITS_HOST"], "0.0.0.0");
         assert_eq!(service.stop_grace_period, "45s");
 
