@@ -11,8 +11,8 @@ RTX 4060 Ti 上，1.3.3 的 60 次热推理共耗时 35.33 秒，1.3.2 两轮均
 - GPT 和 SoVITS 使用 F32。`--half` 目前不会启用完整半精度推理。
 - `--mode auto` 在 CUDA F32 上选择 `cuda-graph`，其他设备选择 `kv`。
   `GPT_SOVITS_DISABLE_CUDA_GRAPH=1` 可让 auto 选择 KV。
-- Graph 的前 32 个生成步骤走 eager/static KV；较短生成可能不触发 capture。
-  首次 replay 有校验和回退保护，Graph 在每次生成中创建。
+- CUDA Graph 在首次允许输出结束符（EOS）的采样后捕获。预填充生成第一个 token，
+  再用普通静态 KV 解码 11 步；若此时已结束，直接返回。首次 Graph 回放保留 logits 校验和 KV 回退。
 - 服务复用常驻模型和参考特征缓存。多音色缓存容量、队列及预加载见 [HTTP API](API.md)。
 
 ## 发布前本地 GPU 报告

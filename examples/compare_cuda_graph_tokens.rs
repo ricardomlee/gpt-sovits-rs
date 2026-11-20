@@ -8,6 +8,7 @@ use std::path::Path;
 const REF_AUDIO: &str = "mao.wav";
 const REF_TEXT: &str = "会战兵力是八十万对六十万，优势在我。";
 const CASES: &[(&str, &str, usize)] = &[
+    ("first-replay", "你好世界。", 14),
     ("short", "你好世界。", 80),
     (
         "medium",
