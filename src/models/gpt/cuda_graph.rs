@@ -26,7 +26,7 @@ impl GPTModel {
     ///     a. Add the sampled token embedding and its position on the CPU.
     ///     b. H2D-copy the result into the pre-allocated input buffer.
     ///     c. H2D-copy the current position once for all attention layers.
-    ///     d. H2D-copy updated mask into the mask buffer.
+    ///     d. Unmask the new position across all attention heads on the GPU.
     ///     e. Launch graph (replays ~160 kernels as a single submission).
     ///     f. Sample from the (still-live) logits tensor written by the graph.
     ///
@@ -241,10 +241,9 @@ impl GPTModel {
             let input_buf_ptr = get_cuda_ptr(&input_buf)?;
             // Cache the raw pointer for attn_mask_buf
             let mask_buf_ptr = get_cuda_ptr(&attn_mask_buf)?;
-            let mask_esize = attn_mask_buf.dtype().size_in_bytes() as u64;
+            let mask_esize = attn_mask_buf.dtype().size_in_bytes();
             let logits_out_ptr = get_cuda_ptr(&logits_out)?;
             let mut input_staging = vec![0.0f32; hidden_size];
-            let zero_staging = [0u8; 4];
 
             // Update input_buf from the exact precomputed embedding and positional values.
             let mut update_input_raw = |token: usize, pe_pos: usize| -> candle_core::Result<()> {
@@ -268,23 +267,20 @@ impl GPTModel {
                 Ok(())
             };
 
-            // Update mask: H2D write zero-bytes at strided positions for `cache_len` in all heads.
-            // mask_buf is [1, n_heads, 1, max_kv_len] C-contiguous.
-            // Element [0, h, 0, p] is at flat index h*max_kv_len + p.
+            // One column of the contiguous [heads, max_kv_len] mask: width and pitch are bytes.
             let update_mask_raw = |cache_len: usize| -> candle_core::Result<()> {
-                let nbytes = mask_esize as usize;
-                for h in 0..n_heads {
-                    let byte_off = (h * max_kv_len + cache_len) as u64 * mask_esize;
-                    unsafe {
-                        cudarc_result::memcpy_htod_async(
-                            mask_buf_ptr + byte_off,
-                            &zero_staging[..nbytes],
-                            raw_stream,
-                        )
-                        .map_err(|e| candle_core::Error::Msg(format!("htod mask h={h}: {e:?}")))?;
-                    }
+                unsafe {
+                    candle_core::cuda_backend::cudarc::driver::sys::cuMemsetD2D8Async(
+                        mask_buf_ptr + (cache_len * mask_esize) as u64,
+                        max_kv_len * mask_esize,
+                        0,
+                        mask_esize,
+                        n_heads,
+                        raw_stream,
+                    )
+                    .result()
                 }
-                Ok(())
+                .map_err(|e| candle_core::Error::Msg(format!("unmask position {cache_len}: {e:?}")))
             };
 
             // ── Eager decode step for warmup (uses static KV's append(), not graphable) ──
@@ -312,7 +308,7 @@ impl GPTModel {
                 }
                 let pos_before = static_kv.len(); // position this step will write to
                 let logits = eager_step(&generated, &mut static_kv)?;
-                // Unmask the position that eager_step just appended (uses H2D async on same stream)
+                // Unmask the position that eager_step just appended on the same stream.
                 update_mask_raw(pos_before)?;
                 let Some(tok) = sampler.sample_next(&logits, prompt_tokens, &generated)? else {
                     reached_eos = true;
@@ -357,7 +353,7 @@ impl GPTModel {
             };
             update_position(cache_len_before_capture)?;
             update_mask_raw(cache_len_before_capture)?;
-            // Flush all H2D copies before capture begins
+            // Finish graph input updates before capture begins.
             stream
                 .synchronize()
                 .map_err(|e| candle_core::Error::Msg(format!("sync before capture: {e:?}")))?;
@@ -515,11 +511,11 @@ impl GPTModel {
                 }
                 update_position(cur_len)?;
 
-                // 3. Update mask: unmask the new position (H2D copy, zero pool allocations)
+                // 3. Unmask the new position for all heads.
                 update_mask_raw(cur_len)?;
 
                 // 5. Launch graph (replays all 16 layers of attention + FFN + logits proj)
-                // No explicit sync needed: H2D copies and graph launch are on the same stream,
+                // No explicit sync needed: input updates and graph launch are on the same stream,
                 // so CUDA guarantees the copies complete before the graph kernel reads.
                 graph.launch().map_err(|e| {
                     candle_core::Error::Msg(format!("graph launch step {step}: {e:?}"))
