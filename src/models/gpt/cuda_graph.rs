@@ -30,7 +30,7 @@ impl GPTModel {
     ///     e. Launch graph (replays ~160 kernels as a single submission).
     ///     f. Sample from the (still-live) logits tensor written by the graph.
     ///
-    /// Falls back to dynamic KV decoding on non-CUDA devices.
+    /// Uses dynamic KV on non-CUDA devices and eager static KV for non-F32 CUDA models.
     #[allow(clippy::too_many_arguments)]
     pub fn generate_with_cuda_graph(
         &self,
@@ -63,6 +63,21 @@ impl GPTModel {
                     max_new_tokens,
                 );
             };
+            // Graph replay uploads F32 embeddings. Other CUDA dtypes can finish
+            // the request with the same static KV operations used in the eager prefix.
+            if self.dtype != DType::F32 {
+                return self.generate_with_static_kv(
+                    phoneme_ids,
+                    prompt_tokens,
+                    pre_aligned_bert,
+                    top_k,
+                    top_p,
+                    temperature,
+                    repetition_penalty,
+                    max_new_tokens,
+                    max_kv_len,
+                );
+            }
 
             let text_seq = phoneme_ids.len();
             let prompt_seq = prompt_tokens.len();
@@ -246,11 +261,6 @@ impl GPTModel {
                     .zip(&audio_pos_cpu[pos_off..pos_off + hidden_size])
                 {
                     *value += *position;
-                }
-                if input_buf.dtype() != DType::F32 {
-                    return Err(candle_core::Error::Msg(
-                        "CUDA graph raw update only supports F32 models".into(),
-                    ));
                 }
                 unsafe {
                     cudarc_result::memcpy_htod_async(

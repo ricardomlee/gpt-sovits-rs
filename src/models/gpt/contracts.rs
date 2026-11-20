@@ -4,6 +4,10 @@ use std::collections::HashMap;
 
 // Zero attention/FFN and EOS-dominant logits isolate decoder policy from learned behavior.
 fn model() -> GPTModel {
+    model_on(&Device::Cpu, DType::F32, 6)
+}
+
+fn model_on(target: &Device, dtype: DType, dominant_token: usize) -> GPTModel {
     let device = &Device::Cpu;
     let mut weights = HashMap::new();
     for (key, rows, offset) in [
@@ -58,8 +62,7 @@ fn model() -> GPTModel {
         );
     }
     let mut output = vec![0.0f32; 7 * 16];
-    // EOS is always the raw argmax; masking must keep the first eleven steps alive.
-    output[6 * 16] = 100.0;
+    output[dominant_token * 16] = 100.0;
     weights.insert(
         "model.ar_predict_layer.weight".into(),
         Tensor::from_vec(output, (7, 16), device).unwrap(),
@@ -84,12 +87,12 @@ fn model() -> GPTModel {
     }
     let file = tempfile::NamedTempFile::new().unwrap();
     candle_core::safetensors::save(&weights, file.path()).unwrap();
-    GPTModel::load(file.path().to_str().unwrap()).unwrap()
+    GPTModel::load_with_device(file.path().to_str().unwrap(), target, dtype).unwrap()
 }
 
 fn generate(model: &GPTModel, mode: &str, phones: &[usize], max_tokens: usize) -> Vec<usize> {
     let prompt = &[2, 4];
-    let bert = Tensor::full(0.125f32, (1, phones.len(), 16), &Device::Cpu).unwrap();
+    let bert = Tensor::full(0.125f32, (1, phones.len(), 16), &model.device).unwrap();
     match mode {
         "plain" => model.generate_with_prompts_aligned_bert(
             phones,
@@ -136,6 +139,18 @@ fn generate(model: &GPTModel, mode: &str, phones: &[usize], max_tokens: usize) -
         _ => unreachable!(),
     }
     .unwrap()
+}
+
+#[cfg(feature = "cuda")]
+#[test]
+#[ignore = "requires a BF16-capable CUDA GPU"]
+fn forced_cuda_graph_keeps_non_f32_on_eager_kv() {
+    let model = model_on(&Device::new_cuda_with_stream(0).unwrap(), DType::BF16, 1);
+    model.set_sampling_seed(Some(42)).unwrap();
+    let expected = generate(&model, "static", &[1, 3, 2], 16);
+    assert_eq!(expected.len(), 16); // Goes past the first EOS-eligible sample.
+    model.set_sampling_seed(Some(42)).unwrap();
+    assert_eq!(generate(&model, "graph-fallback", &[1, 3, 2], 16), expected);
 }
 
 #[test]
