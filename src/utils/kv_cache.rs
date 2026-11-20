@@ -232,10 +232,8 @@ pub struct StaticKvLayer {
     pub max_len: usize,
     pub n_heads: usize,
     pub head_dim: usize,
-    /// Pre-allocated position-index tensor [1, n_heads, 1, head_dim] (i64).
-    /// During normal decode: filled with `len` by `append()`.
-    /// During CUDA graph: filled externally via H2D copy before each graph replay,
-    /// then `append_with_fixed_idx()` uses it directly (stable CUDA address).
+    /// Index for captured K/V writes: [batch, n_heads, 1, head_dim] (i64).
+    /// CUDA graph decode shares this read-only input across layers during replay.
     pub pos_idx: Tensor,
 }
 
@@ -284,9 +282,7 @@ impl StaticKvLayer {
             ))
             .into());
         }
-        // Overwrite pos_idx in-place so it contains the current `len` value.
-        // (For graph mode this is done externally via H2D copy; for eager mode this allocates
-        //  a tiny i64 tensor — the main savings still come from k_buf/v_buf not reallocating.)
+        // Eager appends use their own index, independent of any captured graph.
         let idx = Tensor::full(self.len as i64, self.pos_idx.shape(), k_new.device())?
             .to_dtype(DType::I64)?;
         self.k_buf.scatter_set(&idx, k_new, 2)?;

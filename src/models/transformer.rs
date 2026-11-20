@@ -967,8 +967,8 @@ impl TransformerGPTSoVITS {
         Ok(x)
     }
 
-    /// CUDA-graph-safe decode: caller pre-updates `static_kv.pos_idx[l]` and the mask
-    /// externally (via H2D copy), then calls this inside the capture region.
+    /// Captured decode reads the position indices and attention mask at stable addresses.
+    /// The caller updates their contents on the same stream before each replay.
     pub fn forward_from_embedding_graphable(
         &self,
         embeddings: &Tensor,

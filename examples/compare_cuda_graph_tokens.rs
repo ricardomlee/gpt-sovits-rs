@@ -93,7 +93,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let combined_bert = Tensor::cat(&[&ref_bert, &target_bert], 1)?;
         let mut phoneme_ids = ref_ids.clone();
         phoneme_ids.extend(target_ids);
-        let max_kv_len = phoneme_ids.len() + prompt_tokens.len() + max_tokens + 32;
+        // Exercise graph writes near the end of each attention head's cache row.
+        let max_kv_len = phoneme_ids.len() + prompt_tokens.len() + max_tokens;
 
         println!(
             "\n[{label}] phones={} prompt={} max_tokens={max_tokens}",
