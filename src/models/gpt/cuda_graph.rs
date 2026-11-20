@@ -514,9 +514,7 @@ impl GPTModel {
                 // 3. Unmask the new position for all heads.
                 update_mask_raw(cur_len)?;
 
-                // 5. Launch graph (replays all 16 layers of attention + FFN + logits proj)
-                // No explicit sync needed: input updates and graph launch are on the same stream,
-                // so CUDA guarantees the copies complete before the graph kernel reads.
+                // 4. The graph reads the updates in order on the same stream.
                 graph.launch().map_err(|e| {
                     candle_core::Error::Msg(format!("graph launch step {step}: {e:?}"))
                 })?;
@@ -527,7 +525,7 @@ impl GPTModel {
 
                 static_kv.step();
 
-                // 6. Sample (D2H; logits_out is stable pre-allocated buffer written by graph)
+                // 5. Sample from the logits written by this replay.
                 let Some(tok) = sampler.sample_next(&logits_out, prompt_tokens, &generated)? else {
                     break;
                 };
