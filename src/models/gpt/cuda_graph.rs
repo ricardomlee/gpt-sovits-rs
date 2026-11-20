@@ -7,7 +7,7 @@ use candle_core::Tensor;
 #[cfg(feature = "cuda")]
 use super::conditioning::check_kv_capacity;
 #[cfg(feature = "cuda")]
-use super::sampling::DecoderSampler;
+use super::sampling::{DecoderSampler, MIN_TOKENS_BEFORE_EOS};
 #[cfg(feature = "cuda")]
 use crate::utils::{KvCacheManager, StaticKvManager};
 #[cfg(feature = "cuda")]
@@ -20,17 +20,17 @@ impl GPTModel {
     ///  1. Prefill with dynamic KV — captured graphs don't help here (variable shapes).
     ///  2. Convert KV to pre-allocated static buffers (fixed `[max_kv_len]` shapes).
     ///  3. Pre-allocate stable input/mask buffers for the graph boundary.
-    ///  4. Warmup 3 decode steps to prime CUDA's stream-ordered allocator pool.
+    ///  4. Warm the allocator with eager steps through the first EOS-eligible sample.
     ///  5. Capture one full decode step into a CUDA graph.
     ///  6. For each remaining step:
-    ///     a. Compute new token embedding (eager, ~3 fast kernels).
-    ///     b. D2D-copy embedding into the pre-allocated input buffer.
+    ///     a. Add the sampled token embedding and its position on the CPU.
+    ///     b. H2D-copy the result into the pre-allocated input buffer.
     ///     c. H2D-copy new position value into each layer's `pos_idx` buffer.
     ///     d. H2D-copy updated mask into the mask buffer.
     ///     e. Launch graph (replays ~160 kernels as a single submission).
     ///     f. Sample from the (still-live) logits tensor written by the graph.
     ///
-    /// Falls back to dynamic KV decoding on non-CUDA devices.
+    /// Uses dynamic KV on non-CUDA devices and eager static KV for non-F32 CUDA models.
     #[allow(clippy::too_many_arguments)]
     pub fn generate_with_cuda_graph(
         &self,
@@ -63,6 +63,21 @@ impl GPTModel {
                     max_new_tokens,
                 );
             };
+            // Graph replay uploads F32 embeddings. Other CUDA dtypes can finish
+            // the request with the same static KV operations used in the eager prefix.
+            if self.dtype != DType::F32 {
+                return self.generate_with_static_kv(
+                    phoneme_ids,
+                    prompt_tokens,
+                    pre_aligned_bert,
+                    top_k,
+                    top_p,
+                    temperature,
+                    repetition_penalty,
+                    max_new_tokens,
+                    max_kv_len,
+                );
+            }
 
             let text_seq = phoneme_ids.len();
             let prompt_seq = prompt_tokens.len();
@@ -247,11 +262,6 @@ impl GPTModel {
                 {
                     *value += *position;
                 }
-                if input_buf.dtype() != DType::F32 {
-                    return Err(candle_core::Error::Msg(
-                        "CUDA graph raw update only supports F32 models".into(),
-                    ));
-                }
                 unsafe {
                     cudarc_result::memcpy_htod_async(
                         input_buf_ptr,
@@ -311,12 +321,10 @@ impl GPTModel {
                         .squeeze(0)?)
                 };
 
-            // Delay capture until the output survives a short eager prefix. This avoids
-            // paying graph setup cost for short utterances that are already near EOS.
-            // The eager steps also prime the stream-ordered allocator pool.
-            const EAGER_PREFIX: usize = 32;
+            // Prefill already sampled one token. Give the decoder one chance to stop
+            // at EOS before paying for capture; these steps also warm the allocator.
             let mut reached_eos = false;
-            for _ in 1..=EAGER_PREFIX {
+            for _ in 0..MIN_TOKENS_BEFORE_EOS {
                 if generated.len() >= max_new_tokens {
                     break;
                 }
@@ -489,7 +497,7 @@ impl GPTModel {
 
             tracing::info!(
                 "[GPT cuda-graph] Graph captured ({} eager + 1 capture steps); replaying",
-                EAGER_PREFIX
+                MIN_TOKENS_BEFORE_EOS
             );
 
             // ── Graph replay loop ─────────────────────────────────────────────────

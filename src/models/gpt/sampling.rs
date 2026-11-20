@@ -4,6 +4,8 @@ use super::GPTModel;
 use crate::Result;
 use candle_core::{DType, Tensor};
 
+pub(super) const MIN_TOKENS_BEFORE_EOS: usize = 11;
+
 /// Sampling state and EOS policy shared by reference-conditioned decoders.
 pub(super) struct DecoderSampler<'a> {
     model: &'a GPTModel,
@@ -39,7 +41,7 @@ impl<'a> DecoderSampler<'a> {
         generated_tokens: &[usize],
     ) -> Result<Option<usize>> {
         let eos = self.model.ar_predict_layer.dims()[0] - 1;
-        let mask_eos = generated_tokens.len() < 11;
+        let mask_eos = generated_tokens.len() < MIN_TOKENS_BEFORE_EOS;
         let logits = if mask_eos {
             logits.narrow(0, 0, eos)?
         } else {
