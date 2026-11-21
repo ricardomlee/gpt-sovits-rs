@@ -6,7 +6,7 @@ The service owns models, reference audio, SV embeddings, and inference settings.
 
 The client is included in Linux/macOS binary archives and builds independently.
 Hermes connects directly using its built-in OpenAI provider;
-see [Hermes configuration](../docs/AGENT_INTEGRATION.md#hermes). This client is
+see [Hermes configuration](../docs/AGENT_INTEGRATION.en.md#hermes). This client is
 optional for shell scripts and command providers.
 
 ## Install
@@ -46,5 +46,5 @@ With `-o`, a temporary file is validated before replacing the destination; faile
 requests preserve an existing file. Shell redirection (`> reply.wav`) truncates
 the destination before the client starts, so use `-o` when replacing a recording.
 
-Agent configuration and sentence-by-sentence playback: [Agent integration](../docs/AGENT_INTEGRATION.md).
+Agent configuration and sentence-by-sentence playback: [Agent integration](../docs/AGENT_INTEGRATION.en.md).
 Build and test commands: [Development](../docs/DEVELOPMENT.md#http-client).

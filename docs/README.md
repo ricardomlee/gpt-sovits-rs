@@ -9,8 +9,8 @@ GPT-SoVITS-RS 将已有音色变成本地 HTTP 语音服务。先跑出声音，
 | --- | --- |
 | 先听效果 | [在线试听](https://ricardomlee.github.io/gpt-sovits-rs/) |
 | 没有模型，生成第一段语音 | [Docker 首次运行](FIRST_RUN.zh-CN.md) |
-| 用自己的录音换音色 | [添加音色](DEPLOYMENT.md#add-a-voice)；已有微调权重见[模型转换](MODELS.md) |
-| 新机器上部署，选 CPU、Mac 或 CUDA 版本 | [按主机选包](DEPLOYMENT.md#choose-a-build) |
+| 用自己的录音换音色 | [添加音色](DEPLOYMENT.md#添加音色)；已有微调权重见[模型转换](MODELS.md) |
+| 新机器上部署，选 CPU、Mac 或 CUDA 版本 | [按主机选包](DEPLOYMENT.md#选择部署方式) |
 | 已有服务，接入 Hermes 或自己的 Agent | [查音色并试一句](AGENT_INTEGRATION.md) |
 | 查 HTTP 字段、CLI 选项或 Rust 调用 | [API](API.md) |
 | 从 shell 调用已有服务 | [HTTP 命令行客户端](../client/README.md) |

@@ -1,6 +1,6 @@
 # 第一次运行
 
-[English quick start](../README.md#quick-start) · [已有服务，直接接入](AGENT_INTEGRATION.md) · [Mac、NVIDIA 或 ARM 选型](DEPLOYMENT.md#choose-a-build)
+[英文上手指南](../README.md#quick-start) · [已有服务，直接接入](AGENT_INTEGRATION.md) · [选择部署方式](DEPLOYMENT.md#选择部署方式)
 
 用官方通用 v2 权重和公开的英文参考音频，先生成一段语音。脚本会准备模型和音色配置，
 转换与推理都在 Docker 中完成。网页上的 Sun 试听使用维护者的私人模型，配置见[样本说明](../examples/samples/README.md)。
@@ -42,7 +42,7 @@ curl --fail-with-body --max-time 300 "$TTS_URL/tts" \
 
 ## 换成自己的声音
 
-在 `~/gpt-sovits-demo/voices/` 下[添加音色](DEPLOYMENT.md#add-a-voice)：一段自己有权使用的录音和逐字稿即可复用通用 v2 权重。
+在 `~/gpt-sovits-demo/voices/` 下[添加音色](DEPLOYMENT.md#添加音色)：一段自己有权使用的录音和逐字稿即可复用通用 v2 权重。
 再用上面的 `TTS_URL` 按[Agent 接入](AGENT_INTEGRATION.md)试一句。公开的 `demo` 先试英文，自己的中文音色试中文。
 
 ## 出错时

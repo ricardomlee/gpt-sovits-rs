@@ -10,8 +10,8 @@ Configure a voice once, then send its name and text from your assistant or app.
 Conversion and inference run in Rust on your own computer. Train or fine-tune voices
 with [upstream GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS).
 
-[Try it](#quick-start) | [Listen](#samples) | [中文上手](docs/FIRST_RUN.zh-CN.md) |
-[Add your voice](docs/DEPLOYMENT.md#add-a-voice) | [Connect an agent](docs/AGENT_INTEGRATION.md) | [API](docs/API.md)
+[Try it](#quick-start) | [Listen](#samples) | [Chinese quick start](docs/FIRST_RUN.zh-CN.md) |
+[Add your voice](docs/AGENT_INTEGRATION.en.md#add-a-voice) | [Connect an agent](docs/AGENT_INTEGRATION.en.md) | [API](docs/API.md)
 
 ## Samples
 
@@ -27,7 +27,7 @@ the Sun model and reference files remain private. The installable demo below use
 
 ## Quick Start
 
-Already have a TTS endpoint? [Use the running service](docs/AGENT_INTEGRATION.md). For Mac, NVIDIA, or ARM, [choose a build](docs/DEPLOYMENT.md#choose-a-build).
+Already have a TTS endpoint? [Use the running service](docs/AGENT_INTEGRATION.en.md). For Mac, NVIDIA, or ARM, [choose a build](docs/AGENT_INTEGRATION.en.md#choose-a-build).
 
 **CPU demo: Linux x86_64, Docker Engine + Compose v2, Git, Bash, curl, and SHA-256 tools.**
 Allow at least 6 GiB free disk and 4 GiB available memory. Downloads are about
@@ -54,8 +54,8 @@ Stop it with `docker compose down` in the demo directory; downloaded files stay 
 Use a new directory for preparation. If interrupted, rerun the same command:
 verified downloads are reused.
 
-Next, [add your own voice](docs/DEPLOYMENT.md#add-a-voice) with a reference clip and transcript.
-The standard v2 demo can reuse its weights. For fine-tuned weights, see [model conversion](docs/MODELS.md).
+Next, [add your own voice](docs/AGENT_INTEGRATION.en.md#add-a-voice) with a reference clip and transcript.
+The standard v2 demo can reuse its weights. For fine-tuned weights, see [model conversion (in Chinese)](docs/MODELS.md).
 
 ## Connect Your App
 
@@ -66,7 +66,7 @@ flowchart LR
     Service -->|"WAV / MP3 / Opus"| Audio["Playback"]
 ```
 
-Follow [Connect an agent](docs/AGENT_INTEGRATION.md) to list voices, speak a sentence, and connect Hermes or your app to the same endpoint. The [HTTP API](docs/API.md#http-server) covers streaming and batch requests.
+Follow [Connect an agent](docs/AGENT_INTEGRATION.en.md) to list voices, speak a sentence, and connect Hermes or your app to the same endpoint. The [HTTP API](docs/API.md#http-server) covers streaming and batch requests.
 
 ## Models and Speech Quality
 
@@ -76,21 +76,20 @@ Follow [Connect an agent](docs/AGENT_INTEGRATION.md) to list voices, speak a sen
   can convert an existing training embedding; it does not extract one from audio.
 - For assistant replies, generate and play completed short sentences in order.
   Long text can still lose words; review important output.
-- [Performance reports](docs/PERFORMANCE.md) record hardware, models and repeated measurements.
+- The [performance guide (in Chinese)](docs/PERFORMANCE.md) links to reports with hardware, models and repeated measurements.
 - Models are not bundled or rehosted. Only use voices and recordings you have permission to use.
 
 The service has no built-in authentication. Keep it on localhost or put an authenticated
-proxy in front of it; [deployment](docs/DEPLOYMENT.md) covers network access.
+proxy in front of it; the [deployment guide (in Chinese)](docs/DEPLOYMENT.md) covers network access.
 
 ## Help and Contribute
 
 If the first request fails, check `docker compose logs --tail 100` in the demo directory.
-[First-run troubleshooting](docs/FIRST_RUN.zh-CN.md) covers downloads, memory, ports,
+[First-run troubleshooting (in Chinese)](docs/FIRST_RUN.zh-CN.md#出错时) covers downloads, memory, ports,
 and readiness. [Tell us where you got stuck, or what worked](https://github.com/ricardomlee/gpt-sovits-rs/issues/new?template=first-run.yml).
 Do not attach private models, recordings, or credentials.
 
-[Documentation index (中文)](docs/README.md) | [Deployment](docs/DEPLOYMENT.md) | [API](docs/API.md) |
-[Development](docs/DEVELOPMENT.md)
+[API](docs/API.md) | [Development](docs/DEVELOPMENT.md) | [Chinese documentation index](docs/README.md)
 
 ## License and Credits
 

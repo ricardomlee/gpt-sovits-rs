@@ -1,9 +1,10 @@
-# Agent 接入 / Connect an agent
+# Agent 接入
+
+[英文接入指南](AGENT_INTEGRATION.en.md)
 
 ## 最小调用
 
-**1. 查已有服务 / Find the service.** 从 Agent 所在环境访问服务地址。正式部署默认 `9880`，首次体验用 `9881`；容器里的 localhost 指容器自身。
-Set `TTS_URL` to the server reachable from the agent (deployment: `9880`; first-run demo: `9881`). In a container, localhost means that container.
+**1. 检查已有服务。** 在 Agent 所在环境运行。将 `TTS_URL` 设为实际服务地址：正式部署默认端口是 `9880`，首次体验是 `9881`。容器里的 `localhost` 指容器自身。
 
 ```bash
 TTS_URL=${TTS_URL:-http://127.0.0.1:9880}
@@ -11,11 +12,9 @@ curl -fsS --max-time 5 "$TTS_URL/health"
 curl -fsS --max-time 5 "$TTS_URL/voices"
 ```
 
-返回 `OK` 和音色列表就直接用。连不上先核对地址；确实没有服务时才[检查部署主机并选包](DEPLOYMENT.md#choose-a-build)。
-If the endpoint is unreachable, check its address first. [Choose a build](DEPLOYMENT.md#choose-a-build) only for a new server.
+返回 `OK` 和音色列表就直接用。连不上先核对地址；需要新部署时再[检查主机并选包](DEPLOYMENT.md#选择部署方式)。
 
-**2. 试一句 / Test a voice.** 从列表选音色。公开的 `demo` 读英文；缺少目标音色就在现有服务上[添加音色 / add a voice](DEPLOYMENT.md#add-a-voice)。
-Use a name from `/voices` and a sentence in that voice's language. For the public English demo:
+**2. 试一句。** 从列表选音色，用它的语言说一句。缺少目标音色时，在现有服务上[添加音色](DEPLOYMENT.md#添加音色)。公开的 `demo` 用这句英文测试：
 
 ```bash
 curl --fail-with-body --max-time 300 "$TTS_URL/tts" \
@@ -24,15 +23,14 @@ curl --fail-with-body --max-time 300 "$TTS_URL/tts" \
   --output reply.wav
 ```
 
-**3. 接应用 / Connect the app.** 播放 `reply.wav`，听到整句后，把同一地址和音色交给应用。
-Play `reply.wav` and check the words. For [Hermes](#hermes) or another OpenAI-compatible client, use `$TTS_URL/v1` and the same voice.
+**3. 接入应用。** 播放 `reply.wav`，确认整句读对。[Hermes](#hermes) 等兼容 OpenAI 接口的客户端使用 `$TTS_URL/v1` 和刚验证的音色。
 
 ### 选择接口
 
 | 调用方 | 接口 | 返回 |
 | --- | --- | --- |
 | 自己的工具或 Agent | `POST /tts`，发送 `voice`、`text` | 完整 WAV |
-| Hermes / OpenAI-compatible 客户端 | `POST /v1/audio/speech`，发送 `voice`、`input` | WAV、PCM、MP3 或 Ogg/Opus |
+| Hermes 等兼容 OpenAI 接口的客户端 | `POST /v1/audio/speech`，发送 `voice`、`input` | WAV、PCM、MP3 或 Ogg/Opus |
 | 已拿到整段文字，想边生成边播 | `POST /tts/stream` | 一个持续输出的 WAV 流 |
 
 兼容接口的请求正文：
@@ -47,11 +45,10 @@ Play `reply.wav` and check the words. For [Hermes](#hermes) or another OpenAI-co
 
 ## Hermes
 
-在 Hermes 所在环境执行，沿用上面验证过的 `TTS_URL` 和音色。
-Run these in the shell where you set `TTS_URL`. Replace `demo` with the voice you tested.
+在 Hermes 所在环境中，沿用刚验证的 `TTS_URL`，把 `demo` 换成刚验证的音色：
 
 ```bash
-hermes config set tts.openai.base_url "${TTS_URL:?Set TTS_URL to the tested service URL}/v1"
+hermes config set tts.openai.base_url "${TTS_URL:?}/v1"
 hermes config set tts.openai.api_key local
 hermes config set tts.openai.model tts-1
 hermes config set tts.openai.voice demo
@@ -64,7 +61,7 @@ hermes config set tts.provider openai
 模型和录音留在服务端，这条路径无需安装 `gpt-sovits-client` 或额外调用 FFmpeg。
 
 让 Hermes 调用 `text_to_speech`，传入一小段 `text`，检查工具结果并试听。
-provider 配置每次调用时读取，修改后可直接重试。
+Hermes 每次调用都会读取语音配置，修改后可直接重试。
 Hermes 默认请求 MP3；Telegram 等语音平台会请求 Opus，服务直接返回 Ogg/Opus。
 
 要在收到语音时自动用语音回复：
@@ -77,7 +74,7 @@ hermes config set voice.auto_tts true
 或重启网关加载全局默认值。
 
 分句、语速和采样参数放在服务端的 `voice.json` 中管理，完整示例见
-[音色配置](DEPLOYMENT.md#音色目录)。从 command provider 迁移时，
+[音色配置](DEPLOYMENT.md#音色目录)。从外部命令接入方式迁移时，
 将原命令里的请求级覆盖移到音色配置；情绪和语气主要由模型及参考录音决定。
 
 本节按 Hermes [`0a62610` 的 TTS 实现](https://github.com/NousResearch/hermes-agent/blob/0a62610f10cc34d696b2239b2c69fa1ba0f1ca63/tools/tts_tool.py)
@@ -85,7 +82,7 @@ hermes config set voice.auto_tts true
 
 ## 逐句生成和播放
 
-接收 LLM token 流的 Agent 可以在完整句子出现后提交，按顺序播放：
+如果模型以流式返回文本，Agent 收到一句完整的话就可以提交合成，按顺序播放：
 
 ```mermaid
 sequenceDiagram
@@ -119,7 +116,7 @@ sequenceDiagram
 | HTTP 503 | 等待推理槽超时；仅对仍有效的回复做有上限的退避重试 |
 | HTTP 500 | 记录错误并检查服务日志；避免自动反复合成相同失败内容 |
 | 流中断或未收全 | 停止播放；HTTP 200 之后的合成错误会终止音频流 |
-| Batch HTTP 200 | 逐行检查 `error` 和 `wav_base64`，批量结果没有 `success` 字段 |
+| 批量请求返回 HTTP 200 | 逐行检查 `error` 和 `wav_base64`，批量结果没有 `success` 字段 |
 
 请求超时应覆盖排队、首次加载和生成。断开连接后，已开始的合成可能仍在运行；
 重试也可能再次生成同一段，尤其要避免重复播放已听到的部分。
@@ -162,6 +159,6 @@ sequenceDiagram
 GPT_SOVITS_LOG_CHUNK_TEXT=1 ./gpt-sovits --http --port 9880 --voice demo
 ```
 
-日志包含 chunk 序号、字数、semantic token 数、时长和 chars/sec。
+日志包含分段序号、字数、语义标记数、时长和每秒字数。
 文本日志可能含私人对话，平时保持关闭。结合试听和
 [语音回归](RELEASE_ACCEPTANCE.md#speech-regression)检查漏读，再决定是否调整参数。
