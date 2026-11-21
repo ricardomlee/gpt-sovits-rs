@@ -10,10 +10,10 @@ For shell scripts and agent command providers, the standalone
 [HTTP client](../client/README.md) calls a running service without loading models locally.
 
 Examples use the deployment default `http://127.0.0.1:9880` and a configured `demo` voice.
-For the [first-run demo](FIRST_RUN.zh-CN.md), use port **9881**. Its reference is English;
+For the [first-run demo](../README.md#quick-start), use port **9881** and try a sentence in English first.
 `text_language: "auto"` detects the target language. Reference text has its own
 `prompt_language`, which defaults to `auto` independently.
-Create your own voice with the [deployment guide](DEPLOYMENT.md#准备目录和音色).
+To try another speaker, [add a voice](DEPLOYMENT.md#add-a-voice).
 
 ## CLI
 
@@ -251,7 +251,7 @@ Synthesize one WAV using a configured voice:
 ```bash
 curl --fail-with-body http://127.0.0.1:9880/tts \
   -H 'Content-Type: application/json' \
-  -d '{"voice":"demo","text":"你好世界。","text_language":"auto"}' \
+  -d '{"voice":"demo","text":"Your local voice service is ready."}' \
   --output output.wav
 ```
 
@@ -471,8 +471,7 @@ curl --fail-with-body http://127.0.0.1:9880/v1/audio/speech \
   -d '{
     "model": "gpt-sovits",
     "voice": "demo",
-    "input": "你好，这是本地语音服务。",
-    "text_language": "auto",
+    "input": "Your local voice service is ready.",
     "response_format": "wav"
   }' \
   --output output.wav

@@ -1,25 +1,31 @@
-# Agent 接入
-
-Agent 通过 HTTP 发送音色名和待朗读文字，服务端管理模型、参考录音、SV 和推理参数。
-Hermes 可直接使用内置 OpenAI provider；[配置见下文](#hermes)。
+# Agent 接入 / Connect an agent
 
 ## 最小调用
 
-先按[部署指南](DEPLOYMENT.md)启动服务，查询可用音色并生成一段 WAV：
+**1. 查已有服务 / Find the service.** 从 Agent 所在环境访问服务地址。正式部署默认 `9880`，首次体验用 `9881`；容器里的 localhost 指容器自身。
+Set `TTS_URL` to the server reachable from the agent (deployment: `9880`; first-run demo: `9881`). In a container, localhost means that container.
 
 ```bash
-curl --fail-with-body http://127.0.0.1:9880/health
-curl --fail-with-body http://127.0.0.1:9880/voices
-curl --fail-with-body --max-time 300 http://127.0.0.1:9880/tts \
+TTS_URL=${TTS_URL:-http://127.0.0.1:9880}
+curl -fsS --max-time 5 "$TTS_URL/health"
+curl -fsS --max-time 5 "$TTS_URL/voices"
+```
+
+返回 `OK` 和音色列表就直接用。连不上先核对地址；确实没有服务时才[检查部署主机并选包](DEPLOYMENT.md#choose-a-build)。
+If the endpoint is unreachable, check its address first. [Choose a build](DEPLOYMENT.md#choose-a-build) only for a new server.
+
+**2. 试一句 / Test a voice.** 从列表选音色。公开的 `demo` 读英文；缺少目标音色就在现有服务上[添加音色 / add a voice](DEPLOYMENT.md#add-a-voice)。
+Use a name from `/voices` and a sentence in that voice's language. For the public English demo:
+
+```bash
+curl --fail-with-body --max-time 300 "$TTS_URL/tts" \
   -H 'Content-Type: application/json' \
-  -d '{"voice":"demo","text":"你好，今天有什么安排？","text_language":"auto"}' \
+  -d '{"voice":"demo","text":"Your local voice service is ready."}' \
   --output reply.wav
 ```
 
-将 `demo` 换成 `/voices` 返回的音色名，大小写保持一致。
-[首次体验](FIRST_RUN.zh-CN.md)的地址使用 **9881**，其他示例使用 **9880**。
-`text_language: "auto"` 适合中文、英文和混读；省略时使用音色的语言设置。
-服务就绪后可用 `POST /warmup`、`{"voice":"demo"}` 预热常用音色，减少首次调用等待。
+**3. 接应用 / Connect the app.** 播放 `reply.wav`，听到整句后，把同一地址和音色交给应用。
+Play `reply.wav` and check the words. For [Hermes](#hermes) or another OpenAI-compatible client, use `$TTS_URL/v1` and the same voice.
 
 ### 选择接口
 
@@ -29,10 +35,10 @@ curl --fail-with-body --max-time 300 http://127.0.0.1:9880/tts \
 | Hermes / OpenAI-compatible 客户端 | `POST /v1/audio/speech`，发送 `voice`、`input` | WAV、PCM、MP3 或 Ogg/Opus |
 | 已拿到整段文字，想边生成边播 | `POST /tts/stream` | 一个持续输出的 WAV 流 |
 
-兼容客户端的 base URL 填 `http://127.0.0.1:9880/v1`。完整请求示例：
+兼容接口的请求正文：
 
 ```json
-{"model":"tts-1","voice":"demo","input":"你好，今天有什么安排？","response_format":"mp3"}
+{"model":"tts-1","voice":"demo","input":"Your local voice service is ready.","response_format":"mp3"}
 ```
 
 音色决定模型；`model` 和 `instructions` 为兼容字段，当前忽略。
@@ -41,10 +47,11 @@ curl --fail-with-body --max-time 300 http://127.0.0.1:9880/tts \
 
 ## Hermes
 
-在 Hermes 所在环境执行，将地址和 `demo` 换成实际服务及音色：
+在 Hermes 所在环境执行，沿用上面验证过的 `TTS_URL` 和音色。
+Run these in the shell where you set `TTS_URL`. Replace `demo` with the voice you tested.
 
 ```bash
-hermes config set tts.openai.base_url http://127.0.0.1:9880/v1
+hermes config set tts.openai.base_url "${TTS_URL:?Set TTS_URL to the tested service URL}/v1"
 hermes config set tts.openai.api_key local
 hermes config set tts.openai.model tts-1
 hermes config set tts.openai.voice demo

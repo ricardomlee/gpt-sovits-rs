@@ -11,7 +11,7 @@ Conversion and inference run in Rust on your own computer. Train or fine-tune vo
 with [upstream GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS).
 
 [Try it](#quick-start) | [Listen](#samples) | [中文上手](docs/FIRST_RUN.zh-CN.md) |
-[Use your models](docs/MODELS.md) | [API](docs/API.md) | [Documentation](docs/README.md)
+[Add your voice](docs/DEPLOYMENT.md#add-a-voice) | [Connect an agent](docs/AGENT_INTEGRATION.md) | [API](docs/API.md)
 
 ## Samples
 
@@ -27,15 +27,14 @@ the Sun model and reference files remain private. The installable demo below use
 
 ## Quick Start
 
-**Linux x86_64, Docker Engine + Compose v2, Bash, curl, and SHA-256 tools.**
+Already have a TTS endpoint? [Use the running service](docs/AGENT_INTEGRATION.md). For Mac, NVIDIA, or ARM, [choose a build](docs/DEPLOYMENT.md#choose-a-build).
+
+**CPU demo: Linux x86_64, Docker Engine + Compose v2, Git, Bash, curl, and SHA-256 tools.**
 Allow at least 6 GiB free disk and 4 GiB available memory. Downloads are about
 1.1 GB plus the container; conversion and the first model load take time.
 No Rust, Python, API key, or GPU is needed for this CPU demo.
 
-The script verifies upstream weights, converts them with the pinned `1.3.3` CPU
-image, and checks the setup.
-[Downloads](examples/first-run/downloads.txt), [script](examples/first-run/prepare.sh),
-and [setup details](docs/FIRST_RUN.zh-CN.md) are available for review.
+The [setup script](examples/first-run/prepare.sh) verifies the [upstream weights](examples/first-run/downloads.txt), converts them with the pinned `1.3.3` CPU image, and checks the setup.
 
 ```bash
 git clone https://github.com/ricardomlee/gpt-sovits-rs.git
@@ -43,7 +42,8 @@ cd gpt-sovits-rs
 bash examples/first-run/prepare.sh "$HOME/gpt-sovits-demo"
 cd "$HOME/gpt-sovits-demo"
 docker compose up -d --wait --wait-timeout 900
-curl --fail-with-body --max-time 300 http://127.0.0.1:9881/tts \
+export TTS_URL="http://127.0.0.1:${DEMO_PORT:-9881}"
+curl --fail-with-body --max-time 300 "$TTS_URL/tts" \
   -H 'Content-Type: application/json' --data-binary @request.json \
   --output first.wav
 ```
@@ -54,14 +54,8 @@ Stop it with `docker compose down` in the demo directory; downloaded files stay 
 Use a new directory for preparation. If interrupted, rerun the same command:
 verified downloads are reused.
 
-Already have weights or use another platform?
-
-| Your setup | Start here |
-|---|---|
-| Your own v2 / v2Pro voice | [Conversion and SV requirements](docs/MODELS.md), then [deployment](docs/DEPLOYMENT.md) |
-| NVIDIA GPU | [CUDA images and architecture tags](docs/DEPLOYMENT.md#cuda) |
-| Linux / macOS without Docker | [Download binaries](https://github.com/ricardomlee/gpt-sovits-rs/releases/latest), then [binary setup](docs/DEPLOYMENT.md#binary) |
-| ARM Linux / NAS | [Build from source](docs/DEVELOPMENT.md); Docker images are currently amd64 |
+Next, [add your own voice](docs/DEPLOYMENT.md#add-a-voice) with a reference clip and transcript.
+The standard v2 demo can reuse its weights. For fine-tuned weights, see [model conversion](docs/MODELS.md).
 
 ## Connect Your App
 
@@ -72,18 +66,7 @@ flowchart LR
     Service -->|"WAV / MP3 / Opus"| Audio["Playback"]
 ```
 
-Once a voice is configured, send only its name and the text:
-
-```bash
-curl --fail-with-body http://127.0.0.1:9881/tts \
-  -H 'Content-Type: application/json' \
-  -d '{"voice":"demo","text":"The backup is complete."}' --output reply.wav
-```
-
-For Hermes and other OpenAI-compatible clients, use base URL
-`http://127.0.0.1:9881/v1` and select a configured voice.
-[Agent integration](docs/AGENT_INTEGRATION.md) includes Hermes setup and ordered
-sentence playback; the [API reference](docs/API.md#http-server) covers streaming and batch requests.
+Follow [Connect an agent](docs/AGENT_INTEGRATION.md) to list voices, speak a sentence, and connect Hermes or your app to the same endpoint. The [HTTP API](docs/API.md#http-server) covers streaming and batch requests.
 
 ## Models and Speech Quality
 
@@ -106,7 +89,7 @@ If the first request fails, check `docker compose logs --tail 100` in the demo d
 and readiness. [Tell us where you got stuck, or what worked](https://github.com/ricardomlee/gpt-sovits-rs/issues/new?template=first-run.yml).
 Do not attach private models, recordings, or credentials.
 
-[Deployment](docs/DEPLOYMENT.md) | [API](docs/API.md) |
+[Documentation index (中文)](docs/README.md) | [Deployment](docs/DEPLOYMENT.md) | [API](docs/API.md) |
 [Development](docs/DEVELOPMENT.md)
 
 ## License and Credits

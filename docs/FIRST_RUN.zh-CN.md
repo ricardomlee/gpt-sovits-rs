@@ -1,16 +1,17 @@
 # 第一次运行
 
+[English quick start](../README.md#quick-start) · [已有服务，直接接入](AGENT_INTEGRATION.md) · [Mac、NVIDIA 或 ARM 选型](DEPLOYMENT.md#choose-a-build)
+
 用官方通用 v2 权重和公开的英文参考音频，先生成一段语音。脚本会准备模型和音色配置，
 转换与推理都在 Docker 中完成。网页上的 Sun 试听使用维护者的私人模型，配置见[样本说明](../examples/samples/README.md)。
 已有模型请直接看[模型转换](MODELS.md)和[部署](DEPLOYMENT.md)。
 
 ## 准备
 
-- Linux x86_64、Docker Engine、Compose v2、Bash、curl，以及 sha256sum 或 shasum。
+- Linux x86_64、Docker Engine、Compose v2、Git、Bash、curl，以及 sha256sum 或 shasum。
 - 至少 6 GiB 可用磁盘、4 GiB 可用内存。模型源文件下载约 1.1 GB，另需下载镜像。
 - 能访问 GitHub、GHCR、Hugging Face。模型从上游下载到专用 demo 目录，
   详情见[下载清单](../examples/first-run/downloads.txt)和[准备脚本](../examples/first-run/prepare.sh)。
-- macOS 使用[原生二进制](DEPLOYMENT.md#binary)；ARM Linux 使用[源码构建](DEVELOPMENT.md)。
 
 ## 跑出第一段音频
 
@@ -20,7 +21,8 @@ cd gpt-sovits-rs
 bash examples/first-run/prepare.sh "$HOME/gpt-sovits-demo"
 cd "$HOME/gpt-sovits-demo"
 docker compose up -d --wait --wait-timeout 900
-curl --fail-with-body --max-time 300 http://127.0.0.1:9881/tts \
+export TTS_URL="http://127.0.0.1:${DEMO_PORT:-9881}"
+curl --fail-with-body --max-time 300 "$TTS_URL/tts" \
   -H 'Content-Type: application/json' --data-binary @request.json \
   --output first.wav
 ```
@@ -38,6 +40,11 @@ curl --fail-with-body --max-time 300 http://127.0.0.1:9881/tts \
 不会替换已有的 `9880` 服务。不要同时启动两份同名 demo 项目。
 在 demo 目录运行 `docker compose down` 即可停止；模型和生成结果保留。
 
+## 换成自己的声音
+
+在 `~/gpt-sovits-demo/voices/` 下[添加音色](DEPLOYMENT.md#add-a-voice)：一段自己有权使用的录音和逐字稿即可复用通用 v2 权重。
+再用上面的 `TTS_URL` 按[Agent 接入](AGENT_INTEGRATION.md)试一句。公开的 `demo` 先试英文，自己的中文音色试中文。
+
 ## 出错时
 
 | 现象 | 处理 |
@@ -47,29 +54,13 @@ curl --fail-with-body --max-time 300 http://127.0.0.1:9881/tts \
 | Checksum mismatch | 不要跳过校验，移除报错指向的缓存文件后重试；仍失败请反馈 |
 | Refusing nonempty directory | 选择一个新的 demo 目录，不要拿已有部署目录试用 |
 | Preparation already running | 确认没有另一份脚本运行；若之前被强制终止，移除报错中的空 `.prepare-lock` 目录后重试 |
-| 9881 被占用 | 启动前 `export DEMO_PORT=9882`，同时把 curl URL 改成 9882 |
+| 9881 被占用 | 启动前 `export DEMO_PORT=9882`，上面的 `TTS_URL` 会使用同一端口 |
 | 启动超时 / 容器退出 | 在 demo 目录执行 `docker compose logs --tail 100`、`docker compose ps -a`；检查内存和 Docker 分配的资源 |
 | curl 返回非 2xx | 先查日志；`--fail-with-body` 会报错，此时输出文件可能是 JSON 错误，不能当 WAV 播放 |
 | 声音不理想 / 吞字 | 先试短句，核对参考音频和转写；保留失败请求与音频以便排查 |
 
-prepare 可在专用 demo 目录重试，但会重新转换模型并恢复 demo 配置。
-自定义音色请迁移到[正式部署流程](DEPLOYMENT.md)，不要修改 demo 后再次 prepare。
-所选镜像保存在 demo 的 `.env` 中，正常启动会复用本地镜像。
-维护者测试候选镜像的方法见[发布验收](RELEASE_ACCEPTANCE.md)。
-
-## 换成自己的声音
-
-通用模型需要你有权使用的 3-10 秒参考录音及准确转写；微调模型还需要替换兼容的
-GPT/SoVITS 权重。v2Pro 请同时准备训练预处理产生的 SV embedding，不能只换权重而漏掉它。
-详情见[模型文档](MODELS.md)。
-
-## 接入和反馈
-
-应用只需发送 `voice` 和 `text`，看[API](API.md)和[Agent 接入](AGENT_INTEGRATION.md)。
-首次体验的地址是 `http://127.0.0.1:9881`；其他文档使用正式部署的默认端口 `9880`，
-试用时将示例端口改为 `9881`。demo 音色默认英文，中文请求传 `"text_language":"auto"`，
-让参考文字和目标文字分别识别语言；自己的中文音色按正式部署流程配置。
-长回复按完整短句顺序提交、顺序播放，单个服务按队列处理推理请求。
+重跑 prepare 会重新转换模型并恢复 `voices/demo/` 中的示例文件。自己的音色用单独目录；
+长期使用见[部署](DEPLOYMENT.md)，微调权重和 v2Pro 的参考 SV 见[模型转换](MODELS.md)。
 
 [首次试用反馈](https://github.com/ricardomlee/gpt-sovits-rs/issues/new?template=first-run.yml)
 只需系统、版本、走到哪一步和脱敏错误。成功跑通也欢迎记录；不要上传私人音频、模型或密钥。

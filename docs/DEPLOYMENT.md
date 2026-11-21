@@ -1,10 +1,30 @@
 # 部署
 
-第一次试用且没有现成模型，可先走[Docker 首次运行](FIRST_RUN.zh-CN.md)，
-无需安装宿主机转换器。下面的流程用于已有模型和自己的音色配置。
+已有服务？先[查音色并试一句 / Connect to a running service](AGENT_INTEGRATION.md)。新部署再选下面的路径。
 
-下面的 Compose 命令在仓库根目录执行。按顺序完成目录和音色配置，再选择 CPU、CUDA
-或二进制启动，最后[验证服务](#验证服务)。
+## Choose a build
+
+在**运行 TTS 的主机**上执行 `uname -sm`。有 NVIDIA 卡时再查计算能力；命令也适用于 WSL2。
+On the **TTS host**, run `uname -sm`. For NVIDIA, also check compute capability (CC):
+
+```bash
+PATH="$PATH:/usr/lib/wsl/lib" nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader
+```
+
+| 主机 / TTS host | 部署方式 / Build |
+| --- | --- |
+| Linux x86_64, CPU | [CPU Docker](#cpu) · [Linux x86_64 binary](#binary) |
+| Linux / WSL2 x86_64, NVIDIA | [CUDA](#cuda) (`1.3.3-cuda-` + SM): 7.5 → `sm75`, 8.6 → `sm86`, 8.9 → `sm89`, 9.0 → `sm90` |
+| macOS (Apple Silicon / Intel) | [Native CPU binary](#binary): Apple Silicon → `macos-aarch64`, Intel → `macos-x86_64` |
+| Linux ARM64 (including ARM NAS) | [源码构建 / Build from source](DEVELOPMENT.md#build-from-source) |
+
+RTX 4060 / 4090 → `1.3.3-cuda-sm89`。RTX 5060 / 5090 → `sm120`：1.3.3 无对应镜像；
+未列出的架构在 x86_64 上可用 [CPU](#cpu)，或[自行构建 CUDA 镜像](#cuda)。
+For an unlisted CC (including RTX 5060 / 5090), use CPU on x86_64 or build for that CC.
+[NVIDIA GPU → CC](https://developer.nvidia.com/cuda/gpus) · [Release packages](https://github.com/ricardomlee/gpt-sovits-rs/releases/latest)
+
+Linux x86_64 没有模型可从[公开 CPU demo](FIRST_RUN.zh-CN.md)开始。已有权重时先准备下面的目录，再从仓库根目录运行 Compose。
+For a first run without weights on Linux x86_64, follow the [CPU demo](../README.md#quick-start).
 
 ## 准备目录和音色
 
@@ -43,28 +63,35 @@ GPT_SOVITS_IMAGE_TAG=1.3.3
 将 `.env` 的 `GPT_MODEL`、`SOVITS_MODEL` 分别设为 `/app/models/demo/gpt.safetensors`、
 `/app/models/demo/sovits.safetensors`。BERT、HuBERT 和 tokenizer 按模型文档放好。
 
-创建一个本地 voice profile：
+### Add a voice
 
-```bash
-mkdir -p voices/demo
-cp /path/to/your-3-to-10-second-reference.wav voices/demo/ref.wav
-cat > voices/demo/voice.json <<'JSON'
+在服务的 `voices/` 下新建 `my-voice/`（首次体验用 `~/gpt-sovits-demo/voices/`）。
+把有权使用的 3–10 秒录音存为 `my-voice/ref.wav`，逐字稿写入同目录的 `voice.json`。
+通用 v2 可复用已有权重，新音色无需重训或重启。
+
+Create `my-voice/` under the server's voices directory. Add a clear 3–10 second clip you may use as `ref.wav` and its exact transcript in `voice.json`. Standard v2 reuses the current weights.
+
+可直接用这个[公开中文样本 / sample ref.wav](../examples/samples/local-assistant-zh.wav)和对应配置：
+
+```json
 {
   "reference_audio": "ref.wav",
-  "reference_text": "参考音频里逐字对应的文字",
+  "reference_text": "你的本地语音服务已经准备好了。接下来的语音会在这台电脑上生成。",
   "language": "zh",
-  "prompt_language": "zh",
-  "mode": "auto",
-  "split_sentences": true
+  "prompt_language": "zh"
 }
-JSON
 ```
 
-`language` 是待朗读文字的默认语言，`prompt_language` 是参考转写的语言，省略时独立识别。
-HTTP 请求可以分别覆盖这两个设置。
+`language` 是目标文字语言 (target text)，`prompt_language` 是录音语言 (reference clip)。服务启动后，用[已确认的地址 / tested TTS_URL](AGENT_INTEGRATION.md)试一句：
 
-v2Pro 还需[转换匹配的 SV](MODELS.md#v2pro-sv)，放在 `voices/demo/ref_sv.safetensors`，
-并在 JSON 中加入 `"sv_embedding": "ref_sv.safetensors"`。Compose 挂载整个音色目录。
+```bash
+curl --fail-with-body --max-time 300 "$TTS_URL/tts" \
+  -H 'Content-Type: application/json' \
+  -d '{"voice":"my-voice","text":"你好，今天有什么安排？"}' --output my-voice.wav
+```
+
+v2Pro 使用[与参考录音匹配的 SV / matching SV](MODELS.md#v2pro-sv)；将 `ref_sv.safetensors`
+放在音色目录，并在 JSON 中加入 `"sv_embedding": "ref_sv.safetensors"`。
 
 CPU 和 CUDA Compose 使用同一个容器名 `gpt-sovits-rs`，选择其中一种启动。
 已有服务按[升级与回滚](#升级与回滚)操作。
@@ -84,23 +111,17 @@ CPU 固定版本镜像为 `ghcr.io/ricardomlee/gpt-sovits-rs:1.3.3`。
 
 ## CUDA
 
-宿主机需要 NVIDIA 驱动、Docker 和 NVIDIA Container Toolkit。按 GPU 架构在 `.env`
-里设置 `CUDA_IMAGE_TAG`：
-
-```text
-RTX 20: 1.3.3-cuda-sm75
-RTX 30: 1.3.3-cuda-sm86
-RTX 40: 1.3.3-cuda-sm89
-H100:   1.3.3-cuda-sm90
-```
+宿主机需有可用的 NVIDIA 驱动和 Docker GPU 支持（Linux: NVIDIA Container Toolkit）。
+按[上表](#choose-a-build)设置 `.env` 的 `CUDA_IMAGE_TAG`，例如 `1.3.3-cuda-sm89`。
+拉取后用同一镜像确认容器看得到目标 GPU，再启动：
 
 ```bash
 docker compose -f compose.cuda.yml pull
+docker compose -f compose.cuda.yml run --rm --pull never --no-deps --entrypoint nvidia-smi gpt-sovits -L
 docker compose -f compose.cuda.yml up -d --wait --wait-timeout 900
-docker compose -f compose.cuda.yml ps
 ```
 
-其他 compute capability 可以本地构建：
+自行构建时，把下面的 `80` 换成目标 CC 的数字（如 `120`），并在目标卡上验证合成：
 
 ```bash
 docker build -f Dockerfile.cuda \
@@ -126,8 +147,9 @@ Docker 镜像包含相同的编码能力。第三方库说明见 [Audio Codec No
 | `gpt-sovits-convert` | 模型和 SV 文件转换 |
 | `gpt-sovits-client` | 可选的 HTTP 命令行客户端，适用于脚本和 command provider |
 
-从 Release 下载对应平台的压缩包和 `SHA256SUMS`。以下用 Linux x86_64 包启动服务；
-客户端用法见 [HTTP 客户端](../client/README.md)。
+从 Release 下载[上表](#choose-a-build)对应的压缩包和 `SHA256SUMS`。以下为 Linux 示例。
+Use the bundled `gpt-sovits-convert` to [prepare your weights](MODELS.md#准备官方-v2-模型) before starting the server.
+On macOS, compare `shasum -a 256 <archive>` with the matching entry in `SHA256SUMS`. Extract the Mac archive, keep the `.dylib` files alongside the binaries, then run the same `./gpt-sovits` command from that directory.
 
 ```bash
 sha256sum --check SHA256SUMS --ignore-missing
@@ -147,19 +169,8 @@ macOS 解压后请把程序和同目录的 `.dylib` 文件放在一起。1.3.2 �
 
 ## 验证服务
 
-在另一个终端执行。`/health` 应返回 `OK`，`/voices` 应包含刚创建的 `demo`：
-
-```bash
-curl --fail http://127.0.0.1:9880/health
-curl --fail http://127.0.0.1:9880/voices
-curl --fail-with-body http://127.0.0.1:9880/tts \
-  -H 'Content-Type: application/json' \
-  -d '{"voice":"demo","text":"你好，这是一次语音测试。","text_language":"zh"}' \
-  --output output.wav
-```
-
-试听当前目录的 `output.wav`。HTTP 返回的音频由客户端保存；容器的 `/app/outputs` 挂载
-用于容器内程序写文件。API 参数和其他输出方式见 [API](API.md#http-server)。
+从客户端按[接入步骤](AGENT_INTEGRATION.md)检查：`/health` 返回 `OK`，`/voices` 列出刚配置的音色，
+再用[该音色的例句](#add-a-voice)生成音频，播放并核对文字。HTTP 返回的音频保存在客户端。
 
 ## 监听地址与版本兼容
 
