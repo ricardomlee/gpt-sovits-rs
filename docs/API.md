@@ -10,10 +10,10 @@ For shell scripts and agent command providers, the standalone
 [HTTP client](../client/README.md) calls a running service without loading models locally.
 
 Examples use the deployment default `http://127.0.0.1:9880` and a configured `demo` voice.
-For the [first-run demo](FIRST_RUN.zh-CN.md), use port **9881**. Its reference is English;
+For the [first-run demo](../README.md#quick-start), use port **9881** and try a sentence in English first.
 `text_language: "auto"` detects the target language. Reference text has its own
 `prompt_language`, which defaults to `auto` independently.
-Create your own voice with the [deployment guide](DEPLOYMENT.md#准备目录和音色).
+To try another speaker, [add a voice](AGENT_INTEGRATION.en.md#add-a-voice).
 
 ## CLI
 
@@ -251,7 +251,7 @@ Synthesize one WAV using a configured voice:
 ```bash
 curl --fail-with-body http://127.0.0.1:9880/tts \
   -H 'Content-Type: application/json' \
-  -d '{"voice":"demo","text":"你好世界。","text_language":"auto"}' \
+  -d '{"voice":"demo","text":"Your local voice service is ready."}' \
   --output output.wav
 ```
 
@@ -275,7 +275,7 @@ directories, start the server with `--allow-external-reference-paths`.
 
 HTTP synthesis settings use this precedence: request fields, then `voice.json`, then
 built-in defaults. For LLM output, send completed sentences in order;
-[agent integration](AGENT_INTEGRATION.md) covers chunking, playback and cancellation.
+[agent playback](AGENT_INTEGRATION.en.md#playback) covers sentence ordering and interruptions.
 
 Effective settings are validated after overrides are merged: `max_tokens` is 1-2048,
 `speed` is 0.25-4.0, `top_p` is 0-1, and `temperature` and `repetition_penalty` must
@@ -419,7 +419,7 @@ curl --fail-with-body http://127.0.0.1:9880/tts/stream \
 ```
 
 Playback can begin after the first synthesized chunk arrives. The request contains the complete
-text; for LLM token streams, use the client-side queue described in [agent integration](AGENT_INTEGRATION.md).
+text; for LLM token streams, see [sentence-by-sentence playback](AGENT_INTEGRATION.en.md#playback).
 
 The stream uses an unknown-length WAV header and PCM16 samples at the generated
 sample rate (currently 32 kHz mono). It always splits the input, regardless of
@@ -471,8 +471,7 @@ curl --fail-with-body http://127.0.0.1:9880/v1/audio/speech \
   -d '{
     "model": "gpt-sovits",
     "voice": "demo",
-    "input": "你好，这是本地语音服务。",
-    "text_language": "auto",
+    "input": "Your local voice service is ready.",
     "response_format": "wav"
   }' \
   --output output.wav
@@ -499,7 +498,7 @@ use annotations in `input`; `instructions` does not control emotion or delivery.
 
 Set the client base URL to `http://127.0.0.1:9880/v1` when using compatible agent frameworks.
 For Hermes, configure its built-in OpenAI provider as shown in
-[Agent integration](AGENT_INTEGRATION.md#hermes). The server performs audio encoding;
+[Agent integration](AGENT_INTEGRATION.en.md#hermes). The server performs audio encoding;
 the binary archives and Docker images include the required libraries.
 
 ## Errors
