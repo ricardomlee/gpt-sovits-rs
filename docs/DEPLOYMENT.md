@@ -1,4 +1,4 @@
-# 部署
+# 部署 GPT-SoVITS-RS 本地语音服务
 
 已有服务时，先[查音色并试一句](AGENT_INTEGRATION.md)。新部署再按主机选包。
 

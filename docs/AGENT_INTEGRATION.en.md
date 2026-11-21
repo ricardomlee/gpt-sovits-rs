@@ -1,4 +1,4 @@
-# Connect an agent
+# Connect an agent to the GPT-SoVITS-RS speech API
 
 [Chinese guide](AGENT_INTEGRATION.md)
 
