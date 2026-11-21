@@ -12,7 +12,7 @@ services:
       NVIDIA_VISIBLE_DEVICES: all
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     ports:
-      - "${GPT_SOVITS_PORT:-9880}:9880"
+      - "${GPT_SOVITS_PORT:-127.0.0.1:9880}:9880"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9880/health"]
       interval: 30s

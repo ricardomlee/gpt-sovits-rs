@@ -9,7 +9,7 @@ services:
       # v1.2.0 ignores this variable and already listens on all interfaces.
       GPT_SOVITS_HOST: 0.0.0.0
     ports:
-      - "${GPT_SOVITS_PORT:-9880}:9880"
+      - "${GPT_SOVITS_PORT:-127.0.0.1:9880}:9880"
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:9880/health"]
       interval: 30s
