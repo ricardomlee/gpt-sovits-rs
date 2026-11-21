@@ -77,18 +77,13 @@ GPT_SOVITS_IMAGE_TAG=1.3.3
 }
 ```
 
-`language` 是待朗读文字的语言，`prompt_language` 是参考录音的语言。服务启动后，用[已验证的服务地址](AGENT_INTEGRATION.md)试一句：
-
-```bash
-curl --fail-with-body --max-time 300 "$TTS_URL/tts" \
-  -H 'Content-Type: application/json' \
-  -d '{"voice":"my-voice","text":"你好，今天有什么安排？"}' --output my-voice.wav
-```
+`language` 是待朗读文字的语言，`prompt_language` 是参考录音的语言。
 
 v2Pro 使用[与参考录音匹配的 SV](MODELS.md#v2pro-sv)；将 `ref_sv.safetensors`
 放在音色目录，并在 JSON 中加入 `"sv_embedding": "ref_sv.safetensors"`。
 
-CPU 和 CUDA Compose 使用同一个容器名 `gpt-sovits-rs`，选择其中一种启动。
+服务已经在运行时，可以直接[试听这个音色](#验证服务)。首次部署选择下面一种启动方式；
+CPU 和 CUDA Compose 共用容器名 `gpt-sovits-rs`。
 已有服务按[升级与回滚](#升级与回滚)操作。
 
 ## CPU
@@ -164,8 +159,22 @@ macOS 用 `shasum -a 256 压缩包文件名` 与 `SHA256SUMS` 中的同名条目
 
 ## 验证服务
 
-从客户端按[接入步骤](AGENT_INTEGRATION.md)检查：`/health` 返回 `OK`，`/voices` 列出刚配置的音色，
-再用[该音色的例句](#添加音色)生成音频，播放并核对文字。HTTP 返回的音频保存在客户端。
+下面沿用当前终端的 `TTS_URL`，未设置时使用正式部署的 `9880`。在新终端连接首次运行的示例，先设 `TTS_URL=http://127.0.0.1:9881`；远程服务或自定义端口请换成实际地址。
+
+```bash
+TTS_URL=${TTS_URL:-http://127.0.0.1:9880}
+curl -fsS --max-time 5 "$TTS_URL/voices"
+```
+
+列表中出现 `my-voice` 后，用它读一句中文：
+
+```bash
+curl --fail-with-body --max-time 300 "$TTS_URL/tts" \
+  -H 'Content-Type: application/json' \
+  -d '{"voice":"my-voice","text":"你好，今天有什么安排？"}' --output my-voice.wav
+```
+
+打开当前目录的 `my-voice.wav`，确认读出了整句。要让助手使用这个音色，见 [Agent 接入](AGENT_INTEGRATION.md)。
 
 ## 监听地址与版本兼容
 
