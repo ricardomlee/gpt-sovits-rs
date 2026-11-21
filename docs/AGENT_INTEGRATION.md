@@ -1,4 +1,4 @@
-# Agent 接入
+# 在助手中调用 GPT-SoVITS-RS 语音接口
 
 [英文接入指南](AGENT_INTEGRATION.en.md)
 

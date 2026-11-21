@@ -1,4 +1,4 @@
-# 第一次运行
+# 用 Docker 运行 GPT-SoVITS-RS，生成第一段语音
 
 [英文上手指南](../README.md#quick-start) · [已有服务，直接接入](AGENT_INTEGRATION.md) · [选择部署方式](DEPLOYMENT.md#选择部署方式)
 

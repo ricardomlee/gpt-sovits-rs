@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="GPT-SoVITS-RS：用 Rust 在本机合成语音。试听 Sun 音色，试用浏览器实验，或部署到自己的电脑。">
+  <meta name="description" content="用 GPT-SoVITS 的 Rust 版本在本机朗读中文和英文。试听 Sun 的声音，再用 Docker 部署自己的语音合成 API，无需安装 Python。">
   <meta name="color-scheme" content="light">
-  <title>GPT-SoVITS-RS | 本地语音合成</title>
+  <title>GPT-SoVITS-RS：本地语音合成与声音克隆</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -15,7 +15,7 @@
       <a class="wordmark" href="./"><span aria-hidden="true"></span>GPT-SoVITS-RS</a>
       <div class="nav-links">
         <a href="#samples">试听</a>
-        <a href="lab/">实验室</a>
+        <a href="#deploy">部署</a>
         <a href="https://github.com/ricardomlee/gpt-sovits-rs">GitHub</a>
       </div>
     </nav>
@@ -27,7 +27,7 @@
       <div class="wrap hero-content">
         <p class="eyebrow"><span aria-hidden="true"></span> RUST VOICE ENGINE</p>
         <h1 id="title">GPT-SoVITS-RS</h1>
-        <p class="lead">用 Rust 在本机合成语音。<br>把 GPT-SoVITS 音色接入你的助手。</p>
+        <p class="lead">给它一段录音和对应的文字，<br>就能用这个音色朗读中文或英文。</p>
         <div class="actions">
           <a class="button primary" href="#samples">试听 Sun</a>
           <a class="button outline" href="lab/">浏览器实验</a>
@@ -75,14 +75,15 @@
       </div>
     </section>
 
-    <section class="band deploy" aria-labelledby="deploy-title">
+    <section id="deploy" class="band deploy" aria-labelledby="deploy-title">
       <div class="wrap">
         <p class="eyebrow">03 / RUN LOCALLY</p>
-        <h2 id="deploy-title">部署到本机</h2>
+        <h2 id="deploy-title">在本机部署语音合成 API</h2>
+        <p class="section-copy">Docker 示例用 CPU 和公开音色朗读英文。有 NVIDIA 显卡，也可以<a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/DEPLOYMENT.md#cuda">用 CUDA 镜像部署</a>。</p>
         <div class="deploy-links">
-          <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/FIRST_RUN.zh-CN.md"><strong>Docker 快速上手</strong><span>Linux x86_64</span><span aria-hidden="true">↗</span></a>
-          <a href="https://github.com/ricardomlee/gpt-sovits-rs/releases/latest"><strong>下载独立二进制</strong><span>Linux / macOS</span><span aria-hidden="true">↗</span></a>
-          <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/AGENT_INTEGRATION.md"><strong>接入你的助手</strong><span>HTTP / Hermes</span><span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/FIRST_RUN.zh-CN.md"><strong>用 Docker 生成第一段语音</strong><span>Linux x86_64</span><span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/ricardomlee/gpt-sovits-rs/releases/latest"><strong>下载命令行程序</strong><span>Linux / macOS</span><span aria-hidden="true">↗</span></a>
+          <a href="https://github.com/ricardomlee/gpt-sovits-rs/blob/master/docs/AGENT_INTEGRATION.md"><strong>让助手调用语音 API</strong><span>HTTP 示例与 Hermes 配置</span><span aria-hidden="true">↗</span></a>
         </div>
       </div>
     </section>
