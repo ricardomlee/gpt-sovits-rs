@@ -2,18 +2,17 @@
 
 [英文上手指南](../README.md#quick-start) · [已有服务，直接接入](AGENT_INTEGRATION.md) · [选择部署方式](DEPLOYMENT.md#选择部署方式)
 
-用官方通用 v2 权重和公开的英文参考音频，先生成一段语音。脚本会准备模型和音色配置，
-转换与推理都在 Docker 中完成。网页上的 Sun 试听使用维护者的私人模型，配置见[样本说明](../examples/samples/README.md)。
-已有模型请直接看[模型转换](MODELS.md)和[部署](DEPLOYMENT.md)。
+下面在本机启动语音服务，用公开的英文音色读一段话。想先听效果，可以播放[这段示例音频](../examples/samples/local-assistant-en.wav)。
 
 ## 准备
 
 - Linux x86_64、Docker Engine、Compose v2、Git、Bash、curl，以及 sha256sum 或 shasum。
 - 至少 6 GiB 可用磁盘、4 GiB 可用内存。模型源文件下载约 1.1 GB，另需下载镜像。
-- 能访问 GitHub、GHCR、Hugging Face。模型从上游下载到专用 demo 目录，
-  详情见[下载清单](../examples/first-run/downloads.txt)和[准备脚本](../examples/first-run/prepare.sh)。
+- 能访问 GitHub、GHCR、Hugging Face。[准备脚本](../examples/first-run/prepare.sh)从上游下载[模型文件](../examples/first-run/downloads.txt)，后续转换和合成都在本机 Docker 中完成。
 
 ## 跑出第一段音频
+
+先准备模型，启动服务。`~/gpt-sovits-demo` 用新目录；服务默认只在本机 `9881` 端口监听。
 
 ```bash
 git clone https://github.com/ricardomlee/gpt-sovits-rs.git
@@ -22,28 +21,33 @@ bash examples/first-run/prepare.sh "$HOME/gpt-sovits-demo"
 cd "$HOME/gpt-sovits-demo"
 docker compose up -d --wait --wait-timeout 900
 export TTS_URL="http://127.0.0.1:${DEMO_PORT:-9881}"
+```
+
+在同一终端把 `request.json` 发给服务，生成 `first.wav`：
+
+```bash
 curl --fail-with-body --max-time 300 "$TTS_URL/tts" \
   -H 'Content-Type: application/json' --data-binary @request.json \
   --output first.wav
 ```
 
-用本机播放器打开 `first.wav`。文本为：
+用播放器打开 `first.wav`，听到的应当是：
 
 > Your local voice service is ready. All speech is generated on your own computer.
 
-准备脚本完成四个模型的校验与转换、tokenizer 复制、音色配置和 doctor 检查。
-转换与推理都在固定版本 `1.3.3` 容器中运行，不需要安装宿主机转换器。
-服务加载模型并预热 demo 音色后就绪，后续请求复用这些模型和参考特征。
-下载需要外网，推理在本机完成。
+想让它读自己写的英文，把 `request.json` 里的 `text` 换掉。例如：
 
-使用独立目录、Compose 项目 `gpt-sovits-demo` 和仅本机开放的 `9881` 端口，
-不会替换已有的 `9880` 服务。不要同时启动两份同名 demo 项目。
-在 demo 目录运行 `docker compose down` 即可停止；模型和生成结果保留。
+```json
+{"voice":"demo","text":"The backup is complete."}
+```
+
+再执行上面的 `curl`，把输出改为 `--output reply.wav`，就能保留两段音频。
 
 ## 换成自己的声音
 
-在 `~/gpt-sovits-demo/voices/` 下[添加音色](DEPLOYMENT.md#添加音色)：一段自己有权使用的录音和逐字稿即可复用通用 v2 权重。
-再用上面的 `TTS_URL` 按[Agent 接入](AGENT_INTEGRATION.md)试一句。公开的 `demo` 先试英文，自己的中文音色试中文。
+在 `~/gpt-sovits-demo/voices/` 下[添加音色](DEPLOYMENT.md#添加音色)，放入有权使用的录音和逐字稿。示例里的中文音色叫 `my-voice`；创建后就能用同一个服务地址[让它说一句中文](DEPLOYMENT.md#验证服务)。
+
+用完后，在 `~/gpt-sovits-demo` 运行 `docker compose down`。模型、音色和生成的音频都会保留。
 
 ## 出错时
 
@@ -59,7 +63,7 @@ curl --fail-with-body --max-time 300 "$TTS_URL/tts" \
 | curl 返回非 2xx | 先查日志；`--fail-with-body` 会报错，此时输出文件可能是 JSON 错误，不能当 WAV 播放 |
 | 声音不理想 / 吞字 | 先试短句，核对参考音频和转写；保留失败请求与音频以便排查 |
 
-重跑 prepare 会重新转换模型并恢复 `voices/demo/` 中的示例文件。自己的音色用单独目录；
+同一时间只运行一个 `gpt-sovits-demo` Compose 项目。重跑 prepare 会重新转换模型，并恢复 `request.json` 和 `voices/demo/` 中的示例文件。自己的音色用单独目录；
 长期使用见[部署](DEPLOYMENT.md)，微调权重和 v2Pro 的参考 SV 见[模型转换](MODELS.md)。
 
 [首次试用反馈](https://github.com/ricardomlee/gpt-sovits-rs/issues/new?template=first-run.yml)
