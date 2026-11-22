@@ -798,11 +798,43 @@ impl G2PConverter {
                     .0
             });
         let text = normalized.as_deref().unwrap_or(text);
-        let phonemes: Vec<String> = text
-            .split_whitespace()
-            .map(|word| self.english_word_to_phonemes(word))
-            .collect();
-        Ok(phonemes.join(" "))
+        let mut phonemes = Vec::new();
+        let mut word = String::new();
+        let mut has_word = false;
+        let mut after_pause = false;
+        for ch in text.chars().chain(std::iter::once(' ')) {
+            if ch.is_alphabetic() || matches!(ch, '\'' | '’' | '-') {
+                word.push(if ch == '’' { '\'' } else { ch });
+                continue;
+            }
+            if !word.is_empty() {
+                let phones = self.english_word_to_phonemes(word.trim_matches('\''));
+                if !phones.is_empty() {
+                    phonemes.push(phones);
+                    has_word = true;
+                    after_pause = false;
+                }
+                word.clear();
+            }
+            let pause = match ch {
+                ',' | ';' | ':' | '，' | '；' | '：' => ",",
+                '.' | '。' => ".",
+                '?' | '？' => "?",
+                '!' | '！' => "!",
+                '…' => "…",
+                '—' => "-",
+                _ => continue,
+            };
+            if !after_pause {
+                phonemes.push(pause.to_string());
+                after_pause = true;
+            }
+        }
+        Ok(if has_word {
+            phonemes.join(" ")
+        } else {
+            String::new()
+        })
     }
 
     /// Convert one English word to space-separated ARPABET phonemes.
@@ -1056,6 +1088,19 @@ mod tests {
                 "{input}"
             );
         }
+    }
+
+    #[test]
+    fn english_preserves_model_punctuation_between_words() {
+        let converter = G2PConverter::new().unwrap();
+        let phones = |s| converter.convert(s, Language::English).unwrap();
+        let (a, b) = (phones("hello"), phones("world"));
+        assert_eq!(phones("Hello,world!"), format!("{a} , {b} !"));
+        assert_eq!(phones("Hello: world?"), format!("{a} , {b} ?"));
+        assert_eq!(phones("Hello… world."), format!("{a} … {b} ."));
+        assert_eq!(phones("Hello!!!"), format!("{a} !"));
+        assert_eq!(phones("don’t"), phones("don't"));
+        assert!(phones("...?!").is_empty());
     }
 
     #[test]

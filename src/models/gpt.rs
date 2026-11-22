@@ -65,6 +65,8 @@ impl crate::models::Model for GPTModel {
 #[cfg(test)]
 #[path = "gpt/contracts.rs"]
 mod contract_tests;
+#[cfg(test)]
+pub(crate) use contract_tests::model as test_model;
 
 #[cfg(test)]
 mod tests {
