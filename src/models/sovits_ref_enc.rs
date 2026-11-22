@@ -17,7 +17,7 @@ use crate::Result;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::ops::softmax;
 
-/// Linear layer with Mish activation
+/// Linear projection on the last dimension.
 #[derive(Debug, Clone)]
 struct LinearNorm {
     weight: Tensor,
@@ -26,13 +26,12 @@ struct LinearNorm {
 
 impl LinearNorm {
     fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
-        // Python uses `.fc` suffix: spectral.0.fc.weight, spectral.3.fc.weight
         let weight = state_dict
-            .get(&format!("{}.fc.weight", prefix))?
+            .get(&format!("{prefix}.weight"))?
             .to_device(device)?
             .to_dtype(dtype)?;
         let bias = state_dict
-            .get(&format!("{}.fc.bias", prefix))?
+            .get(&format!("{prefix}.bias"))?
             .to_device(device)?
             .to_dtype(dtype)?;
         Ok(Self { weight, bias })
@@ -104,62 +103,42 @@ impl Conv1dGLU {
         let a = conv_out.narrow(1, 0, half)?;
         let b = conv_out.narrow(1, half, half)?;
         let b_sig = candle_nn::ops::sigmoid(&b)?;
-        Ok(a.broadcast_mul(&b_sig)?)
+        Ok(x.add(&a.mul(&b_sig)?)?)
     }
 }
 
 /// Simple Multi-Head Self-Attention
 #[derive(Debug, Clone)]
 struct MultiHeadSelfAttention {
-    w_q: Tensor,
-    w_k: Tensor,
-    w_v: Tensor,
-    fc: Tensor,
-    fc_bias: Tensor,
+    w_q: LinearNorm,
+    w_k: LinearNorm,
+    w_v: LinearNorm,
+    fc: LinearNorm,
     n_heads: usize,
     head_dim: usize,
 }
 
 impl MultiHeadSelfAttention {
     fn load(state_dict: &StateDict, prefix: &str, device: &Device, dtype: DType) -> Result<Self> {
-        let w_q = state_dict
-            .get(&format!("{}.w_qs.weight", prefix))?
-            .to_device(device)?
-            .to_dtype(dtype)?;
-        let w_k = state_dict
-            .get(&format!("{}.w_ks.weight", prefix))?
-            .to_device(device)?
-            .to_dtype(dtype)?;
-        let w_v = state_dict
-            .get(&format!("{}.w_vs.weight", prefix))?
-            .to_device(device)?
-            .to_dtype(dtype)?;
-        let fc = state_dict
-            .get(&format!("{}.fc.weight", prefix))?
-            .to_device(device)?
-            .to_dtype(dtype)?;
-        let fc_bias = state_dict
-            .get(&format!("{}.fc.bias", prefix))?
-            .to_device(device)?
-            .to_dtype(dtype)?;
-
-        let hidden_dim = w_q.dims()[0];
+        let projection =
+            |name| LinearNorm::load(state_dict, &format!("{prefix}.{name}"), device, dtype);
+        let w_q = projection("w_qs")?;
+        let hidden_dim = w_q.weight.dim(0)?;
         let n_heads = 2;
         let head_dim = hidden_dim / n_heads;
 
         Ok(Self {
             w_q,
-            w_k,
-            w_v,
-            fc,
-            fc_bias,
+            w_k: projection("w_ks")?,
+            w_v: projection("w_vs")?,
+            fc: projection("fc")?,
             n_heads,
             head_dim,
         })
     }
 
     fn forward(&self, x: &Tensor, mask: Option<&Tensor>) -> Result<Tensor> {
-        let x = x.to_dtype(self.w_q.dtype())?;
+        let x = x.to_dtype(self.w_q.weight.dtype())?;
         // x: [batch, seq, hidden]
         let dims = x.dims();
         let batch = dims[0];
@@ -167,9 +146,9 @@ impl MultiHeadSelfAttention {
         let hidden = dims[2];
 
         // Project Q, K, V using 2D reshape (workaround for CUDA matmul issue)
-        let q = self.linear_2d(&x, &self.w_q)?; // [batch, seq, hidden]
-        let k = self.linear_2d(&x, &self.w_k)?;
-        let v = self.linear_2d(&x, &self.w_v)?;
+        let q = self.w_q.forward(&x)?;
+        let k = self.w_k.forward(&x)?;
+        let v = self.w_v.forward(&x)?;
 
         // Reshape: [batch, seq, heads, head_dim] -> [batch, heads, seq, head_dim]
         let q = q
@@ -185,12 +164,10 @@ impl MultiHeadSelfAttention {
             .transpose(1, 2)?
             .contiguous()?;
 
-        // Scaled dot-product attention
-        let scale = (self.head_dim as f64).sqrt().recip();
+        // The trained style encoder scales by the full width, not the per-head width.
+        let scale = (hidden as f64).sqrt().recip();
         let k_t = k.transpose(2, 3)?;
-        let scale_t = Tensor::full(scale as f32, &[batch, self.n_heads, seq, seq], q.device())?
-            .to_dtype(q.dtype())?;
-        let scores = q.matmul(&k_t)?.broadcast_mul(&scale_t)?;
+        let scores = q.matmul(&k_t)?.affine(scale, 0.)?;
 
         // Apply mask if provided
         let scores = if let Some(m) = mask {
@@ -213,23 +190,7 @@ impl MultiHeadSelfAttention {
             .contiguous()?
             .reshape((batch, seq, hidden))?;
 
-        // Output projection using 2D reshape
-        let out = self.linear_2d(&out, &self.fc)?;
-        let bias_2d = self.fc_bias.reshape((1, 1, self.fc_bias.dims()[0]))?;
-        out.broadcast_add(&bias_2d)
-            .map_err(|e| crate::Error::InferenceError(e.to_string()))
-    }
-
-    fn linear_2d(&self, x: &Tensor, weight: &Tensor) -> Result<Tensor> {
-        // x: [batch, seq, in], weight: [out, in]
-        // Reshape to 2D, matmul, reshape back
-        let d = x.dims();
-        let x_2d = x.reshape((d[0] * d[1], d[2]))?;
-        let w_t = weight.transpose(0, 1)?;
-        let result = x_2d.matmul(&w_t)?;
-        result
-            .reshape((d[0], d[1], weight.dims()[0]))
-            .map_err(|e| crate::Error::InferenceError(e.to_string()))
+        Ok(self.fc.forward(&out)?.add(&x)?)
     }
 }
 
@@ -247,12 +208,12 @@ pub struct RefEnc {
 impl RefEnc {
     pub fn load(state_dict: &StateDict, device: &Device, dtype: DType) -> Result<Self> {
         Ok(Self {
-            spectral_0: LinearNorm::load(state_dict, "ref_enc.spectral.0", device, dtype)?,
-            spectral_3: LinearNorm::load(state_dict, "ref_enc.spectral.3", device, dtype)?,
+            spectral_0: LinearNorm::load(state_dict, "ref_enc.spectral.0.fc", device, dtype)?,
+            spectral_3: LinearNorm::load(state_dict, "ref_enc.spectral.3.fc", device, dtype)?,
             temporal_0: Conv1dGLU::load(state_dict, "ref_enc.temporal.0", device, dtype)?,
             temporal_1: Conv1dGLU::load(state_dict, "ref_enc.temporal.1", device, dtype)?,
             self_attn: MultiHeadSelfAttention::load(state_dict, "ref_enc.slf_attn", device, dtype)?,
-            fc: LinearNorm::load(state_dict, "ref_enc.fc", device, dtype)?,
+            fc: LinearNorm::load(state_dict, "ref_enc.fc.fc", device, dtype)?,
         })
     }
 
