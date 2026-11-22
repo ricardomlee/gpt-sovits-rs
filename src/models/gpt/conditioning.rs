@@ -40,6 +40,14 @@ impl GPTModel {
         Tensor::cat(&[&text, &audio], 1).map_err(Into::into)
     }
 
+    /// English has zero BERT features before the learned projection, leaving its bias on every phone.
+    pub(crate) fn project_zero_bert(&self, phones: usize) -> Result<Option<Tensor>> {
+        let Some((_, bias)) = &self.bert_proj else {
+            return Ok(None);
+        };
+        Ok(Some(bias.broadcast_as((1, phones, bias.dim(0)?))?))
+    }
+
     /// Project and align raw BERT features to phone level.
     ///
     /// Takes raw BERT output [1, seq+2, 1024] (includes CLS/SEP), applies bert_proj,

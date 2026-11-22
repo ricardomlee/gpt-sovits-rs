@@ -3,7 +3,7 @@ use super::*;
 use std::collections::HashMap;
 
 // Zero attention/FFN and EOS-dominant logits isolate decoder policy from learned behavior.
-fn model() -> GPTModel {
+pub(crate) fn model() -> GPTModel {
     model_on(&Device::Cpu, DType::F32, 6)
 }
 

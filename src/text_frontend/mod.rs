@@ -23,6 +23,13 @@ struct RawPinyinOverride {
     pinyin: PinyinOverride,
 }
 
+pub(crate) struct ModelText {
+    pub(crate) phones: Vec<usize>,
+    pub(crate) word2ph: Vec<usize>,
+    pub(crate) normalized: String,
+    pub(crate) language: Language,
+}
+
 /// Text frontend processor
 #[derive(Debug)]
 pub struct TextFrontend {
@@ -63,7 +70,7 @@ impl TextFrontend {
     /// Process text and return (phoneme_ids, word2ph) for proper BERT alignment.
     ///
     /// `word2ph[i]` = number of phonemes for BERT content token i.
-    /// Only valid for Chinese text; for other languages returns empty word2ph (falls back to nearest-neighbor).
+    /// Chinese provides these counts; English returns an empty map and uses zero BERT input in synthesis.
     pub fn process_with_word2ph(
         &self,
         text: &str,
@@ -75,17 +82,31 @@ impl TextFrontend {
 
     /// Process text for inference and return the exact normalized text used by G2P.
     ///
-    /// BERT must consume this same text so its content-token positions match word2ph.
+    /// When the Chinese encoder is used, it must consume this same text to match word2ph.
     pub fn process_with_word2ph_and_text(
         &self,
         text: &str,
         language: Language,
     ) -> Result<(Vec<usize>, Vec<usize>, String)> {
-        let (normalized, detected_lang, pinyin_overrides) =
+        let t = self.model_text(text, language, false)?;
+        Ok((t.phones, t.word2ph, t.normalized))
+    }
+
+    pub(crate) fn prepare_sentence(&self, text: &str, language: Language) -> Result<ModelText> {
+        self.model_text(text, language, true)
+    }
+
+    fn model_text(
+        &self,
+        text: &str,
+        language: Language,
+        finish_sentence: bool,
+    ) -> Result<ModelText> {
+        let (mut normalized, detected_lang, pinyin_overrides) =
             self.normalize_for_model(text, language)?;
-        match detected_lang {
+        let (mut phonemes, word2ph) = match detected_lang {
             Language::Chinese => {
-                let (phonemes, word2ph) = if pinyin_overrides.is_empty() {
+                if pinyin_overrides.is_empty() {
                     self.g2p_converter
                         .convert_chinese_with_word2ph(&normalized)?
                 } else {
@@ -94,17 +115,27 @@ impl TextFrontend {
                             &normalized,
                             &pinyin_overrides,
                         )?
-                };
-                let ids = self.symbol_table.encode(&phonemes)?;
-                Ok((ids, word2ph, normalized))
+                }
             }
-            _ => {
-                // For non-Chinese, fall back to standard processing with empty word2ph
-                let phonemes = self.g2p_converter.convert(&normalized, detected_lang)?;
-                let ids = self.symbol_table.encode(&phonemes)?;
-                Ok((ids, Vec::new(), normalized))
-            }
+            _ => (
+                self.g2p_converter.convert(&normalized, detected_lang)?,
+                Vec::new(),
+            ),
+        };
+        if finish_sentence
+            && detected_lang == Language::English
+            && !phonemes.is_empty()
+            && !phonemes.ends_with(['.', ',', '!', '?', '…', '-'])
+        {
+            phonemes.push_str(" .");
+            normalized.push('.');
         }
+        Ok(ModelText {
+            phones: self.symbol_table.encode(&phonemes)?,
+            word2ph,
+            normalized,
+            language: detected_lang,
+        })
     }
 
     /// Get phoneme string from text
@@ -240,6 +271,31 @@ impl Default for TextFrontend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn english_inference_keeps_pauses_and_terminates_unpunctuated_transcripts() -> Result<()> {
+        let f = TextFrontend::new()?;
+        let raw = f.process("Wait", Language::English)?;
+        for language in [Language::English, Language::Auto] {
+            let t = f.prepare_sentence("Wait", language)?;
+            assert_eq!(t.language, Language::English);
+            assert_eq!(
+                t.phones,
+                [raw.as_slice(), &[f.symbol_table.get_id(".").unwrap()]].concat()
+            );
+            assert_eq!(f.prepare_sentence("Wait.", language)?.phones, t.phones);
+            assert_eq!(
+                f.prepare_sentence("Wait!", language)?.phones,
+                f.process("Wait!", language)?
+            );
+        }
+        assert!(f.prepare_sentence("", Language::English)?.phones.is_empty());
+        assert_eq!(
+            f.prepare_sentence("你好", Language::Auto)?.phones,
+            f.process("你好", Language::Chinese)?
+        );
+        Ok(())
+    }
 
     #[test]
     fn english_numbers_reach_phonemes_as_english_words() {

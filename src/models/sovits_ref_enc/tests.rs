@@ -13,6 +13,9 @@ const FC: [f32; 16] = [
     0.75, 0.1, 0.0, 0.0, 0.0, -0.5, 0.2, 0.0, 0.0, 0.0, 1.25, -0.1, 0.3, 0.0, 0.0, 0.6,
 ];
 const FC_BIAS: [f32; 4] = [0.1, -0.2, 0.05, 0.3];
+const Q_BIAS: [f32; 4] = [0.1, -0.2, 0.3, -0.4];
+const K_BIAS: [f32; 4] = [-0.3, 0.1, 0.2, -0.1];
+const V_BIAS: [f32; 4] = [0.2, 0.3, -0.1, 0.05];
 const EMBEDDING: [f32; 8] = [0.8, -0.2, 0.3, 0.1, -0.4, 0.7, -0.1, 0.6];
 const EMBEDDING_BIAS: [f32; 2] = [0.15, -0.25];
 
@@ -48,12 +51,17 @@ fn mish_scalar(x: f64) -> f64 {
 }
 
 fn attention() -> Result<MultiHeadSelfAttention> {
+    let linear = |w: &[f32], b: &[f32]| -> Result<LinearNorm> {
+        Ok(LinearNorm {
+            weight: Tensor::from_slice(w, (4, 4), &Device::Cpu)?,
+            bias: Tensor::from_slice(b, 4, &Device::Cpu)?,
+        })
+    };
     Ok(MultiHeadSelfAttention {
-        w_q: Tensor::from_slice(&Q, (4, 4), &Device::Cpu)?,
-        w_k: Tensor::from_slice(&K, (4, 4), &Device::Cpu)?,
-        w_v: Tensor::from_slice(&V, (4, 4), &Device::Cpu)?,
-        fc: Tensor::from_slice(&FC, (4, 4), &Device::Cpu)?,
-        fc_bias: Tensor::new(&FC_BIAS, &Device::Cpu)?,
+        w_q: linear(&Q, &Q_BIAS)?,
+        w_k: linear(&K, &K_BIAS)?,
+        w_v: linear(&V, &V_BIAS)?,
+        fc: linear(&FC, &FC_BIAS)?,
         n_heads: 2,
         head_dim: 2,
     })
@@ -61,11 +69,21 @@ fn attention() -> Result<MultiHeadSelfAttention> {
 
 // Independent scalar softmax and head assembly; no Candle/model helpers.
 fn attention_scalar(input: &[[f64; 4]], blocked: &[bool]) -> Vec<Vec<f64>> {
-    let q: Vec<_> = input.iter().map(|x| linear_scalar(x, &Q, &[])).collect();
-    let k: Vec<_> = input.iter().map(|x| linear_scalar(x, &K, &[])).collect();
-    let v: Vec<_> = input.iter().map(|x| linear_scalar(x, &V, &[])).collect();
+    let q: Vec<_> = input
+        .iter()
+        .map(|x| linear_scalar(x, &Q, &Q_BIAS))
+        .collect();
+    let k: Vec<_> = input
+        .iter()
+        .map(|x| linear_scalar(x, &K, &K_BIAS))
+        .collect();
+    let v: Vec<_> = input
+        .iter()
+        .map(|x| linear_scalar(x, &V, &V_BIAS))
+        .collect();
     q.iter()
-        .map(|query| {
+        .zip(input)
+        .map(|(query, residual)| {
             let mut context = [0.0; 4];
             for head in 0..2 {
                 let offset = head * 2;
@@ -77,7 +95,7 @@ fn attention_scalar(input: &[[f64; 4]], blocked: &[bool]) -> Vec<Vec<f64>> {
                             f64::NEG_INFINITY
                         } else {
                             (query[offset] * key[offset] + query[offset + 1] * key[offset + 1])
-                                / 2f64.sqrt()
+                                / 4f64.sqrt()
                         }
                     })
                     .collect();
@@ -93,6 +111,10 @@ fn attention_scalar(input: &[[f64; 4]], blocked: &[bool]) -> Vec<Vec<f64>> {
                 }
             }
             linear_scalar(&context, &FC, &FC_BIAS)
+                .iter()
+                .zip(residual)
+                .map(|(a, b)| a + b)
+                .collect()
         })
         .collect()
 }
@@ -154,7 +176,7 @@ fn convolution_glu_matches_scalar_padding_bias_and_channel_gate() -> Result<()> 
                     }
                 }
             }
-            expected.push(conv[0] / (1.0 + (-conv[1]).exp()));
+            expected.push(f64::from(samples[time]) + conv[0] / (1.0 + (-conv[1]).exp()));
         }
     }
     let output = model.forward(&Tensor::new(&input, &Device::Cpu)?.reshape((2, 1, 4))?)?;
@@ -224,7 +246,7 @@ fn temporal_pool_uses_each_samples_valid_count_and_ignores_padding() -> Result<(
 }
 
 #[test]
-fn reference_encoder_matches_scalar_conditioning_with_unequal_reference_lengths() -> Result<()> {
+fn reference_encoder_matches_upstream_with_unequal_reference_lengths() -> Result<()> {
     let input = [
         [
             [0.2f32, -0.5, 0.7, 1.1],
@@ -238,25 +260,8 @@ fn reference_encoder_matches_scalar_conditioning_with_unequal_reference_lengths(
         ],
     ];
     let valid = [[true, true, false], [true, false, false]];
-    let mut expected = Vec::new();
-    for batch in 0..2 {
-        let features: Vec<_> = input[batch]
-            .iter()
-            .map(|row| row.map(|x| mish_scalar(mish_scalar(f64::from(x))) * 0.25))
-            .collect();
-        let attended = attention_scalar(&features, &valid[batch].map(|valid| !valid));
-        let mut sum = [0.0; 2];
-        let count = valid[batch].iter().filter(|&&valid| valid).count() as f64;
-        for (row, &valid) in attended.iter().zip(&valid[batch]) {
-            if valid {
-                let projected = linear_scalar(row, &EMBEDDING, &EMBEDDING_BIAS);
-                for channel in 0..2 {
-                    sum[channel] += projected[channel] / count;
-                }
-            }
-        }
-        expected.extend(sum);
-    }
+    // MelStyleEncoder.eval() at upstream bf81cdb, with reference_encoder()'s weights.
+    let expected = [2.39390087, 0.47957820, 2.51616693, -1.11406469];
     let model = reference_encoder()?;
     let input = Tensor::new(&input, &Device::Cpu)?
         .transpose(1, 2)?

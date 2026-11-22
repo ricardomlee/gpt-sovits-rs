@@ -3,7 +3,7 @@
 use super::ref_audio;
 use super::Pipeline;
 use crate::models::{BertModel, GPTModel, HubertModel, SemanticTokenizer};
-use crate::text_frontend::TextFrontend;
+use crate::text_frontend::{ModelText, TextFrontend};
 use crate::utils::load_safetensors;
 use crate::{Error, InferenceOptions, Language, Result};
 use candle_core::{Device, Tensor};
@@ -194,30 +194,18 @@ impl Pipeline {
         language: Language,
     ) -> Result<PreparedTarget> {
         let target_start = Instant::now();
-        let (target_phoneme_ids, target_word2ph, normalized_text) =
-            text_frontend.process_with_word2ph_and_text(text, language)?;
+        let target = text_frontend.prepare_sentence(text, language)?;
         let target_ms = target_start.elapsed().as_millis();
 
         let bert_start = Instant::now();
-        let target_bert_aligned = if let Some(bert) = bert_model.as_mut() {
-            Some(extract_bert_features(
-                bert,
-                gpt,
-                &normalized_text,
-                &target_word2ph,
-                target_phoneme_ids.len(),
-                device,
-                "Target",
-            )?)
-        } else {
-            None
-        };
+        let target_bert_aligned =
+            aligned_bert(bert_model.as_mut(), gpt, &target, device, "Target")?;
         let bert_ms = bert_start.elapsed().as_millis();
 
         let phoneme_ids: Vec<usize> = ref_feats
             .ref_phoneme_ids
             .iter()
-            .chain(target_phoneme_ids.iter())
+            .chain(&target.phones)
             .cloned()
             .collect();
 
@@ -228,12 +216,13 @@ impl Pipeline {
             (Some(ra), Some(ta)) => Some(Tensor::cat(&[ra, ta], 1).map_err(|e| {
                 Error::InferenceError(format!("BERT reference/target concatenation failed: {e}"))
             })?),
-            (None, Some(ta)) => Some(ta.clone()),
-            _ => None,
+            (None, Some(ta)) => Some(ta.pad_with_zeros(1, ref_feats.ref_phoneme_ids.len(), 0)?),
+            (Some(ra), None) => Some(ra.pad_with_zeros(1, 0, target.phones.len())?),
+            (None, None) => None,
         };
 
         Ok(PreparedTarget {
-            target_phoneme_ids,
+            target_phoneme_ids: target.phones,
             phoneme_ids,
             combined_bert,
             target_ms,
@@ -257,10 +246,17 @@ impl Pipeline {
         sovits_n_mels: usize,
         sv_embedding_path: Option<&Path>,
     ) -> Result<CachedSpeaker> {
-        let (ref_phoneme_ids, ref_word2ph, normalized_ref_text) = if !ref_text.is_empty() {
-            text_frontend.process_with_word2ph_and_text(ref_text, language)?
+        let (ref_phoneme_ids, ref_bert_aligned) = if !ref_text.is_empty() {
+            let reference = text_frontend.prepare_sentence(ref_text, language)?;
+            let aligned = match gpt_model {
+                Some(gpt) => {
+                    aligned_bert(bert_model.as_mut(), gpt, &reference, device, "Reference")?
+                }
+                None => None,
+            };
+            (reference.phones, aligned)
         } else {
-            (vec![], vec![], String::new())
+            (vec![], None)
         };
 
         let prompt_tokens = if let Some(hubert) = hubert_model {
@@ -283,22 +279,6 @@ impl Pipeline {
             vec![]
         };
 
-        let ref_bert_aligned = if let (Some(bert), Some(gpt), false) =
-            (bert_model.as_mut(), gpt_model, ref_phoneme_ids.is_empty())
-        {
-            Some(extract_bert_features(
-                bert,
-                gpt,
-                &normalized_ref_text,
-                &ref_word2ph,
-                ref_phoneme_ids.len(),
-                device,
-                "Reference",
-            )?)
-        } else {
-            None
-        };
-
         let ref_mel = ref_audio::extract_ref_mel(ref_audio, device, sovits_sr, sovits_n_mels)?;
         let sv_embedding = sv_embedding_path
             .map(|path| load_sv_embedding(path, device))
@@ -314,22 +294,28 @@ impl Pipeline {
     }
 }
 
-fn extract_bert_features(
-    bert: &mut BertModel,
+fn aligned_bert(
+    bert: Option<&mut BertModel>,
     gpt: &GPTModel,
-    text: &str,
-    word2ph: &[usize],
-    n_phones: usize,
+    text: &ModelText,
     device: &Device,
     stage: &str,
-) -> Result<Tensor> {
+) -> Result<Option<Tensor>> {
+    if text.phones.is_empty() {
+        return Ok(None);
+    }
+    if text.language == Language::English {
+        return gpt.project_zero_bert(text.phones.len());
+    }
+    let Some(bert) = bert else { return Ok(None) };
     let features = bert
-        .extract(text)
+        .extract(&text.normalized)
         .map_err(|e| Error::InferenceError(format!("{stage} BERT extraction failed: {e}")))?;
     let features = features
         .to_device(device)
         .map_err(|e| Error::InferenceError(format!("{stage} BERT device transfer failed: {e}")))?;
-    gpt.project_and_align_bert(&features, word2ph, n_phones)
+    gpt.project_and_align_bert(&features, &text.word2ph, text.phones.len())
+        .map(Some)
         .map_err(|e| Error::InferenceError(format!("{stage} BERT alignment failed: {e}")))
 }
 
@@ -362,6 +348,42 @@ fn load_sv_embedding(path: &Path, device: &Device) -> Result<Tensor> {
 mod tests {
     use super::*;
     use crate::Config;
+
+    #[test]
+    fn english_uses_projection_bias_without_an_encoder_on_either_side() -> Result<()> {
+        let gpt = crate::models::gpt::test_model();
+        let mut frontend = TextFrontend::new()?;
+        for (reference, target) in [("hello", "你好"), ("你好", "hello"), ("hello", "world")] {
+            let r = frontend.prepare_sentence(reference, Language::Auto)?;
+            let ref_bert_aligned = aligned_bert(None, &gpt, &r, &Device::Cpu, "Reference")?;
+            let ref_len = r.phones.len();
+            let cached = CachedSpeaker {
+                ref_phoneme_ids: r.phones,
+                ref_bert_aligned,
+                prompt_tokens: vec![],
+                ref_mel: None,
+                sv_embedding: None,
+            };
+            let prepared = Pipeline::prepare_target_features(
+                &mut frontend,
+                &mut None,
+                &Device::Cpu,
+                &gpt,
+                &cached,
+                target,
+                Language::Auto,
+            )?;
+            let features = prepared.combined_bert.unwrap();
+            assert_eq!(features.dims(), &[1, prepared.phoneme_ids.len(), 16]);
+            for (i, row) in features.squeeze(0)?.to_vec2::<f32>()?.iter().enumerate() {
+                let english = if i < ref_len { reference } else { target }.is_ascii();
+                for (j, &value) in row.iter().enumerate() {
+                    assert_eq!(value, if english { j as f32 / 16.0 } else { 0.0 });
+                }
+            }
+        }
+        Ok(())
+    }
 
     fn cached_pipeline() -> Pipeline {
         let mut pipeline = Pipeline::new(Config::builder().with_device("cpu").build()).unwrap();
