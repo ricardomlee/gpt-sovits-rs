@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Generate Mandarin speech in your desktop browser with GPT-SoVITS and WebAssembly. Your model files and text stay on your device.">
+  <title>Mandarin Speech in Your Browser | GPT-SoVITS-RS</title>
+  <link rel="canonical" href="https://tts.ricli.tech/lab/en.html">
+  <link rel="alternate" hreflang="zh-CN" href="https://tts.ricli.tech/lab/">
+  <link rel="alternate" hreflang="en" href="https://tts.ricli.tech/lab/en.html">
+  <link rel="stylesheet" href="lab.css">
+</head>
+<body>
+<header class="topbar">
+  <nav class="wrap" aria-label="Main navigation">
+    <a class="wordmark" href="../en/"><span aria-hidden="true"></span>GPT-SoVITS-RS</a>
+    <a href="./" lang="zh-CN" hreflang="zh-CN">简体中文</a>
+  </nav>
+</header>
+<main class="wrap">
+  <div class="heading">
+    <p class="mono">WEBASSEMBLY / EXPERIMENT</p>
+    <h1>Browser speech lab</h1>
+    <p>Generate a Mandarin WAV with your own model. The Sun voice used about 2 GiB of Wasm memory in a desktop browser.</p>
+  </div>
+  <noscript><p>Enable JavaScript to generate speech.</p></noscript>
+  <form class="workspace">
+    <fieldset>
+      <legend>Local model files</legend>
+      <label>SoVITS weights <input name="sovits" type="file" accept=".safetensors" required></label>
+      <label>GPT weights <input name="gpt" type="file" accept=".safetensors" required></label>
+      <label>BERT weights <input name="bert" type="file" accept=".safetensors" required></label>
+      <label>BERT tokenizer <input name="tokenizer" type="file" accept=".json" required></label>
+      <label>Reference features <input name="reference" type="file" accept=".safetensors" required></label>
+      <a href="https://github.com/ricardomlee/gpt-sovits-rs/tree/master/experiments/wasm-sovits#prepare-a-voice">Prepare a voice <span aria-hidden="true">↗</span></a>
+    </fieldset>
+    <div class="compose">
+      <label>Mandarin text <textarea name="text" lang="zh-CN" rows="4" maxlength="80" placeholder="你好，很高兴见到你。" required></textarea></label>
+      <div class="actions">
+        <button type="submit" disabled>Generate WAV</button>
+        <button id="unload" type="button" disabled>Unload model</button>
+      </div>
+      <output id="result" role="status" class="mono"
+        data-unloaded="Model unloaded" data-failed="Speech worker failed to start" data-loading="Loading" data-rendering="Synthesizing…"
+        data-load="Load" data-render="Synthesis" data-memory="Wasm memory"></output>
+      <audio controls aria-label="Play generated speech" hidden></audio>
+      <a id="download" download="sovits-wasm.wav" hidden>Download WAV <span aria-hidden="true">↓</span></a>
+    </div>
+  </form>
+</main>
+<script type="module" src="lab.js"></script>
+</body>
+</html>

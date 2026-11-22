@@ -10,18 +10,18 @@ self.onmessage = async ({ data: { files, text } }) => {
     if (!voice) {
       ({ memory } = await init());
       const start = performance.now();
-      self.postMessage({ stage: '正在加载 SoVITS…' });
+      self.postMessage({ stage: 'SoVITS' });
       const sovits = AcousticModel.from_checkpoint(await loadCheckpoint(files.sovits));
-      self.postMessage({ stage: '正在加载 GPT…' });
+      self.postMessage({ stage: 'GPT' });
       const gpt = await loadCheckpoint(files.gpt);
-      self.postMessage({ stage: '正在加载 BERT…' });
+      self.postMessage({ stage: 'BERT' });
       const bert = await loadCheckpoint(files.bert);
       const tokenizer = new Uint8Array(await files.tokenizer.arrayBuffer());
       const reference = new Uint8Array(await files.reference.arrayBuffer());
       voice = new TextVoice(sovits, gpt, bert, tokenizer, reference);
       loadMs = performance.now() - start;
     }
-    self.postMessage({ stage: '正在合成…' });
+    self.postMessage({ stage: 'render' });
     const renderStart = performance.now();
     const wav = voice.render(text);
     const renderMs = performance.now() - renderStart;

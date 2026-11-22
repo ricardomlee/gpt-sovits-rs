@@ -1,19 +1,19 @@
 # Public Samples
 
-Four unedited recordings generated on 2026-11-22 with the official [v1.3.3 Linux x86_64 release](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.3). All use CPU F32, KV decoding (`mode=auto`), seed 42 and mono 32 kHz PCM16. [Listen to Sun in your browser](https://tts.ricli.tech/#samples).
+The English recording uses the Rust CLI from [the voice and English conditioning fix](https://github.com/ricardomlee/gpt-sovits-rs/pull/57) (`b6d818e`). The three Mandarin recordings use the [v1.3.3 Linux x86_64 release](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.3). All four are unedited CPU F32 renders from 2026-11-22: KV decoding (`mode=auto`), seed 42, mono 32 kHz PCM16. [Listen in your browser](https://tts.ricli.tech/en/#samples).
 
 | Voice | Exact target text | WAV |
 | --- | --- | --- |
 | Sun · breakfast | 面包刚出炉，坐下来一起吃早餐吧。 | [2.56 s](sun-greeting.wav) |
 | Sun · after the rain | 雨停了，河边的路灯亮了。我们慢慢走回家吧。 | [3.48 s](sun-zh.wav) |
 | Public demo · same Chinese passage | 雨停了，河边的路灯亮了。我们慢慢走回家吧。 | [4.12 s](local-assistant-zh.wav) |
-| Public demo · English | The rain has stopped. We can walk home by the river. | [4.12 s](local-assistant-en.wav) |
+| Public demo · English | The rain has stopped. We can walk home by the river. | [4.04 s](local-assistant-en.wav) |
 
 The two Chinese readings of the rain passage use different voices and references: Sun uses a Chinese recording; the public v2 demo uses an English one. Shorter sentence chunks were used for the cross-language demo so both sentences are heard. Local Qwen3-ASR-0.6B transcriptions match all four target texts ignoring punctuation and spacing. That check measures the words, not speaker similarity.
 
 ## Reproducible First-Run Baseline
 
-The [first-run demo](../../docs/FIRST_RUN.zh-CN.md) downloads standard v2 weights and the public reference. Its [HTTP request](../first-run/request.json) produces the English line above. The released CPU container and the Linux CLI returned byte-identical English WAVs on the generation machine.
+The [first-run demo](../../README.md#docker-service) downloads standard v2 weights and the public reference. Its [HTTP request](../first-run/request.json) uses the exact English text above. To reproduce the updated recording, run the CLI at the linked revision; the v1.3.3 container produces the earlier reading.
 
 To run the CLI commands, put the unpacked `gpt-sovits` on your `PATH` (keep its libraries in place). Run from the demo directory containing `models/` and `voices/demo/`:
 
@@ -56,10 +56,10 @@ The Sun profile uses Chinese, `top_k=15`, `top_p=0.95`, temperature 0.8, repetit
 | Artifact | SHA-256 |
 | --- | --- |
 | v1.3.3 Linux x86_64 archive | `2c513c17a78a797dbdae3ebd34e650a6c1304144d8cb8d741040ecafb1550cca` |
-| Inference executable | `6e1eb7610d613202c77573c1fc303fd8341fd1e799de4872d16d1e88a9b4bf37` |
+| v1.3.3 inference executable (Mandarin samples) | `6e1eb7610d613202c77573c1fc303fd8341fd1e799de4872d16d1e88a9b4bf37` |
 | sun-greeting.wav | `dc1579a7ad62e9bacc737368f72705e26f16431731cd304567b569ca34c51e60` |
 | sun-zh.wav | `3d71f7871d97d41215df5e2be5c651467e3f778cc67844326522a4385ccb20e4` |
 | local-assistant-zh.wav | `e499bf34ea73b3626cb62f8fddd270886574f0350a853efa60d4951bdc89719a` |
-| local-assistant-en.wav | `493e3ad383b1288e956a0fc1207234e1fde5c91d3b8181af26c4b31ec160975a` |
+| local-assistant-en.wav | `cc120fe6b04fe98c47ba2b47cf6069f59d69d51ac4a032198fbccb0d0c33ab05` |
 
 These hashes identify the published files. A different build or machine can produce different samples even with a fixed seed. The [release workflow](../../.github/workflows/release.yml) also saves an HTTP WAV from the CPU image in its `linux-acceptance` artifact.

@@ -1,8 +1,9 @@
 # GitHub Pages
 
-The homepage plays two reviewed Sun samples and links to the browser lab at
-`lab/`. GitHub Pages serves the lab's WebAssembly, JavaScript and CSS. The lab
-reads local model files and synthesizes in a browser Worker.
+The [Chinese homepage](https://tts.ricli.tech/) and [English homepage](https://tts.ricli.tech/en/)
+play the same three recordings: two Mandarin readings by Sun and the public English demo.
+The Mandarin synthesis lab has a [Chinese interface](https://tts.ricli.tech/lab/) and an
+[English interface](https://tts.ricli.tech/lab/en.html). Both run the same local WebAssembly worker.
 
 `build.sh` packages only named public images, samples, page files and compiled
 Wasm assets. The lab uses the same source as the

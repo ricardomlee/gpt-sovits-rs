@@ -18,7 +18,7 @@ body { margin: 0; }
 .wordmark { display: inline-flex; align-items: center; gap: .6rem; font-weight: 750; text-decoration: none; }
 .wordmark span { width: .55rem; height: .55rem; border-radius: 50%; background: var(--accent); }
 .mono { font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace; font-size: .8rem; line-height: 1.6; }
-.topbar .mono { color: #b3ddc9; }
+.topbar a[hreflang] { color: #b3ddc9; font-size: .875rem; }
 a { color: inherit; text-underline-offset: .22em; }
 :focus-visible { outline: 3px solid #ba4127; outline-offset: 3px; }
 
