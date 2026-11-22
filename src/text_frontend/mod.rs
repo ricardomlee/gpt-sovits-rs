@@ -197,28 +197,28 @@ fn parse_pinyin_overrides(text: &str) -> Result<(String, Vec<RawPinyinOverride>)
     while i < chars.len() {
         let ch = chars[i];
         clean.push(ch);
-        if i + 1 < chars.len() && chars[i + 1] == '[' {
-            if let Some(close_offset) = chars[i + 2..]
+        if i + 1 < chars.len()
+            && chars[i + 1] == '['
+            && let Some(close_offset) = chars[i + 2..]
                 .iter()
                 .position(|candidate| *candidate == ']')
-            {
-                let close = i + 2 + close_offset;
-                let marker: String = chars[i + 2..close].iter().collect();
-                if is_pinyin_annotation_candidate(&marker) {
-                    if !is_cjk(ch) {
-                        return Err(crate::Error::TextError(format!(
-                            "pinyin annotation [{marker}] must follow a Chinese character"
-                        )));
-                    }
-                    overrides.push(RawPinyinOverride {
-                        clean_index,
-                        ch,
-                        pinyin: parse_pinyin_override(&marker)?,
-                    });
-                    i = close + 1;
-                    clean_index += 1;
-                    continue;
+        {
+            let close = i + 2 + close_offset;
+            let marker: String = chars[i + 2..close].iter().collect();
+            if is_pinyin_annotation_candidate(&marker) {
+                if !is_cjk(ch) {
+                    return Err(crate::Error::TextError(format!(
+                        "pinyin annotation [{marker}] must follow a Chinese character"
+                    )));
                 }
+                overrides.push(RawPinyinOverride {
+                    clean_index,
+                    ch,
+                    pinyin: parse_pinyin_override(&marker)?,
+                });
+                i = close + 1;
+                clean_index += 1;
+                continue;
             }
         }
         clean_index += 1;

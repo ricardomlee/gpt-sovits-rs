@@ -212,84 +212,85 @@ impl GPTModel {
             )?;
 
             // Fuse features using MRTE if available, otherwise fall back to simple addition
-            let fused_emb =
-                if let Some(ref mrte) = self.mrte {
-                    if let (Some(bert), Some(hubert)) =
-                        (bert_proj_result.as_ref(), hubert_proj_result.as_ref())
-                    {
-                        let _token_emb_t = token_emb.transpose(1, 2)?;
-                        let bert_t = bert.transpose(1, 2)?;
-                        let hubert_t = hubert.transpose(1, 2)?;
-                        let ones_mask = Tensor::ones((1, 1, seq_len), DType::F32, &self.device)?;
-                        match mrte.forward(&hubert_t, &ones_mask, &bert_t, &ones_mask, None) {
-                            Ok(mrte_out) => {
-                                let mrte_frames = mrte_out.dims()[2];
-                                let mrte_aligned = if mrte_frames >= seq_len {
-                                    mrte_out.narrow(2, 0, seq_len)?
-                                } else {
-                                    let last_frame = mrte_out.narrow(2, mrte_frames - 1, 1)?;
-                                    let mut frames = vec![mrte_out.clone()];
-                                    for _ in 0..(seq_len - mrte_frames) {
-                                        frames.push(last_frame.clone());
-                                    }
-                                    Tensor::cat(&frames, 2).unwrap_or_else(|_| mrte_out.clone())
-                                };
-                                mrte_aligned
-                                    .transpose(1, 2)
-                                    .unwrap_or_else(|_| token_emb.clone())
-                            }
-                            Err(_) => token_emb.clone(),
-                        }
-                    } else {
-                        token_emb.clone()
-                    }
-                } else {
-                    let mut fused_emb = token_emb.clone();
-                    if let Some(ref bert_proj) = bert_proj_result {
-                        if bert_proj.dims().len() >= 2 {
-                            let bert_seq_len = bert_proj.dims()[1];
-                            if bert_seq_len >= seq_len {
-                                let bert_narrowed = if bert_seq_len > seq_len {
-                                    bert_proj.narrow(1, 0, seq_len)?
-                                } else {
-                                    bert_proj.clone()
-                                };
-                                if bert_narrowed.dims() == fused_emb.dims() {
-                                    let scale = 0.5f32;
-                                    let scaled_bert = bert_narrowed.broadcast_mul(
-                                        &Tensor::full(scale, bert_narrowed.dims(), &self.device)?,
-                                    )?;
-                                    fused_emb = fused_emb.broadcast_add(&scaled_bert)?;
-                                }
-                            }
-                        }
-                    }
-                    if let Some(ref hubert_proj) = hubert_proj_result {
-                        let hubert_frames = hubert_proj.dims()[1];
-                        if hubert_frames > 0 {
-                            let hubert_aligned = if hubert_frames >= seq_len {
-                                hubert_proj.narrow(1, 0, seq_len)?
+            let fused_emb = if let Some(ref mrte) = self.mrte {
+                if let (Some(bert), Some(hubert)) =
+                    (bert_proj_result.as_ref(), hubert_proj_result.as_ref())
+                {
+                    let _token_emb_t = token_emb.transpose(1, 2)?;
+                    let bert_t = bert.transpose(1, 2)?;
+                    let hubert_t = hubert.transpose(1, 2)?;
+                    let ones_mask = Tensor::ones((1, 1, seq_len), DType::F32, &self.device)?;
+                    match mrte.forward(&hubert_t, &ones_mask, &bert_t, &ones_mask, None) {
+                        Ok(mrte_out) => {
+                            let mrte_frames = mrte_out.dims()[2];
+                            let mrte_aligned = if mrte_frames >= seq_len {
+                                mrte_out.narrow(2, 0, seq_len)?
                             } else {
-                                let last_frame = hubert_proj.narrow(1, hubert_frames - 1, 1)?;
-                                let mut frames = vec![hubert_proj.clone()];
-                                for _ in 0..(seq_len - hubert_frames) {
+                                let last_frame = mrte_out.narrow(2, mrte_frames - 1, 1)?;
+                                let mut frames = vec![mrte_out.clone()];
+                                for _ in 0..(seq_len - mrte_frames) {
                                     frames.push(last_frame.clone());
                                 }
-                                Tensor::cat(&frames, 1).unwrap_or_else(|_| hubert_proj.clone())
+                                Tensor::cat(&frames, 2).unwrap_or_else(|_| mrte_out.clone())
                             };
-                            if hubert_aligned.dims() == fused_emb.dims() {
-                                let scale = 0.3f32;
-                                let scaled_hubert = hubert_aligned.broadcast_mul(&Tensor::full(
-                                    scale,
-                                    hubert_aligned.dims(),
-                                    &self.device,
-                                )?)?;
-                                fused_emb = fused_emb.broadcast_add(&scaled_hubert)?;
-                            }
+                            mrte_aligned
+                                .transpose(1, 2)
+                                .unwrap_or_else(|_| token_emb.clone())
+                        }
+                        Err(_) => token_emb.clone(),
+                    }
+                } else {
+                    token_emb.clone()
+                }
+            } else {
+                let mut fused_emb = token_emb.clone();
+                if let Some(ref bert_proj) = bert_proj_result
+                    && bert_proj.dims().len() >= 2
+                {
+                    let bert_seq_len = bert_proj.dims()[1];
+                    if bert_seq_len >= seq_len {
+                        let bert_narrowed = if bert_seq_len > seq_len {
+                            bert_proj.narrow(1, 0, seq_len)?
+                        } else {
+                            bert_proj.clone()
+                        };
+                        if bert_narrowed.dims() == fused_emb.dims() {
+                            let scale = 0.5f32;
+                            let scaled_bert = bert_narrowed.broadcast_mul(&Tensor::full(
+                                scale,
+                                bert_narrowed.dims(),
+                                &self.device,
+                            )?)?;
+                            fused_emb = fused_emb.broadcast_add(&scaled_bert)?;
                         }
                     }
-                    fused_emb
-                };
+                }
+                if let Some(ref hubert_proj) = hubert_proj_result {
+                    let hubert_frames = hubert_proj.dims()[1];
+                    if hubert_frames > 0 {
+                        let hubert_aligned = if hubert_frames >= seq_len {
+                            hubert_proj.narrow(1, 0, seq_len)?
+                        } else {
+                            let last_frame = hubert_proj.narrow(1, hubert_frames - 1, 1)?;
+                            let mut frames = vec![hubert_proj.clone()];
+                            for _ in 0..(seq_len - hubert_frames) {
+                                frames.push(last_frame.clone());
+                            }
+                            Tensor::cat(&frames, 1).unwrap_or_else(|_| hubert_proj.clone())
+                        };
+                        if hubert_aligned.dims() == fused_emb.dims() {
+                            let scale = 0.3f32;
+                            let scaled_hubert = hubert_aligned.broadcast_mul(&Tensor::full(
+                                scale,
+                                hubert_aligned.dims(),
+                                &self.device,
+                            )?)?;
+                            fused_emb = fused_emb.broadcast_add(&scaled_hubert)?;
+                        }
+                    }
+                }
+                fused_emb
+            };
 
             // Forward pass through transformer
             let hidden = self.transformer.forward_from_embedding(&fused_emb)?;

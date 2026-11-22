@@ -380,13 +380,13 @@ impl Decoder {
         trace_tensor("debug_conv_pre", &x)?;
 
         // Add condition if provided
-        if let Some(cond) = &self.cond {
-            if let Some(g) = g {
-                let g_proj = cond.forward(g)?;
-                // g_proj: [batch, channels, 1] → broadcast across time
-                x = x.broadcast_add(&g_proj)?;
-                trace_tensor("debug_cond", &x)?;
-            }
+        if let Some(cond) = &self.cond
+            && let Some(g) = g
+        {
+            let g_proj = cond.forward(g)?;
+            // g_proj: [batch, channels, 1] → broadcast across time
+            x = x.broadcast_add(&g_proj)?;
+            trace_tensor("debug_cond", &x)?;
         }
         sync_profile_stage(&device)?;
         let pre_ms = profile_start.elapsed().as_millis();

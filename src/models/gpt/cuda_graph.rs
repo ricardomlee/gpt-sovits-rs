@@ -285,10 +285,10 @@ impl GPTModel {
 
             // ── Eager decode step for warmup (uses static KV's append(), not graphable) ──
             let eager_step =
-                |gen: &Vec<usize>, static_kv: &mut StaticKvManager| -> Result<Tensor> {
-                    let prev = *gen.last().unwrap();
+                |tokens: &[usize], static_kv: &mut StaticKvManager| -> Result<Tensor> {
+                    let prev = *tokens.last().unwrap();
                     let emb = self.lookup_audio_token(prev)?;
-                    let pe_pos = prompt_seq + gen.len() - 1;
+                    let pe_pos = prompt_seq + tokens.len() - 1;
                     let pos_emb = self.add_sine_positional_at(&emb, pe_pos)?;
                     let hidden = self
                         .transformer

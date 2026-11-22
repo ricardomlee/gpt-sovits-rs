@@ -311,10 +311,10 @@ pub(super) fn resolve_synthesis(
             .and_then(|v| v.sv_embedding_path())
             .map(|p| p.to_string_lossy().into_owned()),
     };
-    if let Some(path) = sv_embedding.as_deref() {
-        if !Path::new(path).is_file() {
-            return Err(format!("SV embedding not found: {path}"));
-        }
+    if let Some(path) = sv_embedding.as_deref()
+        && !Path::new(path).is_file()
+    {
+        return Err(format!("SV embedding not found: {path}"));
     }
 
     let options = defaults.to_inference_options(
@@ -411,10 +411,10 @@ fn validate_request_file_path(
 }
 
 fn validate_optional_model_path(name: &str, path: Option<&Path>) -> Result<(), String> {
-    if let Some(path) = path {
-        if !path.is_file() {
-            return Err(format!("{} model not found: {}", name, path.display()));
-        }
+    if let Some(path) = path
+        && !path.is_file()
+    {
+        return Err(format!("{} model not found: {}", name, path.display()));
     }
     Ok(())
 }

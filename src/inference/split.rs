@@ -92,22 +92,20 @@ pub(super) fn split_text(
             && chars
                 .get(index + 1)
                 .is_some_and(|ch| is_numeric_literal_char(*ch))
-        {
-            if let Some((start, _)) = current
+            && let Some((start, _)) = current
                 .char_indices()
                 .rev()
                 .take_while(|(_, ch)| is_numeric_literal_char(*ch))
                 .last()
                 .filter(|(start, _)| *start > 0)
-            {
-                let tail = current.split_off(start);
-                let prefix = current.trim();
-                if prefix.chars().any(char::is_alphanumeric) {
-                    sentences.push(prefix.to_string());
-                }
-                current = tail;
-                continue;
+        {
+            let tail = current.split_off(start);
+            let prefix = current.trim();
+            if prefix.chars().any(char::is_alphanumeric) {
+                sentences.push(prefix.to_string());
             }
+            current = tail;
+            continue;
         }
         if (sentence_boundary || soft_boundary || hard_boundary) && !current.trim().is_empty() {
             let trimmed = current.trim().to_string();

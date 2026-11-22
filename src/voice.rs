@@ -57,29 +57,29 @@ impl LoadedVoiceProfile {
         if let Some(mode) = profile.mode.as_deref() {
             validate_mode(mode)?;
         }
-        if let Some(language) = profile.language.as_deref() {
-            if Language::parse(language).is_none() {
-                return Err(format!(
-                    "Invalid language '{}' in voice profile {:?}; expected zh, en, ja, ko, yue, or auto",
-                    language, path
-                ));
-            }
+        if let Some(language) = profile.language.as_deref()
+            && Language::parse(language).is_none()
+        {
+            return Err(format!(
+                "Invalid language '{}' in voice profile {:?}; expected zh, en, ja, ko, yue, or auto",
+                language, path
+            ));
         }
-        if let Some(language) = profile.prompt_language.as_deref() {
-            if Language::parse(language).is_none() {
-                return Err(format!(
-                    "Invalid prompt_language '{}' in voice profile {:?}; expected zh, en, ja, ko, yue, or auto",
-                    language, path
-                ));
-            }
+        if let Some(language) = profile.prompt_language.as_deref()
+            && Language::parse(language).is_none()
+        {
+            return Err(format!(
+                "Invalid prompt_language '{}' in voice profile {:?}; expected zh, en, ja, ko, yue, or auto",
+                language, path
+            ));
         }
-        if let Some(method) = profile.split_method.as_deref() {
-            if SplitMethod::parse(method).is_none() {
-                return Err(format!(
-                    "Invalid split_method '{}' in voice profile {:?}; expected sentence or cut5",
-                    method, path
-                ));
-            }
+        if let Some(method) = profile.split_method.as_deref()
+            && SplitMethod::parse(method).is_none()
+        {
+            return Err(format!(
+                "Invalid split_method '{}' in voice profile {:?}; expected sentence or cut5",
+                method, path
+            ));
         }
         Ok(Self {
             name: name.to_string(),
@@ -188,10 +188,11 @@ pub fn list_voice_profiles(voices_dir: &Path) -> Result<Vec<String>, String> {
     for entry in entries {
         let entry = entry.map_err(|e| format!("Failed to read voices directory entry: {}", e))?;
         let path = entry.path();
-        if path.is_dir() && path.join("voice.json").is_file() {
-            if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-                voices.push(name.to_string());
-            }
+        if path.is_dir()
+            && path.join("voice.json").is_file()
+            && let Some(name) = path.file_name().and_then(|name| name.to_str())
+        {
+            voices.push(name.to_string());
         }
     }
     voices.sort();

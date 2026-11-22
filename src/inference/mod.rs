@@ -295,7 +295,7 @@ impl Pipeline {
         options: &'a InferenceOptions,
         mode: &str,
         min_sentence_chars: usize,
-    ) -> impl Iterator<Item = Result<AudioBuffer>> + 'a {
+    ) -> impl Iterator<Item = Result<AudioBuffer>> + 'a + use<'a, P> {
         self.inference_sentences_with_method(
             text,
             reference_audio,
@@ -317,7 +317,7 @@ impl Pipeline {
         mode: &str,
         min_sentence_chars: usize,
         split_method: SplitMethod,
-    ) -> impl Iterator<Item = Result<AudioBuffer>> + 'a {
+    ) -> impl Iterator<Item = Result<AudioBuffer>> + 'a + use<'a, P> {
         let sentences = split_text(text, min_sentence_chars, options.language, split_method);
         log_split_plan(
             "stream",

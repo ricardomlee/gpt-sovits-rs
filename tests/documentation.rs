@@ -196,16 +196,16 @@ fn documented_cli_options_exist_in_binary_help() {
         .unwrap();
     let mut checked = 0;
     for event in Parser::new_ext(section, Options::ENABLE_TABLES) {
-        if let Event::Code(code) = event {
-            if code.starts_with("--") {
-                let flag = code.split_whitespace().next().unwrap();
-                assert!(
-                    help.split_whitespace()
-                        .any(|word| word.trim_end_matches(',') == flag),
-                    "API CLI table contains unsupported flag {flag}"
-                );
-                checked += 1;
-            }
+        if let Event::Code(code) = event
+            && code.starts_with("--")
+        {
+            let flag = code.split_whitespace().next().unwrap();
+            assert!(
+                help.split_whitespace()
+                    .any(|word| word.trim_end_matches(',') == flag),
+                "API CLI table contains unsupported flag {flag}"
+            );
+            checked += 1;
         }
     }
     assert!(checked >= 10, "CLI table was not parsed");

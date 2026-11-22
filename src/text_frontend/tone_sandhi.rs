@@ -435,11 +435,11 @@ impl ToneSandhi {
         let seg = new_seg;
         let mut new_seg: Vec<(String, String)> = Vec::new();
         for (word, pos) in seg {
-            if let Some(last) = new_seg.last_mut() {
-                if last.0 == "一" {
-                    last.0 = format!("一{}", word);
-                    continue;
-                }
+            if let Some(last) = new_seg.last_mut()
+                && last.0 == "一"
+            {
+                last.0 = format!("一{}", word);
+                continue;
             }
             new_seg.push((word, pos));
         }
@@ -450,11 +450,11 @@ impl ToneSandhi {
     fn merge_reduplication(seg: Vec<(String, String)>) -> Vec<(String, String)> {
         let mut new_seg: Vec<(String, String)> = Vec::new();
         for (word, pos) in seg {
-            if let Some(last) = new_seg.last_mut() {
-                if last.0 == word {
-                    last.0 = format!("{}{}", last.0, word);
-                    continue;
-                }
+            if let Some(last) = new_seg.last_mut()
+                && last.0 == word
+            {
+                last.0 = format!("{}{}", last.0, word);
+                continue;
             }
             new_seg.push((word, pos));
         }
@@ -476,12 +476,13 @@ impl ToneSandhi {
             {
                 let prev_len = seg[i - 1].0.chars().count();
                 let curr_len = word.chars().count();
-                if !Self::is_reduplication(&seg[i - 1].0) && prev_len + curr_len <= 3 {
-                    if let Some(last) = new_seg.last_mut() {
-                        last.0 = format!("{}{}", last.0, word);
-                        merge_last[i] = true;
-                        continue;
-                    }
+                if !Self::is_reduplication(&seg[i - 1].0)
+                    && prev_len + curr_len <= 3
+                    && let Some(last) = new_seg.last_mut()
+                {
+                    last.0 = format!("{}{}", last.0, word);
+                    merge_last[i] = true;
+                    continue;
                 }
             }
             new_seg.push((word.clone(), pos.clone()));
@@ -511,12 +512,13 @@ impl ToneSandhi {
             if i >= 1 && prev_last_tone == 3 && curr_first_tone == 3 && !merge_last[i - 1] {
                 let prev_len = seg[i - 1].0.chars().count();
                 let curr_len = word.chars().count();
-                if !Self::is_reduplication(&seg[i - 1].0) && prev_len + curr_len <= 3 {
-                    if let Some(last) = new_seg.last_mut() {
-                        last.0 = format!("{}{}", last.0, word);
-                        merge_last[i] = true;
-                        continue;
-                    }
+                if !Self::is_reduplication(&seg[i - 1].0)
+                    && prev_len + curr_len <= 3
+                    && let Some(last) = new_seg.last_mut()
+                {
+                    last.0 = format!("{}{}", last.0, word);
+                    merge_last[i] = true;
+                    continue;
                 }
             }
             new_seg.push((word.clone(), pos.clone()));
@@ -528,11 +530,14 @@ impl ToneSandhi {
     fn merge_er(seg: Vec<(String, String)>) -> Vec<(String, String)> {
         let mut new_seg: Vec<(String, String)> = Vec::new();
         for (i, (word, pos)) in seg.iter().enumerate() {
-            if i >= 1 && word == "儿" && !new_seg.is_empty() && seg[i - 1].0 != "#" {
-                if let Some(last) = new_seg.last_mut() {
-                    last.0 = format!("{}儿", last.0);
-                    continue;
-                }
+            if i >= 1
+                && word == "儿"
+                && !new_seg.is_empty()
+                && seg[i - 1].0 != "#"
+                && let Some(last) = new_seg.last_mut()
+            {
+                last.0 = format!("{}儿", last.0);
+                continue;
             }
             new_seg.push((word.clone(), pos.clone()));
         }
