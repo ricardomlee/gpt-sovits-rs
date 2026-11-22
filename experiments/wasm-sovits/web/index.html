@@ -6,13 +6,16 @@
   <meta name="color-scheme" content="light">
   <meta name="description" content="在桌面浏览器中加载自己的 GPT-SoVITS 模型和参考特征，输入中文即可生成 WAV 音频。模型和文字都留在本机。">
   <title>在浏览器中合成中文语音 | GPT-SoVITS-RS</title>
+  <link rel="canonical" href="https://tts.ricli.tech/lab/">
+  <link rel="alternate" hreflang="zh-CN" href="https://tts.ricli.tech/lab/">
+  <link rel="alternate" hreflang="en" href="https://tts.ricli.tech/lab/en.html">
   <link rel="stylesheet" href="lab.css">
 </head>
 <body>
 <header class="topbar">
   <nav class="wrap" aria-label="主导航">
     <a class="wordmark" href="../"><span aria-hidden="true"></span>GPT-SoVITS-RS</a>
-    <span class="mono">WASM LAB</span>
+    <a href="en.html" lang="en" hreflang="en">English</a>
   </nav>
 </header>
 <main class="wrap">
@@ -38,86 +41,14 @@
         <button type="submit" disabled>生成 WAV</button>
         <button id="unload" type="button" disabled>卸载模型</button>
       </div>
-      <output id="result" role="status" class="mono"></output>
+      <output id="result" role="status" class="mono"
+        data-unloaded="模型已卸载" data-failed="语音 Worker 启动失败" data-loading="正在加载" data-rendering="正在合成…"
+        data-load="加载" data-render="合成" data-memory="Wasm 内存"></output>
       <audio controls aria-label="播放生成的语音" hidden></audio>
       <a id="download" download="sovits-wasm.wav" hidden>下载 WAV <span aria-hidden="true">↓</span></a>
     </div>
   </form>
 </main>
-<script type="module">
-  const form = document.querySelector('form');
-  const inputs = form.querySelector('fieldset');
-  const button = form.querySelector('[type="submit"]');
-  const unload = document.querySelector('#unload');
-  const result = document.querySelector('#result');
-  const audio = document.querySelector('audio');
-  const download = document.querySelector('#download');
-  const mib = (bytes) => (bytes / 2 ** 20).toFixed(1);
-
-  let worker;
-
-  function clearAudio() {
-    if (audio.src) URL.revokeObjectURL(audio.src);
-    audio.removeAttribute('src');
-    audio.load();
-    audio.hidden = download.hidden = true;
-  }
-
-  function reset() {
-    worker?.terminate();
-    worker = undefined;
-    inputs.disabled = button.disabled = false;
-    unload.disabled = true;
-  }
-
-  unload.addEventListener('click', () => {
-    reset();
-    result.textContent = '模型已卸载';
-  });
-
-  function startWorker() {
-    const current = new Worker('./worker.js', { type: 'module' });
-    worker = current;
-    current.onmessage = ({ data }) => {
-      if (current !== worker) return;
-      if (data.stage) {
-        result.textContent = data.stage;
-        return;
-      }
-      button.disabled = false;
-      if (data.error) {
-        if (data.reset) reset();
-        result.textContent = data.error;
-        return;
-      }
-      const { wav, loadMs, renderMs, peakBytes } = data;
-      const url = URL.createObjectURL(new Blob([wav], { type: 'audio/wav' }));
-      audio.src = download.href = url;
-      audio.hidden = download.hidden = false;
-      const load = loadMs === undefined ? '' : `加载 ${Math.round(loadMs)} ms · `;
-      result.textContent = `${load}合成 ${Math.round(renderMs)} ms · Wasm 内存 ${mib(peakBytes)} MiB`;
-    };
-    current.onerror = (error) => {
-      if (current !== worker) return;
-      reset();
-      result.textContent = error.message || '语音 Worker 启动失败';
-    };
-  }
-
-  form.addEventListener('submit', (event) => {
-    event.preventDefault();
-    clearAudio();
-    let files;
-    if (!worker) {
-      files = Object.fromEntries(Array.from(inputs.querySelectorAll('input'), (input) => [input.name, input.files[0]]));
-      startWorker();
-    }
-    inputs.disabled = button.disabled = true;
-    unload.disabled = false;
-    result.textContent = '正在生成…';
-    worker.postMessage({ files, text: form.elements.text.value });
-  });
-  button.disabled = false;
-</script>
+<script type="module" src="lab.js"></script>
 </body>
 </html>

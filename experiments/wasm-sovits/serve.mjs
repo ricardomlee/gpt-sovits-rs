@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises';
 
 const files = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
+  ['/en.html', ['en.html', 'text/html; charset=utf-8']],
   ['/lab.css', ['lab.css', 'text/css; charset=utf-8']],
+  ['/lab.js', ['lab.js', 'text/javascript']],
   ['/worker.js', ['worker.js', 'text/javascript']],
   ['/checkpoint.js', ['checkpoint.js', 'text/javascript']],
   ['/pkg/wasm_sovits.js', ['pkg/wasm_sovits.js', 'text/javascript']],
@@ -12,6 +14,7 @@ const files = new Map([
 const port = Number(process.argv[2] ?? 9898);
 
 createServer(async (req, res) => {
+  if (req.method === 'GET' && req.url === '/en/') return res.writeHead(302, { Location: '/en.html' }).end();
   const file = req.method === 'GET' && files.get(req.url);
   if (!file) return res.writeHead(404).end();
   const [path, type] = file;

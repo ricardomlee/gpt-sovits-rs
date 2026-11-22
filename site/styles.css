@@ -52,7 +52,7 @@ h1 { font-size: 4rem; line-height: 1.05; font-weight: 800; }
 h2 { font-size: 2rem; line-height: 1.2; }
 h3 { font-size: 1.1rem; }
 .metadata { color: var(--muted); }
-.tracks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 2rem; margin-top: 1.4rem; }
+.tracks { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: 0 2rem; margin-top: 1.4rem; }
 .track { border-top: 1px solid var(--line); padding-block: 1rem; }
 .transcript { margin-top: .6rem; min-height: 3.3rem; color: #35413d; line-height: 1.65; }
 .track audio { display: block; width: 100%; height: 3.375rem; margin-block: .55rem .65rem; }
@@ -103,6 +103,8 @@ footer { border-top: 1px solid var(--line); padding-block: 1.25rem 1.7rem; color
 
 @media (max-width: 360px) {
   h1 { font-size: 2.05rem; }
+  .hero-content { padding-bottom: 8.9rem; }
+  .hero > img { height: 9.2rem; }
   .nav-links { gap: .55rem; }
   .masthead nav { min-height: 3.3rem; }
 }
