@@ -1,6 +1,6 @@
 # 用 Docker 运行 GPT-SoVITS-RS，生成第一段语音
 
-[英文上手指南](../README.md#quick-start) · [已有服务，直接接入](AGENT_INTEGRATION.md) · [选择部署方式](DEPLOYMENT.md#选择部署方式)
+[中文主页](../README.zh-CN.md) · [英文上手指南](../README.md#docker-service) · [已有服务，直接接入](AGENT_INTEGRATION.md)
 
 下面在本机启动语音服务，用公开的英文音色读一段话。想先听效果，可以播放[这段示例音频](../examples/samples/local-assistant-en.wav)。
 
@@ -12,7 +12,7 @@
 
 ## 跑出第一段音频
 
-先准备模型，启动服务。`~/gpt-sovits-demo` 用新目录；服务默认只在本机 `9881` 端口监听。
+先准备模型，启动服务。`~/gpt-sovits-demo` 用新目录。此示例监听本机 **9881**；[正式部署模板](DEPLOYMENT.md#选择部署方式)默认是 **9880**。后面的命令都沿用当前终端的 `TTS_URL`。
 
 ```bash
 git clone https://github.com/ricardomlee/gpt-sovits-rs.git
@@ -33,7 +33,7 @@ curl --fail-with-body --max-time 300 "$TTS_URL/tts" \
 
 用播放器打开 `first.wav`，听到的应当是：
 
-> Your local voice service is ready. All speech is generated on your own computer.
+> The rain has stopped. We can walk home by the river.
 
 想让它读自己写的英文，把 `request.json` 里的 `text` 换掉。例如：
 

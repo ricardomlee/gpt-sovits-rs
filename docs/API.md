@@ -10,7 +10,7 @@ For shell scripts and agent command providers, the standalone
 [HTTP client](../client/README.md) calls a running service without loading models locally.
 
 Examples use the deployment default `http://127.0.0.1:9880` and a configured `demo` voice.
-For the [first-run demo](../README.md#quick-start), use port **9881** and try a sentence in English first.
+For the [first-run demo](../README.md#docker-service), use port **9881** and try a sentence in English first.
 `text_language: "auto"` detects the target language. Reference text has its own
 `prompt_language`, which defaults to `auto` independently.
 To try another speaker, [add a voice](AGENT_INTEGRATION.en.md#add-a-voice).

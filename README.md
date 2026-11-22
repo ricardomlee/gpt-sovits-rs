@@ -1,35 +1,58 @@
 # GPT-SoVITS-RS
 
+**English** | [简体中文](README.zh-CN.md)
+
 <p align="center">
-  <img src="assets/gpt-sovits-rs-logo.svg" alt="GPT-SoVITS-RS" width="880">
+  <img src="assets/gpt-sovits-rs-logo.svg" alt="GPT-SoVITS-RS" width="640">
 </p>
 
-**Local text-to-speech for Chinese and English, written in Rust.**
-
-Give GPT-SoVITS-RS a short recording and its transcript. It can then read new
-text in that voice, from the command line or over HTTP. No Python runtime is required.
-
-[Listen](#samples) | [Run locally](#quick-start) | [Connect an app](#connect-your-app) | [Chinese quick start](docs/FIRST_RUN.zh-CN.md)
-
-## Samples
-
-| Voice | Text | Audio |
-| --- | --- | --- |
-| English demo (the voice you'll run below) | Your local voice service is ready. All speech is generated on your own computer. | [Demo WAV](examples/samples/local-assistant-en.wav) |
-| Sun (private v2Pro voice) | 你好，欢迎回来。今天有什么想和我聊聊的吗？ | [Sun WAV](examples/samples/sun-greeting.wav) |
-
-[Play the Sun samples in your browser](https://ricardomlee.github.io/gpt-sovits-rs/) · [Recordings and settings](examples/samples/README.md)
+Use a short recording and its transcript to read new text in that voice.
+GPT-SoVITS-RS runs locally in Rust with Candle. Conversion and inference need no Python runtime.
 
 ## Quick Start
 
-On Linux x86_64, the demo runs on CPU using Docker Engine with Compose v2.
-You'll need Git, Bash, curl, SHA-256 tools, 6 GiB free disk and 4 GiB available
-memory. The [setup script](examples/first-run/prepare.sh) downloads about 1.1 GB
-of [model files](examples/first-run/downloads.txt) plus the `1.3.3` CPU image.
-For Mac, ARM Linux or CUDA, [choose a build for your machine](docs/AGENT_INTEGRATION.en.md#choose-a-build).
+| What do you want to do? | Where to start |
+| --- | --- |
+| Hear a voice in your browser | [Play the Sun recordings](https://tts.ricli.tech/#samples). No installation or model downloads. To synthesize your own Mandarin text, open the [Wasm lab](https://tts.ricli.tech/lab/) with your [prepared model files](experiments/wasm-sovits/README.md#prepare-a-voice). |
+| Make one WAV on your computer | [Native CLI](#native-cli) for Linux x86_64 or macOS. Bring converted models and a reference voice; no Docker or server needed. |
+| Give an app a speech API | [Docker service](#docker-service). The Linux x86_64 CPU demo downloads public weights and includes an English voice. For other hardware, [choose a build](docs/AGENT_INTEGRATION.en.md#choose-a-build). |
 
-Let the script create `~/gpt-sovits-demo` in your home directory, or give it an empty directory.
-The demo listens on localhost, on port `9881` by default.
+Already have a running service? [Send it a sentence](#connect-your-app).
+
+## Samples
+
+| Voice | What you'll hear | Audio |
+| --- | --- | --- |
+| Public English demo (v2) | The rain has stopped. We can walk home by the river. | [Play WAV](examples/samples/local-assistant-en.wav) |
+| Sun (private v2Pro voice) | 面包刚出炉，坐下来一起吃早餐吧。 | [Play WAV](examples/samples/sun-greeting.wav) |
+
+[Compare both voices reading the same Chinese passage](examples/samples/README.md). The public demo installs the English voice; Sun is available to listen to on the website.
+
+## Native CLI
+
+Download the [v1.3.3 release](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.3): Linux x86_64 (14.9 MiB), Apple silicon (9.0 MiB), or Intel Mac (9.8 MiB). These are CPU packages containing the CLI, converter and libraries; weights are separate. Keep the bundled libraries beside the executables as extracted, including the macOS dylibs.
+
+```bash
+pkg=gpt-sovits-1.3.3-linux-x86_64
+curl -fLO "https://github.com/ricardomlee/gpt-sovits-rs/releases/download/v1.3.3/$pkg.tar.gz"
+tar -xzf "$pkg.tar.gz"
+```
+
+On Mac, use `gpt-sovits-1.3.3-macos-aarch64` or `gpt-sovits-1.3.3-macos-x86_64` for `pkg`. The release includes `SHA256SUMS` to verify the download.
+
+Point `data` at your `models/` and `voices/` parent directory and choose a voice. The example below reuses the public demo files. Starting without Docker? [Convert the weights](docs/MODELS.md) and [add your own voice](docs/AGENT_INTEGRATION.en.md#add-a-voice) first.
+
+```bash
+data="$HOME/gpt-sovits-demo"
+"./$pkg/gpt-sovits" --device cpu --models-dir "$data/models" --voices-dir "$data/voices" \
+  --voice demo --seed 42 --text "The rain has stopped. We can walk home by the river." --output first.wav
+```
+
+With the models on disk, this command took 10.3 seconds on an i5-12490F to load them and write the 4.12-second clip (one run, six CPU threads). Initial downloads and conversion are separate.
+
+## Docker Service
+
+The demo needs Linux x86_64, Docker Engine with Compose v2, Git, Bash, curl, SHA-256 tools, 6 GiB of free disk and 4 GiB of available memory. The [setup script](examples/first-run/prepare.sh) verifies about 1.1 GB of [model downloads](examples/first-run/downloads.txt); the CPU image downloads separately. Give the script a new or empty directory.
 
 ```bash
 git clone https://github.com/ricardomlee/gpt-sovits-rs.git
@@ -38,72 +61,43 @@ bash examples/first-run/prepare.sh "$HOME/gpt-sovits-demo"
 cd "$HOME/gpt-sovits-demo"
 docker compose up -d --wait --wait-timeout 900
 export TTS_URL="http://127.0.0.1:${DEMO_PORT:-9881}"
-```
-
-From the same directory, generate the English demo:
-
-```bash
 curl --fail-with-body --max-time 300 "$TTS_URL/tts" \
-  -H 'Content-Type: application/json' --data-binary @request.json \
-  --output first.wav
+  -H 'Content-Type: application/json' --data-binary @request.json --output first.wav
 ```
 
-Play `first.wav`. To hear another sentence, change `text` in `request.json`
-to your own English line and repeat just the `curl` command. Use
-`--output reply.wav` to keep both recordings.
-To change the speaker, [add your own voice](docs/AGENT_INTEGRATION.en.md#add-a-voice).
-When you're finished, run `docker compose down` in the demo directory. Your model files stay there.
+Play `first.wav`. Change `text` in `request.json` to another English sentence and repeat the curl command. The demo listens on **9881**; a regular deployment defaults to **9880**. Run `docker compose down` in the demo directory to stop it and keep the models.
 
 ## Connect Your App
 
-An app sends JSON to `POST /tts` and receives WAV audio. From the machine
-running the app, set `TTS_URL` to your server and pick a name from `/voices`.
-For the English `demo`:
+Keep `TTS_URL` from the demo, or set it to the address your app can reach. Pick a voice returned by `/voices`. For the English demo:
 
 ```bash
 TTS_URL=${TTS_URL:-http://127.0.0.1:9880}
-curl -fsS --max-time 5 "$TTS_URL/voices"
-curl --fail-with-body --max-time 300 "$TTS_URL/tts" \
-  -H 'Content-Type: application/json' \
+curl -fsS "$TTS_URL/voices"
+curl --fail-with-body --max-time 300 "$TTS_URL/tts" -H 'Content-Type: application/json' \
   -d '{"voice":"demo","text":"The backup is complete."}' --output reply.wav
 ```
 
-```mermaid
-flowchart LR
-    App["Your app"] -->|"POST /tts: voice, text"| Service["Local TTS service"]
-    Voice["Recording + transcript on the server"] --> Service
-    Service -->|"audio/wav"| App
-```
-
-[Connect Hermes](docs/AGENT_INTEGRATION.en.md#hermes) · [HTTP API](docs/API.md#http-server)
+Use `POST /tts` for WAV, `/tts/stream` for sentence-by-sentence output, or the [OpenAI-compatible speech endpoint](docs/API.md#http-server) for clients such as [Hermes](docs/AGENT_INTEGRATION.en.md#hermes).
 
 ## Models and Speech Quality
 
-- Supports **v2 and v2Pro** weights, with Chinese, English and mixed text.
-- Use a clean 3-10 second reference clip and its exact transcript.
-- v2Pro needs an SV embedding for the full voice-conditioning path. The released converter
-  can convert an existing training embedding; it does not extract one from audio.
-- For assistant replies, generate and play completed short sentences in order.
-  Long text can still lose words; review important output.
-- The [performance guide (in Chinese)](docs/PERFORMANCE.md) links to reports with hardware, models and repeated measurements.
-- Use voices and recordings you have permission to use. To train a voice, see [upstream GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS); to use existing weights, see [model conversion (in Chinese)](docs/MODELS.md).
+| | Supported today |
+| --- | --- |
+| Voices | GPT-SoVITS v2 and v2Pro. Use a clear 3–10 second reference clip and its exact transcript. Full v2Pro conditioning also needs a matching SV embedding; the converter reads an existing one, not raw audio. |
+| Text | Chinese, English and mixed text. Long passages can skip words. Play finished sentences in order and listen back to important output. |
+| Inference | F32 with the built-in SoVITS decoder. `--half` is a compatibility flag; BigVGAN and v3/v4 are outside the inference path. |
+| Hardware | CPU on Linux and macOS (no Metal in the release). Linux/WSL2 CUDA images: `sm75`, `sm86`, `sm89`, `sm90`. No prebuilt `sm120` image for RTX 50-series cards. |
+| HTTP | No built-in authentication. Bind to localhost or use an authenticating reverse proxy. |
 
-The service has no built-in authentication. Keep it on localhost or put an authenticated
-proxy in front of it; the [deployment guide (in Chinese)](docs/DEPLOYMENT.md) covers network access.
+## Documentation
 
-## Help and Contribute
+- Get started: [Docker walkthrough](docs/FIRST_RUN.zh-CN.md) [中文] · [Model conversion](docs/MODELS.md) [中文] · [Deployment](docs/DEPLOYMENT.md) [中文].
+- Connect: [API](docs/API.md) [EN] · Agent guides: [English](docs/AGENT_INTEGRATION.en.md) / [中文](docs/AGENT_INTEGRATION.md).
+- Go deeper: [Inference and source map](IMPLEMENTATION.md) [中文] · [Build and test](docs/DEVELOPMENT.md) [EN] · [Performance reports](docs/PERFORMANCE.md) [中文] · [Documentation index](docs/README.md) [中文].
 
-If a download stops, rerun the setup command to reuse the verified files.
-If the first request fails, check `docker compose logs --tail 100` in the demo directory.
-[First-run troubleshooting (in Chinese)](docs/FIRST_RUN.zh-CN.md#出错时) covers downloads, memory, ports,
-and readiness. [Tell us where you got stuck, or what worked](https://github.com/ricardomlee/gpt-sovits-rs/issues/new?template=first-run.yml).
-Do not attach private models, recordings, or credentials.
-
-[API](docs/API.md) | [Development](docs/DEVELOPMENT.md) | [Chinese documentation index](docs/README.md)
+For interrupted downloads, rerun setup to reuse verified files. For startup errors, run `docker compose logs --tail 100` in the demo directory. [Report where you got stuck](https://github.com/ricardomlee/gpt-sovits-rs/issues/new?template=first-run.yml) without private models, recordings or credentials.
 
 ## License and Credits
 
-Code: [MIT](LICENSE). Models keep their publishers' licenses.
-The public sample has [separate provenance](examples/samples/README.md).
-Built on [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) and
-[Hugging Face Candle](https://github.com/huggingface/candle).
+Code: [MIT](LICENSE). Models retain their publishers' licenses. Use recordings you have permission to use; see [sample provenance](examples/samples/README.md). Built on [GPT-SoVITS](https://github.com/RVC-Boss/GPT-SoVITS) and [Candle](https://github.com/huggingface/candle). For training, use upstream GPT-SoVITS.

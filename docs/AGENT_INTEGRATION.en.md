@@ -4,7 +4,7 @@
 
 **1. Check the existing service.** From the agent's environment, set `TTS_URL`
 to the address it can reach. The deployment default is port `9880`; the
-[first-run demo](../README.md#quick-start) uses `9881`. Inside a container,
+[first-run demo](../README.md#docker-service) uses `9881`. Inside a container,
 `localhost` refers to that container.
 
 ```bash
@@ -50,7 +50,7 @@ local API key satisfies the SDK; the server has no built-in authentication.
 
 Run `uname -sm` on the **TTS host**:
 
-- Linux x86_64: start with the [CPU demo](../README.md#quick-start) or the [Linux binary](https://github.com/ricardomlee/gpt-sovits-rs/releases/latest).
+- Linux x86_64: start with the [CPU demo](../README.md#docker-service) or the [native CLI](../README.md#native-cli).
 - Mac: use the [native CPU archive](https://github.com/ricardomlee/gpt-sovits-rs/releases/latest), `macos-aarch64` for Apple Silicon or `macos-x86_64` for Intel.
 - ARM Linux: [build from source](DEVELOPMENT.md#build-from-source).
 
