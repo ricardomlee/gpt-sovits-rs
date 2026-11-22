@@ -13,7 +13,7 @@ The two Chinese readings of the rain passage use different voices and references
 
 ## Reproducible First-Run Baseline
 
-The [first-run demo](../../README.md#docker-service) downloads standard v2 weights and the public reference. Its [HTTP request](../first-run/request.json) uses the exact English text above. To reproduce the updated recording, run the CLI at the linked revision; the v1.3.3 container produces the earlier reading.
+The [first-run demo](../../README.md#docker-service) downloads standard v2 weights and the public reference. Its [HTTP request](../first-run/request.json) uses the exact English text above. Both the v1.3.4 CPU image and the [released CLI](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.4) reproduce the updated English reading.
 
 To run the CLI commands, put the unpacked `gpt-sovits` on your `PATH` (keep its libraries in place). Run from the demo directory containing `models/` and `voices/demo/`:
 
