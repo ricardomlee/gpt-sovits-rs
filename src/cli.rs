@@ -208,8 +208,7 @@ pub(crate) fn run() {
 
     // Initialize logging
     let log_level = if args.verbose { "debug" } else { "info" };
-    std::env::set_var("RUST_LOG", log_level);
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt().with_env_filter(log_level).init();
 
     if args.list_voices {
         match list_voice_profiles(&args.voices_dir) {
@@ -257,14 +256,14 @@ pub(crate) fn run() {
         eprintln!("       gpt-sovits --http [OPTIONS]");
         std::process::exit(1);
     }
-    if let Some(language) = args.language.as_deref() {
-        if Language::parse(language).is_none() {
-            error!(
-                "Unsupported language '{}'; expected zh, en, ja, ko, yue, or auto",
-                language
-            );
-            std::process::exit(1);
-        }
+    if let Some(language) = args.language.as_deref()
+        && Language::parse(language).is_none()
+    {
+        error!(
+            "Unsupported language '{}'; expected zh, en, ja, ko, yue, or auto",
+            language
+        );
+        std::process::exit(1);
     }
 
     let voice_model_paths = voice_profile
@@ -275,11 +274,11 @@ pub(crate) fn run() {
         .bigvgan_model
         .clone()
         .or(voice_model_paths.bigvgan.clone());
-    if let Some(path) = bigvgan_model.as_ref() {
-        if !path.is_file() {
-            error!("BigVGAN model file does not exist: {}", path.display());
-            std::process::exit(1);
-        }
+    if let Some(path) = bigvgan_model.as_ref()
+        && !path.is_file()
+    {
+        error!("BigVGAN model file does not exist: {}", path.display());
+        std::process::exit(1);
     }
 
     let model_paths = match ModelPaths::discover(
@@ -360,14 +359,14 @@ pub(crate) fn run() {
         }
     };
     let sv_embedding = resolve_sv_embedding(&args, voice_profile.as_ref());
-    if let Some(path) = sv_embedding.as_ref() {
-        if !path.is_file() {
-            eprintln!(
-                "Error: --sv-embedding file does not exist: {}",
-                path.display()
-            );
-            std::process::exit(1);
-        }
+    if let Some(path) = sv_embedding.as_ref()
+        && !path.is_file()
+    {
+        eprintln!(
+            "Error: --sv-embedding file does not exist: {}",
+            path.display()
+        );
+        std::process::exit(1);
     }
 
     let output = args.output;

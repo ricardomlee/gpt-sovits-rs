@@ -16,13 +16,18 @@ unsafe fn matrix_value(
     } else {
         row + col * leading_dim
     };
-    (*matrix.add(index)).to_f32()
+    unsafe { (*matrix.add(index)).to_f32() }
 }
 
-/// Candle 0.10 references the Fortran `hgemm_` symbol when MKL is enabled, but
+/// Candle references the Fortran `hgemm_` symbol when MKL is enabled, but
 /// the bundled MKL 2020 libraries do not export it. Keep F16 CPU matmul correct
 /// with a scalar fallback; normal F32 inference continues to use MKL SGEMM.
-#[no_mangle]
+///
+/// # Safety
+/// The caller must supply valid scalar pointers and initialized column-major
+/// matrices of the declared sizes and strides. C must be writable and disjoint
+/// from the inputs for the duration of the call.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn hgemm_(
     transa: *const c_char,
     transb: *const c_char,
@@ -38,22 +43,24 @@ pub unsafe extern "C" fn hgemm_(
     c: *mut f16,
     ldc: *const i32,
 ) {
-    let (m, n, k) = (*m as usize, *n as usize, *k as usize);
-    let (lda, ldb, ldc) = (*lda as usize, *ldb as usize, *ldc as usize);
-    let transa = (*transa as u8).eq_ignore_ascii_case(&b't');
-    let transb = (*transb as u8).eq_ignore_ascii_case(&b't');
-    let alpha = (*alpha).to_f32();
-    let beta = (*beta).to_f32();
+    unsafe {
+        let (m, n, k) = (*m as usize, *n as usize, *k as usize);
+        let (lda, ldb, ldc) = (*lda as usize, *ldb as usize, *ldc as usize);
+        let transa = (*transa as u8).eq_ignore_ascii_case(&b't');
+        let transb = (*transb as u8).eq_ignore_ascii_case(&b't');
+        let alpha = (*alpha).to_f32();
+        let beta = (*beta).to_f32();
 
-    for col in 0..n {
-        for row in 0..m {
-            let mut sum = 0.0f32;
-            for inner in 0..k {
-                sum += matrix_value(a, transa, row, inner, lda)
-                    * matrix_value(b, transb, inner, col, ldb);
+        for col in 0..n {
+            for row in 0..m {
+                let mut sum = 0.0f32;
+                for inner in 0..k {
+                    sum += matrix_value(a, transa, row, inner, lda)
+                        * matrix_value(b, transb, inner, col, ldb);
+                }
+                let output = c.add(row + col * ldc);
+                *output = f16::from_f32(alpha * sum + beta * (*output).to_f32());
             }
-            let output = c.add(row + col * ldc);
-            *output = f16::from_f32(alpha * sum + beta * (*output).to_f32());
         }
     }
 }

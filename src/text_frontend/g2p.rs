@@ -544,16 +544,16 @@ impl G2PConverter {
         }
         // Strip trailing punctuation
         let stripped = upper.trim_end_matches(|c: char| !c.is_alphabetic());
-        if stripped != upper {
-            if let Some(ph) = self.cmudict.get(stripped) {
-                return Some(ph);
-            }
+        if stripped != upper
+            && let Some(ph) = self.cmudict.get(stripped)
+        {
+            return Some(ph);
         }
         // Strip 's possessive
-        if let Some(base) = upper.strip_suffix("'S") {
-            if let Some(ph) = self.cmudict.get(base) {
-                return Some(ph);
-            }
+        if let Some(base) = upper.strip_suffix("'S")
+            && let Some(ph) = self.cmudict.get(base)
+        {
+            return Some(ph);
         }
         None
     }
@@ -717,10 +717,10 @@ impl G2PConverter {
             self.tone_sandhi
                 .modified_tone(word, pos, &mut tones, self.jieba);
             for (i, opt) in char_data.iter().enumerate() {
-                if locked_tones[i] {
-                    if let Some((_, explicit_tone)) = opt {
-                        tones[i] = *explicit_tone;
-                    }
+                if locked_tones[i]
+                    && let Some((_, explicit_tone)) = opt
+                {
+                    tones[i] = *explicit_tone;
                 }
             }
 

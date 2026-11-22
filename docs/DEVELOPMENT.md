@@ -5,7 +5,7 @@ The HTTP command-line client builds separately under `client/`.
 
 ## Build From Source
 
-Use stable Rust and Cargo, a C/C++ build toolchain, pkg-config, and libsoxr headers.
+Use stable Rust and Cargo (2024 edition), a C/C++ build toolchain, pkg-config, and libsoxr headers.
 HTTP builds also need CMake and libmp3lame. Cargo builds the bundled libopus source.
 Codec roundtrip tests run in Linux CI. Each macOS release runner checks the
 executables and bundled audio libraries from its own archive.

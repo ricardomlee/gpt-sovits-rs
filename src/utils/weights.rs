@@ -605,13 +605,13 @@ impl Conv1dWeightNorm {
         }
         let (out_channels, _, kernel_size) = weight.dims3()?;
         let bias = state_dict.get(&format!("{prefix}.bias")).ok();
-        if let Some(bias) = bias {
-            if bias.dims() != [out_channels] {
-                return Err(Error::ModelLoadError(format!(
-                    "{prefix}.bias must have shape [{out_channels}], got {:?}",
-                    bias.dims()
-                )));
-            }
+        if let Some(bias) = bias
+            && bias.dims() != [out_channels]
+        {
+            return Err(Error::ModelLoadError(format!(
+                "{prefix}.bias must have shape [{out_channels}], got {:?}",
+                bias.dims()
+            )));
         }
         let weight = weight.to_device(device)?.to_dtype(dtype)?.contiguous()?;
         let weight_g = weight

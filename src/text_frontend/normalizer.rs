@@ -100,10 +100,10 @@ impl TextNormalizer {
                 whitespace = Some(index);
                 continue;
             }
-            if let Some(source) = whitespace.take() {
-                if !normalized.0.is_empty() {
-                    normalized.0.push((' ', Some(source)));
-                }
+            if let Some(source) = whitespace.take()
+                && !normalized.0.is_empty()
+            {
+                normalized.0.push((' ', Some(source)));
             }
             let ch = match ch {
                 '“' | '”' => '"',

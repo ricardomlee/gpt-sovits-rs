@@ -103,13 +103,13 @@ pub fn validate_audio_quality(
             metrics.duration_s, thresholds.min_duration_s
         ));
     }
-    if let Some(max_duration_s) = thresholds.max_duration_s {
-        if metrics.duration_s > max_duration_s {
-            issues.push(format!(
-                "duration {:.3}s exceeds maximum {:.3}s",
-                metrics.duration_s, max_duration_s
-            ));
-        }
+    if let Some(max_duration_s) = thresholds.max_duration_s
+        && metrics.duration_s > max_duration_s
+    {
+        issues.push(format!(
+            "duration {:.3}s exceeds maximum {:.3}s",
+            metrics.duration_s, max_duration_s
+        ));
     }
     if metrics.rms < thresholds.min_rms {
         issues.push(format!(
