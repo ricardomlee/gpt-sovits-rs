@@ -1,10 +1,10 @@
 //! SoVITS Decoder Module - HiFi-GAN style vocoder
 
-use crate::utils::profiling::{sync_profile_enabled, sync_profile_stage, Instant};
-use crate::utils::{Conv1d, Conv1dWeightNorm, StateDict};
 use crate::Result;
+use crate::utils::profiling::{Instant, sync_profile_enabled, sync_profile_stage};
+use crate::utils::{Conv1d, Conv1dWeightNorm, StateDict};
 use candle_core::backend::BackendStorage;
-use candle_core::{cpu_backend, CpuStorage, CustomOp1, DType, Device, Layout, Shape, Tensor};
+use candle_core::{CpuStorage, CustomOp1, DType, Device, Layout, Shape, Tensor, cpu_backend};
 use half::{bf16, f16};
 use std::path::Path;
 use std::time::Duration;
@@ -67,7 +67,7 @@ impl CustomOp1 for FusedLeakyRelu {
                 return Err(candle_core::Error::UnsupportedDTypeForOp(
                     storage.dtype(),
                     self.name(),
-                ))
+                ));
             }
         };
         Ok((output, layout.shape().clone()))

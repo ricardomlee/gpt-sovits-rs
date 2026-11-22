@@ -1,10 +1,10 @@
 //! Reference-conditioned plain, dynamic KV and static KV decoding.
 
+use super::GPTModel;
 use super::conditioning::check_kv_capacity;
 use super::sampling::DecoderSampler;
-use super::GPTModel;
-use crate::utils::{KvCacheManager, StaticKvManager};
 use crate::Result;
+use crate::utils::{KvCacheManager, StaticKvManager};
 use candle_core::{DType, Tensor};
 
 impl GPTModel {

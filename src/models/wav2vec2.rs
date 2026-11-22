@@ -239,7 +239,7 @@ impl PosConvEmbed {
         let xt = x.transpose(1, 2)?; // [B, C, T]
         let out = gelu(&self.conv.forward(&xt)?)?; // [B, C, T]
         let out = out.transpose(1, 2)?; // [B, T, C]
-                                        // conv output may be T+1 due to padding; trim to original T
+        // conv output may be T+1 due to padding; trim to original T
         let t = x.dim(1)?;
         let out = out.narrow(1, 0, t)?;
         x + out

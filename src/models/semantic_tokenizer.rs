@@ -4,8 +4,8 @@
 //! This matches Python's `vits_model.extract_latent(hubert_feature)` which produces
 //! the prompt tokens used by the GPT for speaker conditioning.
 
-use crate::utils::{load_safetensors, StateDict};
 use crate::Result;
+use crate::utils::{StateDict, load_safetensors};
 use candle_core::{Device, Tensor};
 use candle_nn::{Conv1d, Conv1dConfig, Module};
 

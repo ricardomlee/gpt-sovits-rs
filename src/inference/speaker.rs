@@ -1,7 +1,7 @@
 //! Speaker/reference feature cache and target text preparation.
 
-use super::ref_audio;
 use super::Pipeline;
+use super::ref_audio;
 use crate::models::{BertModel, GPTModel, HubertModel, SemanticTokenizer};
 use crate::text_frontend::{ModelText, TextFrontend};
 use crate::utils::load_safetensors;
@@ -438,12 +438,16 @@ mod tests {
             .preload_speaker_with_options("missing.wav", "你好", &options)
             .unwrap();
         options.prompt_language = Language::English;
-        assert!(pipeline
-            .get_ref_features("missing.wav", "你好", &options)
-            .is_err());
-        assert!(pipeline
-            .preload_speaker_with_options("missing.wav", "你好", &options)
-            .is_err());
+        assert!(
+            pipeline
+                .get_ref_features("missing.wav", "你好", &options)
+                .is_err()
+        );
+        assert!(
+            pipeline
+                .preload_speaker_with_options("missing.wav", "你好", &options)
+                .is_err()
+        );
     }
 
     #[test]

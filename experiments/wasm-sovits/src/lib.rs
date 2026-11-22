@@ -1,10 +1,10 @@
 pub mod checkpoint;
 
-use candle_core::{safetensors, Device, Tensor};
+use candle_core::{Device, Tensor, safetensors};
 use gpt_sovits_rs::{
+    AudioBuffer, Error, Language, Result,
     models::{BertCandleModel, GPTModel, SoVITSModel},
     text_frontend::TextFrontend,
-    AudioBuffer, Error, Language, Result,
 };
 use std::collections::HashMap;
 
@@ -151,7 +151,7 @@ impl Voice {
 #[cfg(target_arch = "wasm32")]
 mod browser {
     use super::*;
-    use crate::checkpoint::{header_end, Checkpoint};
+    use crate::checkpoint::{Checkpoint, header_end};
     use candle_core::DType;
     use gpt_sovits_rs::utils::StateDict;
     use wasm_bindgen::prelude::*;

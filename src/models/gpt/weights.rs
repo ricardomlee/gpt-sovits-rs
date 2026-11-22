@@ -1,11 +1,11 @@
 //! Weight loading and precomputed positional tables.
 
 use super::GPTModel;
+use crate::Result;
 use crate::models::mrte::MRTE;
 use crate::models::transformer::{TransformerConfig, TransformerGPTSoVITS};
 use crate::utils::sampling::SamplingRng;
-use crate::utils::{load_safetensors, StateDict};
-use crate::Result;
+use crate::utils::{StateDict, load_safetensors};
 use candle_core::{DType, Device, Tensor};
 
 pub(super) fn build_scaled_sine_positions(

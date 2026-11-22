@@ -4,12 +4,12 @@ use clap::Parser;
 use gpt_sovits_rs::inference::validate_sentence_timing;
 use gpt_sovits_rs::model_paths::{ModelPathOverrides, ModelPaths};
 use gpt_sovits_rs::voice::{
-    list_voice_profiles, load_optional_voice_profile, InferenceOptionOverrides, LoadedVoiceProfile,
-    VoiceDefaults,
+    InferenceOptionOverrides, LoadedVoiceProfile, VoiceDefaults, list_voice_profiles,
+    load_optional_voice_profile,
 };
 use gpt_sovits_rs::{
-    split_cut5_for_language, split_sentences_for_language, AudioBuffer, Config, InferenceOptions,
-    Language, Pipeline, SplitMethod,
+    AudioBuffer, Config, InferenceOptions, Language, Pipeline, SplitMethod,
+    split_cut5_for_language, split_sentences_for_language,
 };
 use std::{net::IpAddr, path::PathBuf};
 use tracing::{error, info};
@@ -346,7 +346,9 @@ pub(crate) fn run() {
     let reference_audio = match resolve_reference_audio(&args, voice_profile.as_ref()) {
         Some(a) => a,
         None => {
-            eprintln!("Error: --reference-audio is required in CLI mode unless --voice provides reference_audio");
+            eprintln!(
+                "Error: --reference-audio is required in CLI mode unless --voice provides reference_audio"
+            );
             std::process::exit(1);
         }
     };
@@ -354,7 +356,9 @@ pub(crate) fn run() {
     let reference_text = match resolve_reference_text(&args, voice_profile.as_ref()) {
         Some(t) => t,
         None => {
-            eprintln!("Error: --reference-text is required in CLI mode unless --voice provides reference_text");
+            eprintln!(
+                "Error: --reference-text is required in CLI mode unless --voice provides reference_text"
+            );
             std::process::exit(1);
         }
     };

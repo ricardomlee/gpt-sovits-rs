@@ -1,11 +1,11 @@
 use super::{Case, Endpoint};
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use gpt_sovits_rs::{
-    audio_checks::{validate_audio_quality, AudioQualityMetrics, AudioQualityThresholds},
     AudioBuffer,
+    audio_checks::{AudioQualityMetrics, AudioQualityThresholds, validate_audio_quality},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::{
     fs,
     io::{Cursor, Write},

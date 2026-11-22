@@ -14,7 +14,7 @@ pub use normalizer::TextNormalizer;
 pub use symbols::SymbolTable;
 
 use crate::{Language, Result};
-use g2p::{parse_pinyin_override, PinyinOverride};
+use g2p::{PinyinOverride, parse_pinyin_override};
 
 #[derive(Debug, Clone)]
 struct RawPinyinOverride {

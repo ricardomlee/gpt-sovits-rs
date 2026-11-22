@@ -81,9 +81,11 @@ fn demo_fixtures_match_the_voice_loader() {
         assert_eq!(row.len(), 3);
         assert_eq!(row[0].len(), 64);
         assert!(row[0].bytes().all(|b| b.is_ascii_hexdigit()));
-        assert!(Path::new(row[1])
-            .components()
-            .all(|c| matches!(c, std::path::Component::Normal(_))));
+        assert!(
+            Path::new(row[1])
+                .components()
+                .all(|c| matches!(c, std::path::Component::Normal(_)))
+        );
         assert!(row[2].starts_with("https://"));
         assert!(!row[2].contains("/main/"));
     }
@@ -217,13 +219,14 @@ exit 2
             ("DEMO_PULL_POLICY", "sometimes"),
         ] {
             let f = Fixture::new();
-            assert!(!f
-                .command()
-                .env(key, value)
-                .output()
-                .unwrap()
-                .status
-                .success());
+            assert!(
+                !f.command()
+                    .env(key, value)
+                    .output()
+                    .unwrap()
+                    .status
+                    .success()
+            );
             assert!(!f.destination.exists());
         }
     }
@@ -231,15 +234,16 @@ exit 2
     #[test]
     fn unavailable_local_candidate_fails_before_downloads() {
         let f = Fixture::new();
-        assert!(!f
-            .command()
-            .env("DEMO_IMAGE", "missing:candidate")
-            .env("DEMO_PULL_POLICY", "never")
-            .env("MISSING_IMAGE", "1")
-            .output()
-            .unwrap()
-            .status
-            .success());
+        assert!(
+            !f.command()
+                .env("DEMO_IMAGE", "missing:candidate")
+                .env("DEMO_PULL_POLICY", "never")
+                .env("MISSING_IMAGE", "1")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
         assert!(!f.destination.exists());
         assert!(!f.log().contains("download"));
     }
@@ -297,13 +301,14 @@ exit 2
     #[test]
     fn checksum_failure_never_reaches_conversion() {
         let f = Fixture::new();
-        assert!(!f
-            .command()
-            .env("DOWNLOAD_CONTENT", "corrupt")
-            .output()
-            .unwrap()
-            .status
-            .success());
+        assert!(
+            !f.command()
+                .env("DOWNLOAD_CONTENT", "corrupt")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
         assert!(!f.log().contains("--entrypoint"));
         assert!(!f.destination.join(".prepare-lock").exists());
         assert!(f.command().output().unwrap().status.success());
@@ -312,13 +317,14 @@ exit 2
     #[test]
     fn conversion_failure_can_be_retried() {
         let f = Fixture::new();
-        assert!(!f
-            .command()
-            .env("FAIL_CONVERSION", "1")
-            .output()
-            .unwrap()
-            .status
-            .success());
+        assert!(
+            !f.command()
+                .env("FAIL_CONVERSION", "1")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
         assert!(!f.destination.join("models/gpt-model.safetensors").exists());
         assert!(!f.destination.join(".prepare-lock").exists());
         assert!(f.command().output().unwrap().status.success());
@@ -362,13 +368,14 @@ exit 2
     #[test]
     fn unsupported_platform_fails_before_downloads() {
         let f = Fixture::new();
-        assert!(!f
-            .command()
-            .env("TEST_PLATFORM", "linux/aarch64")
-            .output()
-            .unwrap()
-            .status
-            .success());
+        assert!(
+            !f.command()
+                .env("TEST_PLATFORM", "linux/aarch64")
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
         assert!(!f.destination.exists());
         assert!(!f.log().contains("download"));
     }

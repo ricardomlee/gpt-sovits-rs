@@ -1,5 +1,5 @@
 use cuda_core::{CudaContext, DeviceBuffer, LaunchConfig};
-use cuda_device::{kernel, thread, DisjointSlice};
+use cuda_device::{DisjointSlice, kernel, thread};
 use cuda_host::cuda_module;
 use std::time::Instant;
 

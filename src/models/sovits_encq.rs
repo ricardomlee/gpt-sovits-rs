@@ -8,8 +8,8 @@
 //! - enc: WaveNet with 16 layers, cond_layer for speaker embedding
 //! - proj: Conv1d [384, 192, 1] → outputs m (192) + logs (192)
 
-use crate::utils::{Conv1dWeightNorm, StateDict};
 use crate::Result;
+use crate::utils::{Conv1dWeightNorm, StateDict};
 use candle_core::{DType, Device, Module, Tensor};
 
 /// WaveNet Encoder for EncQ (same structure as flow WN but with different dimensions)

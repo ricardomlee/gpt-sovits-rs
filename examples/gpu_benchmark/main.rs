@@ -1,16 +1,16 @@
 //! Local release benchmark. No HTTP listener or changes to an existing deployment.
 mod report;
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use clap::Parser;
 use gpt_sovits_rs::{
-    audio_checks::{validate_audio_quality, AudioQualityMetrics, AudioQualityThresholds},
+    Config, Language, Pipeline,
+    audio_checks::{AudioQualityMetrics, AudioQualityThresholds, validate_audio_quality},
     model_paths::{ModelPathOverrides, ModelPaths},
     voice::{LoadedVoiceProfile, VoiceDefaults},
-    Config, Language, Pipeline,
 };
 use report::{Attempt, Case, CaseReport, Report};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
@@ -395,18 +395,20 @@ mod tests {
     }
     #[test]
     fn requires_real_repeats_and_preserves_existing_outputs() {
-        assert!(Args::try_parse_from([
-            "bench",
-            "--voice",
-            "test",
-            "--build-label",
-            "test",
-            "--output-dir",
-            "/tmp/test",
-            "--repeats",
-            "0"
-        ])
-        .is_err());
+        assert!(
+            Args::try_parse_from([
+                "bench",
+                "--voice",
+                "test",
+                "--build-label",
+                "test",
+                "--output-dir",
+                "/tmp/test",
+                "--repeats",
+                "0"
+            ])
+            .is_err()
+        );
         let directory = tempfile::tempdir().unwrap();
         fs::write(directory.path().join("sentinel"), "keep").unwrap();
         assert!(fs::create_dir(directory.path()).is_err());

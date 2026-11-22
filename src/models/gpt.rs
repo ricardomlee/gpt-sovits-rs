@@ -13,8 +13,8 @@ mod weights;
 
 use super::mrte::MRTE;
 use super::transformer::TransformerGPTSoVITS;
-use crate::utils::sampling::SamplingRng;
 use crate::Result;
+use crate::utils::sampling::SamplingRng;
 use candle_core::{DType, Device, Tensor};
 
 #[cfg(test)]

@@ -28,7 +28,7 @@ pub(super) fn extract_ref_mel(
     };
 
     let samples = if audio.sample_rate != sovits_sr {
-        use soxr::{format::Mono, Soxr};
+        use soxr::{Soxr, format::Mono};
         let ratio = sovits_sr as f64 / audio.sample_rate as f64;
         let out_cap = (samples.len() as f64 * ratio).ceil() as usize + 64;
         let mut output = vec![0.0f32; out_cap];
@@ -74,9 +74,11 @@ mod tests {
         AudioBuffer::new(vec![0.0; 4096], 32_000, 1)
             .save(file.path())
             .unwrap();
-        assert!(extract_ref_mel(file.path(), &Device::Cpu, 32_000, 100)
-            .unwrap()
-            .is_some());
+        assert!(
+            extract_ref_mel(file.path(), &Device::Cpu, 32_000, 100)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

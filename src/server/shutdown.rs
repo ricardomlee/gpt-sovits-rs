@@ -44,7 +44,7 @@ impl Shutdown {
 
 #[cfg(unix)]
 fn shutdown_signal() -> io::Result<impl Future<Output = io::Result<()>>> {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
     Ok(async move {

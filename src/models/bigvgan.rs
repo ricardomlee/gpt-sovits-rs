@@ -6,7 +6,7 @@
 //! - Downsampling filters for multi-period enhancement
 
 use crate::utils::weights::Conv1dWeightNorm;
-use crate::utils::{load_safetensors, StateDict};
+use crate::utils::{StateDict, load_safetensors};
 use crate::{Error, Result};
 use candle_core::{DType, Device, Tensor};
 

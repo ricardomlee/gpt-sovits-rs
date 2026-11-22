@@ -2,7 +2,7 @@
 
 use clap::Parser;
 use gpt_sovits_rs::audio_checks::{
-    validate_audio_quality, AudioQualityMetrics, AudioQualityThresholds,
+    AudioQualityMetrics, AudioQualityThresholds, validate_audio_quality,
 };
 use gpt_sovits_rs::model_paths::{ModelPathOverrides, ModelPaths};
 use gpt_sovits_rs::voice::{LoadedVoiceProfile, VoiceDefaults};

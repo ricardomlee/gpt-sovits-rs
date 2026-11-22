@@ -4,9 +4,9 @@
 //! cross-attention between content features (Hubert) and text features
 //! for prosody-aware feature fusion.
 
-use crate::utils::StateDict;
 use crate::Result;
-use candle_core::{DType, Device, Tensor, D};
+use crate::utils::StateDict;
+use candle_core::{D, DType, Device, Tensor};
 use candle_nn::{Conv1d, Module, VarBuilder};
 
 /// Multi-Head Cross-Attention module

@@ -1,21 +1,21 @@
 use super::audio::{samples_to_pcm, streaming_wav_header};
 use super::pipeline_registry::PipelineLease;
 use super::request::{
-    resolve_synthesis, validate_text, BatchItemResult, OpenAiSpeechRequest, ResolvedSynthesis,
-    SynthesisOverrides, TtsBatchRequest, TtsRequest,
+    BatchItemResult, OpenAiSpeechRequest, ResolvedSynthesis, SynthesisOverrides, TtsBatchRequest,
+    TtsRequest, resolve_synthesis, validate_text,
 };
-use super::response::{add_synthesis_headers, json_error, SpeechOutputFormat};
+use super::response::{SpeechOutputFormat, add_synthesis_headers, json_error};
 use super::state::AppState;
 use axum::{
+    Json,
     body::Body,
     extract::State,
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::Response,
-    Json,
 };
 use base64::Engine as _;
 use gpt_sovits_rs::{AudioBuffer, Pipeline};
-use tokio_stream::{wrappers::ReceiverStream, StreamExt as _};
+use tokio_stream::{StreamExt as _, wrappers::ReceiverStream};
 use tracing::{error, info, warn};
 
 fn validate_request_text(text: &str, field: &str, max_chars: usize) -> Result<(), String> {

@@ -12,8 +12,8 @@
 //! - temporal_avg_pool: mean over time dimension
 //! - output: [batch, 512, 1]
 
-use crate::utils::StateDict;
 use crate::Result;
+use crate::utils::StateDict;
 use candle_core::{DType, Device, Tensor};
 use candle_nn::ops::softmax;
 

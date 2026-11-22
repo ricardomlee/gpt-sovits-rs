@@ -1,8 +1,8 @@
-use anyhow::{anyhow, ensure, Context, Result};
+use anyhow::{Context, Result, anyhow, ensure};
 use gpt_sovits_rs::AudioBuffer;
 use ogg::writing::{PacketWriteEndInfo, PacketWriter};
 use opus::{Application, Bitrate, Channels, Encoder};
-use soxr::{format::Mono, Soxr};
+use soxr::{Soxr, format::Mono};
 
 const RATE: u32 = 48_000;
 const FRAME: usize = 960;

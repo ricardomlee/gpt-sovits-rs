@@ -2,11 +2,11 @@
 //!
 //! Implementation of transformer encoder-decoder architecture
 
+use crate::Result;
 use crate::utils::{
     Embedding, KvCacheManager, LayerNorm, Linear, StateDict, StaticKvLayer, StaticKvManager,
 };
-use crate::Result;
-use candle_core::{DType, Device, Tensor, D};
+use candle_core::{D, DType, Device, Tensor};
 
 /// Multi-head attention mechanism
 #[derive(Debug, Clone)]

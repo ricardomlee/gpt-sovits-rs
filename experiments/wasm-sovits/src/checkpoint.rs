@@ -1,4 +1,4 @@
-use candle_core::{safetensors::Load, Device, Tensor};
+use candle_core::{Device, Tensor, safetensors::Load};
 use gpt_sovits_rs::{Error, Result};
 use safetensors::tensor::{Metadata, TensorInfo, TensorView};
 use serde::Deserialize;

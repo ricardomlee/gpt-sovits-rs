@@ -13,5 +13,5 @@ pub use audio_features::MelExtractor;
 pub use audio_features::SpectrogramExtractor;
 pub use kv_cache::{KvCache, KvCacheManager, StaticKvLayer, StaticKvManager};
 pub use weights::{
-    load_safetensors, Conv1d, Conv1dWeightNorm, Embedding, LayerNorm, Linear, StateDict,
+    Conv1d, Conv1dWeightNorm, Embedding, LayerNorm, Linear, StateDict, load_safetensors,
 };

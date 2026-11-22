@@ -1,5 +1,5 @@
-use anyhow::{bail, Context, Result};
-use candle_core::{pickle::PthTensors, DType, Device, Tensor};
+use anyhow::{Context, Result, bail};
+use candle_core::{DType, Device, Tensor, pickle::PthTensors};
 use clap::{Parser, Subcommand};
 use safetensors::tensor::serialize_to_file;
 use std::collections::HashMap;

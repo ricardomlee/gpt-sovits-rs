@@ -118,7 +118,7 @@ mod tests {
 
     #[test]
     fn greedy_encoding_matches_full_vocabulary_scan() {
-        use rand::{rngs::StdRng, Rng, SeedableRng};
+        use rand::{Rng, SeedableRng, rngs::StdRng};
 
         let table = SymbolTable::new();
         let full_scan = |input: &str| {

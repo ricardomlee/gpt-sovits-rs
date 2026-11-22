@@ -2,7 +2,7 @@ use std::io::{self, IsTerminal, Read, Seek};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{bail, ensure, Context, Result};
+use anyhow::{Context, Result, bail, ensure};
 use clap::Parser;
 use tempfile::NamedTempFile;
 use url::Url;
