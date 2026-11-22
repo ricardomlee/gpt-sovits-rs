@@ -2,7 +2,7 @@
 mod capture;
 mod compare;
 
-use anyhow::{ensure, Context, Result};
+use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, fs, path::PathBuf};
@@ -151,7 +151,9 @@ fn main() -> Result<()> {
                 report.passed,
                 "speech regression: inspect the comparison report and audio"
             );
-            println!("No measured regression within the configured tolerances; listening is still required.");
+            println!(
+                "No measured regression within the configured tolerances; listening is still required."
+            );
             Ok(())
         }
     }

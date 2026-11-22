@@ -3,7 +3,7 @@ use std::process::{Command, Output, Stdio};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tiny_http::{Header, Response, Server, StatusCode};
 
 fn cli() -> Command {

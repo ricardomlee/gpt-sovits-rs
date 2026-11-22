@@ -41,8 +41,8 @@ pub mod voice;
 pub use config::Config;
 #[cfg(not(target_arch = "wasm32"))]
 pub use inference::{
-    split_cut5_for_language, split_sentences, split_sentences_for_language, InferenceOptions,
-    Pipeline, SharedPipelineResources, SplitMethod,
+    InferenceOptions, Pipeline, SharedPipelineResources, SplitMethod, split_cut5_for_language,
+    split_sentences, split_sentences_for_language,
 };
 pub use utils::AudioBuffer;
 

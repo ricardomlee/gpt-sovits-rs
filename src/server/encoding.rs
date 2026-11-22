@@ -1,6 +1,6 @@
 //! Buffered speech encoders. Codec work runs outside the async executor.
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use gpt_sovits_rs::AudioBuffer;
 
 use super::{audio::samples_to_pcm, response::SpeechOutputFormat};

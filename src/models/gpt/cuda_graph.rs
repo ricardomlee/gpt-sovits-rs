@@ -178,8 +178,8 @@ impl GPTModel {
             // cuMemcpyHtoDAsync / cuMemcpyDtoDAsync do NOT allocate from the memory pool,
             // so they leave the pool state undisturbed between launches.
             use candle_core::cuda_backend::{
-                cudarc::driver::{result as cudarc_result, DevicePtr},
                 CudaStorageSlice,
+                cudarc::driver::{DevicePtr, result as cudarc_result},
             };
 
             // Helper: get raw CUDA device pointer for a contiguous tensor (at start_offset).
@@ -211,7 +211,7 @@ impl GPTModel {
                             _ => {
                                 return Err(candle_core::Error::Msg(
                                     "unsupported dtype in get_cuda_ptr".into(),
-                                ))
+                                ));
                             }
                         };
                         Ok(base + (start * esize) as u64)
@@ -506,7 +506,9 @@ impl GPTModel {
                     "[GPT cuda-graph] step {step}: cur_len={cur_len} max_kv_len={max_kv_len}"
                 );
                 if cur_len >= max_kv_len {
-                    tracing::warn!("[GPT cuda-graph] KV cache overflow: cur_len={cur_len} >= max_kv_len={max_kv_len}, stopping");
+                    tracing::warn!(
+                        "[GPT cuda-graph] KV cache overflow: cur_len={cur_len} >= max_kv_len={max_kv_len}, stopping"
+                    );
                     break;
                 }
                 update_position(cur_len)?;

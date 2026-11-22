@@ -1,8 +1,8 @@
 //! HTTP API server using Axum.
 
 use axum::{
-    routing::{get, post},
     Router,
+    routing::{get, post},
 };
 use gpt_sovits_rs::Config;
 use std::{

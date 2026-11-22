@@ -181,10 +181,12 @@ fn conditioned_decoders_preserve_seeded_sampling_eos_and_token_budgets() {
 fn legacy_generator_keeps_its_distinct_eos_behavior() {
     let model = model();
     model.set_sampling_seed(Some(42)).unwrap();
-    assert!(model
-        .generate(&[1, 2], 1, 1.0, 0.8, 1.0, 16)
-        .unwrap()
-        .is_empty());
+    assert!(
+        model
+            .generate(&[1, 2], 1, 1.0, 0.8, 1.0, 16)
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]
@@ -367,10 +369,12 @@ fn conditioned_sampler_stops_on_raw_argmax_eos_after_consuming_the_sample() {
     assert_eq!(sampler.sample_next(&logits, &[2], &history).unwrap(), None);
     assert_eq!(model.sampling_rng.uniform().unwrap(), next_random);
     for len in 0..11 {
-        assert!(sampler
-            .sample_next(&logits, &[2], &history[..len])
-            .unwrap()
-            .is_some());
+        assert!(
+            sampler
+                .sample_next(&logits, &[2], &history[..len])
+                .unwrap()
+                .is_some()
+        );
     }
 }
 

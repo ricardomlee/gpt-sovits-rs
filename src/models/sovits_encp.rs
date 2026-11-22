@@ -3,8 +3,8 @@
 //! EncP processes semantic tokens and text features to produce
 //! parameters for the flow model.
 
-use crate::utils::{LayerNorm, StateDict};
 use crate::Result;
+use crate::utils::{LayerNorm, StateDict};
 use candle_core::{DType, Device, Module, Tensor};
 
 fn linear_interpolate_last_dim(input: &Tensor, target_len: usize) -> Result<Tensor> {
@@ -238,7 +238,7 @@ impl SelfAttention {
             let key_rel_emb = Self::get_relative_embeddings(emb_rel_k, seq_len)?;
             // key_rel_emb: [1, 2T-1, d]. Expand across heads: [1, n_heads, d, 2T-1]
             let kre_t = key_rel_emb.transpose(1, 2)?; // [1, d, 2T-1]
-                                                      // repeat for each head: [n_heads, d, 2T-1] → unsqueeze → [1, n_heads, d, 2T-1]
+            // repeat for each head: [n_heads, d, 2T-1] → unsqueeze → [1, n_heads, d, 2T-1]
             let kre_t_exp = kre_t.repeat(vec![self.n_heads, 1, 1])?.unsqueeze(0)?;
             // q_scaled [b, n_h, T, d] × [1, n_h, d, 2T-1] → [b, n_h, T, 2T-1]
             let rel_logits = q_scaled.matmul(&kre_t_exp)?;

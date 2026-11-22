@@ -2,7 +2,7 @@ use super::*;
 use std::io::Cursor;
 use symphonia::core::{
     codecs::audio::AudioDecoderOptions,
-    formats::{probe::Hint, FormatOptions, TrackType},
+    formats::{FormatOptions, TrackType, probe::Hint},
     io::MediaSourceStream,
     meta::MetadataOptions,
 };

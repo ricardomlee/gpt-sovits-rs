@@ -160,8 +160,8 @@ mod tests {
 /// Test module for text frontend
 #[cfg(test)]
 mod text_frontend_tests {
-    use gpt_sovits_rs::text_frontend::*;
     use gpt_sovits_rs::Language;
+    use gpt_sovits_rs::text_frontend::*;
 
     #[test]
     fn test_text_normalizer() {

@@ -196,7 +196,7 @@ pub(super) fn expand_at(chars: &[char], start: usize) -> Option<(usize, String)>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{text_frontend::TextNormalizer, Language};
+    use crate::{Language, text_frontend::TextNormalizer};
 
     #[test]
     fn english_numeric_readings_and_boundaries() {

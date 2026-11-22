@@ -1,5 +1,5 @@
-use gpt_sovits_rs::text_frontend::TextFrontend;
 use gpt_sovits_rs::Language;
+use gpt_sovits_rs::text_frontend::TextFrontend;
 
 fn main() {
     let frontend = TextFrontend::new().unwrap();

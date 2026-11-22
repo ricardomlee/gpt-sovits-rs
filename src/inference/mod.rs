@@ -5,7 +5,7 @@
 use crate::config::Config;
 use crate::models::{BertModel, BigVGAN, GPTModel, HubertModel, SemanticTokenizer, SoVITSModel};
 use crate::text_frontend::TextFrontend;
-use crate::utils::{load_safetensors, AudioBuffer, StateDict};
+use crate::utils::{AudioBuffer, StateDict, load_safetensors};
 use crate::{Error, Result};
 use candle_core::Device;
 use std::collections::{HashMap, VecDeque};
@@ -17,11 +17,11 @@ mod ref_audio;
 mod speaker;
 mod split;
 
-pub use options::{validate_sentence_timing, InferenceOptions, InferenceOptionsBuilder};
+pub use options::{InferenceOptions, InferenceOptionsBuilder, validate_sentence_timing};
 use speaker::{CachedSpeaker, PreparedTarget, SpeakerCacheKey};
 use split::split_text;
 pub use split::{
-    split_cut5_for_language, split_sentences, split_sentences_for_language, SplitMethod,
+    SplitMethod, split_cut5_for_language, split_sentences, split_sentences_for_language,
 };
 
 /// Device and feature extractors that can be shared by multiple model pipelines.

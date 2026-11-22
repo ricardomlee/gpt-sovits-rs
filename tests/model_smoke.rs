@@ -5,7 +5,7 @@
 //! GPT_SOVITS_RUN_MODEL_SMOKE=1 cargo test --test model_smoke -- --nocapture
 
 use gpt_sovits_rs::audio_checks::{
-    validate_audio_quality, AudioQualityMetrics, AudioQualityThresholds,
+    AudioQualityMetrics, AudioQualityThresholds, validate_audio_quality,
 };
 use gpt_sovits_rs::model_paths::{ModelPathOverrides, ModelPaths};
 use gpt_sovits_rs::voice::{LoadedVoiceProfile, VoiceDefaults};
@@ -88,10 +88,12 @@ fn debug_capture_preserves_seeded_speech_when_enabled() {
         normal.samples == traced.samples,
         "debug capture changed seeded speech"
     );
-    assert!(directory
-        .path()
-        .join("sovits_debug_dec_input.txt")
-        .is_file());
+    assert!(
+        directory
+            .path()
+            .join("sovits_debug_dec_input.txt")
+            .is_file()
+    );
     assert!(directory.path().join("sovits_debug_audio.txt").is_file());
 }
 

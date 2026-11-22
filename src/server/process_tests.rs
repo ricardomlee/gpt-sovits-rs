@@ -1,17 +1,17 @@
 use super::{shutdown, state::AppState};
 use axum::{
+    Router,
     body::Body,
     extract::State,
     http::StatusCode,
     response::Response,
     routing::{get, post},
-    Router,
 };
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpStream};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
-use tokio_stream::{wrappers::ReceiverStream, StreamExt};
+use tokio_stream::{StreamExt, wrappers::ReceiverStream};
 
 const CHILD_ENV: &str = "GPT_SOVITS_TEST_SERVER_CHILD";
 const GATE_ENV: &str = "GPT_SOVITS_TEST_SERVER_GATE";
@@ -207,11 +207,13 @@ impl ServerProcess {
     }
 
     fn signal(&self, signal: &str) {
-        assert!(Command::new("kill")
-            .args([signal, &self.child.id().to_string()])
-            .status()
-            .unwrap()
-            .success());
+        assert!(
+            Command::new("kill")
+                .args([signal, &self.child.id().to_string()])
+                .status()
+                .unwrap()
+                .success()
+        );
     }
 
     fn wait(&mut self) -> ExitStatus {

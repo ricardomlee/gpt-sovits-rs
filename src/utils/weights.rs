@@ -3,9 +3,9 @@
 //! Utilities for loading and converting model weights from safetensors format
 
 use candle_core::backend::BackendStorage;
-use candle_core::{CpuStorage, CustomOp1, DType, Device, Layout, Shape, Tensor, D};
+use candle_core::{CpuStorage, CustomOp1, D, DType, Device, Layout, Shape, Tensor};
 use rayon::prelude::*;
-use safetensors::{tensor::Dtype, SafeTensors};
+use safetensors::{SafeTensors, tensor::Dtype};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
@@ -36,7 +36,7 @@ impl CustomOp1 for ParallelIm2Col1d {
                 return Err(candle_core::Error::UnsupportedDTypeForOp(
                     storage.dtype(),
                     self.name(),
-                ))
+                ));
             }
         };
         let (batch, channels, length) = layout.shape().dims3()?;
@@ -144,7 +144,7 @@ pub(crate) fn decode_safetensors(buffer: &[u8]) -> Result<HashMap<String, Tensor
                 return Err(Error::ModelLoadError(format!(
                     "Unsupported dtype: {:?}",
                     other
-                )))
+                )));
             }
         };
 
@@ -393,11 +393,7 @@ impl Linear {
 
     pub fn in_features(&self) -> usize {
         let dims = self.weight.dims();
-        if dims.len() >= 2 {
-            dims[1]
-        } else {
-            0
-        }
+        if dims.len() >= 2 { dims[1] } else { 0 }
     }
 
     pub fn out_features(&self) -> usize {
@@ -766,11 +762,13 @@ mod tests {
             Conv1dWeightNorm::load_regular(&StateDict::new(data), "conv", &device, DType::F32)?;
         let output = conv.forward(&Tensor::new(&[[[2f32, -1.0, 0.5, 3.0]]], &device)?)?;
         let values = output.to_vec3::<f32>()?;
-        assert!(values
-            .iter()
-            .flatten()
-            .flatten()
-            .all(|value| value.is_finite()));
+        assert!(
+            values
+                .iter()
+                .flatten()
+                .flatten()
+                .all(|value| value.is_finite())
+        );
         assert_eq!(values[0][1], [-0.25; 4]);
         Ok(())
     }
@@ -896,12 +894,14 @@ mod tests {
                 "channels_first={channels_first}, max_error={max_error}"
             );
         }
-        assert!(norm
-            .forward_channels_first(&Tensor::zeros((1, 4, 3), DType::F32, &device)?)
-            .is_err());
-        assert!(norm
-            .forward_channels_first(&Tensor::zeros((3, 3), DType::F32, &device)?)
-            .is_err());
+        assert!(
+            norm.forward_channels_first(&Tensor::zeros((1, 4, 3), DType::F32, &device)?)
+                .is_err()
+        );
+        assert!(
+            norm.forward_channels_first(&Tensor::zeros((3, 3), DType::F32, &device)?)
+                .is_err()
+        );
         Ok(())
     }
 

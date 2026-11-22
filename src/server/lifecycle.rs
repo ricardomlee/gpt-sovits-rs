@@ -1,13 +1,13 @@
-use super::request::{resolve_synthesis, SynthesisOverrides};
+use super::request::{SynthesisOverrides, resolve_synthesis};
 use super::response::json_error;
 use super::shutdown::Shutdown;
 use super::state::AppState;
 use axum::{
+    Json,
     body::Body,
     extract::State,
-    http::{header, StatusCode},
+    http::{StatusCode, header},
     response::Response,
-    Json,
 };
 use gpt_sovits_rs::voice::list_voice_profiles;
 

@@ -115,10 +115,12 @@ fn trace_preserves_conditioning_speed_and_random_state() -> Result<()> {
                     let expected = expected.flatten_all()?.to_vec1::<f32>()?;
                     let actual = trace_values(directory.path(), name);
                     assert_eq!(actual.len(), expected.len());
-                    assert!(actual
-                        .iter()
-                        .zip(expected)
-                        .all(|(a, b)| (a - b).abs() < 1e-8));
+                    assert!(
+                        actual
+                            .iter()
+                            .zip(expected)
+                            .all(|(a, b)| (a - b).abs() < 1e-8)
+                    );
                 }
                 let audio =
                     std::fs::read_to_string(directory.path().join("sovits_debug_audio.txt"))

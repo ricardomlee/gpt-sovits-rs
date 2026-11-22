@@ -1,9 +1,9 @@
 //! Setup diagnostics for the CLI `--doctor` command.
 
 use crate::cli::Args;
-use gpt_sovits_rs::model_paths::{ModelPathOverrides, ModelPaths};
-use gpt_sovits_rs::voice::{list_voice_profiles, LoadedVoiceProfile};
 use gpt_sovits_rs::Config;
+use gpt_sovits_rs::model_paths::{ModelPathOverrides, ModelPaths};
+use gpt_sovits_rs::voice::{LoadedVoiceProfile, list_voice_profiles};
 use std::path::{Path, PathBuf};
 
 pub(crate) fn run_doctor(args: &Args) -> bool {

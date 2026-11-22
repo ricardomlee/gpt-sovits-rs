@@ -93,7 +93,7 @@ impl HubertModel {
     }
 
     fn resample_sinc(&self, samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>> {
-        use soxr::{format::Mono, Soxr};
+        use soxr::{Soxr, format::Mono};
 
         let ratio = to_rate as f64 / from_rate as f64;
         let out_capacity = (samples.len() as f64 * ratio).ceil() as usize + 64;

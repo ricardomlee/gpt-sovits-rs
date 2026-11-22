@@ -10,7 +10,7 @@
 
 use crate::{Error, Result};
 use candle_core::{Device, Tensor};
-use rustfft::{num_complex::Complex, FftPlanner};
+use rustfft::{FftPlanner, num_complex::Complex};
 
 /// Spectrogram extractor matching Python's spectrogram_torch
 pub struct SpectrogramExtractor {

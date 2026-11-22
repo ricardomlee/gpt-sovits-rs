@@ -6,10 +6,10 @@
 //! Inference path: semantic tokens + text + reference mel speaker embedding
 //! → enc_p → flow → decoder
 
-use crate::utils::profiling::{sync_profile_enabled, sync_profile_stage, Instant};
+use crate::utils::profiling::{Instant, sync_profile_enabled, sync_profile_stage};
 use crate::utils::sampling::SamplingRng;
 use crate::utils::weights::decode_safetensors;
-use crate::utils::{load_safetensors, Linear, StateDict};
+use crate::utils::{Linear, StateDict, load_safetensors};
 use crate::{Error, Result};
 use candle_core::{DType, Device, Tensor};
 use std::path::Path;

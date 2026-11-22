@@ -1,8 +1,8 @@
 use candle_core::{DType, Device, Tensor};
+use gpt_sovits_rs::Language;
 use gpt_sovits_rs::model_paths::{ModelPathOverrides, ModelPaths};
 use gpt_sovits_rs::models::{BertModel, GPTModel, HubertModel, SemanticTokenizer};
 use gpt_sovits_rs::text_frontend::TextFrontend;
-use gpt_sovits_rs::Language;
 use std::path::Path;
 
 const REF_AUDIO: &str = "mao.wav";

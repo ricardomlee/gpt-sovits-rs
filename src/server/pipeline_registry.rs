@@ -5,10 +5,10 @@ use gpt_sovits_rs::voice::VoiceModelPaths;
 use gpt_sovits_rs::{Config, Pipeline, SharedPipelineResources};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
-use tokio::sync::{mpsc, Mutex, OwnedMutexGuard};
+use tokio::sync::{Mutex, OwnedMutexGuard, mpsc};
 use tracing::{error, info};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -412,17 +412,19 @@ mod tests {
 
     #[test]
     fn unconfigured_feature_models_remain_optional() {
-        assert!(PipelineRegistry::load(
-            Config::builder().with_device("cpu").build(),
-            None,
-            None,
-            None,
-            None,
-            None,
-            1,
-            Shutdown::default(),
-        )
-        .is_ok());
+        assert!(
+            PipelineRegistry::load(
+                Config::builder().with_device("cpu").build(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                1,
+                Shutdown::default(),
+            )
+            .is_ok()
+        );
     }
 
     fn empty_pipeline() -> Pipeline {

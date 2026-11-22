@@ -1,11 +1,11 @@
-use anyhow::{bail, Context, Result};
-use candle_core::{safetensors, Device, Tensor};
+use anyhow::{Context, Result, bail};
+use candle_core::{Device, Tensor, safetensors};
 use gpt_sovits_rs::{
+    AudioBuffer, Config, Language, Pipeline,
     model_paths::{ModelPathOverrides, ModelPaths},
     models::SoVITSModel,
     utils::SpectrogramExtractor,
     voice::{LoadedVoiceProfile, VoiceDefaults},
-    AudioBuffer, Config, Language, Pipeline,
 };
 use std::{collections::HashMap, fs, path::Path, time::Instant};
 
@@ -88,9 +88,12 @@ fn prepare_reference(models: &Path, voices: &Path, name: &str, output: &Path) ->
 fn main() -> Result<()> {
     let args: Vec<_> = std::env::args().skip(1).collect();
     match args.as_slice() {
-        [mode, models, voices, name, output] if mode == "prepare-reference" => {
-            prepare_reference(Path::new(models), Path::new(voices), name, Path::new(output))
-        }
+        [mode, models, voices, name, output] if mode == "prepare-reference" => prepare_reference(
+            Path::new(models),
+            Path::new(voices),
+            name,
+            Path::new(output),
+        ),
         [mode, trace, reference, sv, output] if mode == "prepare" => {
             prepare(trace, reference, sv, output)
         }
@@ -104,9 +107,14 @@ fn main() -> Result<()> {
             let wav = audio.to_wav_bytes()?;
             let render_ms = start.elapsed().as_millis();
             fs::write(output, wav)?;
-            println!("load_ms={load_ms} render_ms={render_ms} samples={}", audio.len());
+            println!(
+                "load_ms={load_ms} render_ms={render_ms} samples={}",
+                audio.len()
+            );
             Ok(())
         }
-        _ => bail!("native prepare-reference MODELS_DIR VOICES_DIR VOICE OUTPUT.safetensors\nnative prepare TRACE_DIR REF_32K_MONO.wav SV.safetensors|- CASE.safetensors\nnative render WEIGHTS.safetensors CASE.safetensors OUTPUT.wav"),
+        _ => bail!(
+            "native prepare-reference MODELS_DIR VOICES_DIR VOICE OUTPUT.safetensors\nnative prepare TRACE_DIR REF_32K_MONO.wav SV.safetensors|- CASE.safetensors\nnative render WEIGHTS.safetensors CASE.safetensors OUTPUT.wav"
+        ),
     }
 }
