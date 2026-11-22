@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 试听、选用浏览器或原生程序 | [中文主页](../README.zh-CN.md) · [English README](../README.md) | [中/EN] |
 | 没有模型，生成第一段语音 | [用 Docker 运行公开示例](FIRST_RUN.zh-CN.md)（本机端口 `9881`） | [中文] |
-| 用自己的音色 | [准备 v2 / v2Pro 模型](MODELS.md) · [添加录音和逐字稿](DEPLOYMENT.md#添加音色) | [中文] |
+| 用自己的音色 | [添加参考录音和逐字稿](DEPLOYMENT.md#添加音色) · [接入自己训练的 v2 / v2Pro 权重](MODELS.md#自训练音色模型) | [中文] |
 | 对照试听或复现样本 | [四段音频的文本、来源及参数](../examples/samples/README.md) | [EN] |
 | 在浏览器里读自己写的中文 | [为 Wasm 准备参考特征](../experiments/wasm-sovits/README.md#prepare-a-voice) | [EN] |
 

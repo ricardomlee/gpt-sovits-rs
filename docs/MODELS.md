@@ -4,7 +4,7 @@
 | --- | --- | --- |
 | 没有模型，想先听一句 | [Docker 首次运行](FIRST_RUN.zh-CN.md)会下载官方 v2、BERT、HuBERT 和公开英文参考录音 | 自动校验约 1.1 GB 的下载并转换；预留 6 GiB 磁盘、4 GiB 内存，另需下载镜像。 |
 | 官方或微调的 v2 | [准备四个组件及 tokenizer](#准备官方-v2-模型)；微调音色只[替换 GPT 和 SoVITS](#自训练音色模型)，可复用 BERT、HuBERT | 原始权重需转换，已经转换好的 safetensors 可直接用。官方源文件加转换结果约 3 GiB；转换建议预留 6 GiB 磁盘、4 GiB 内存。 |
-| v2Pro 微调权重 | 使用匹配的 GPT/SoVITS，复用 BERT、HuBERT，并准备[参考录音对应的 SV](#v2pro-sv) | 模型转换的空间、内存按 v2 起步，另计各音色文件。转换器可读取训练产生的 SV，不能从录音提取。 |
+| v2Pro 微调权重 | [接入自训练音色](#自训练音色模型)：匹配的 GPT/SoVITS、BERT、HuBERT，以及参考录音对应的说话人向量（SV） | 与 v2 使用相同的转换器，另准备各音色的 SV 文件。 |
 
 模型可以从官方渠道下载、从已有 GPT-SoVITS 安装目录复制，或使用自己训练的权重。
 它们单独准备，转换后放在本机 `models/` 目录。默认推理使用四部分：
@@ -78,95 +78,91 @@ docker run --rm \
 
 ## 自训练音色模型
 
-自训练或微调的 GPT、SoVITS 模型只需要替换前两项：
+以下用一个名为 `my-voice` 的音色，从训练权重跑到 HTTP 出声。准备同一套 v2 或 v2Pro
+的 GPT `.ckpt`、SoVITS `.pth`，以及一段 3 到 10 秒的 WAV 和它的逐字稿。用训练
+`.list` 文件时，取同一行的音频路径（第一列）和逐字稿（最后一列）。
+
+复用已有的 BERT、HuBERT 和 tokenizer。没有转换好的文件时，执行上面的
+[BERT、HuBERT 转换命令](#准备官方-v2-模型)，无需下载另一套 GPT 或 SoVITS。
+
+### 转换权重和准备录音
 
 ```bash
+mkdir -p models/my-voice voices/my-voice
+
 gpt-sovits-convert gpt \
-  /path/to/custom-gpt.ckpt \
-  models/gpt-model.safetensors
+  /path/to/my-voice.ckpt \
+  models/my-voice/gpt.safetensors
 
 gpt-sovits-convert sovits \
-  /path/to/custom-sovits.pth \
-  models/sovits-model.safetensors
+  /path/to/my-voice.pth \
+  models/my-voice/sovits.safetensors
+
+cp /path/to/line.wav voices/my-voice/ref.wav
 ```
 
-一个服务可以使用多个微调音色。把权重放在 `models/` 下，并在对应的
-`voices/<name>/voice.json` 里绑定模型。例如 `voices/demo/voice.json`：
+### v2Pro SV
 
-```text
-models/
-  demo/
-    gpt.safetensors
-    sovits.safetensors
-  second/
-    gpt.safetensors
-    sovits.safetensors
-```
-
-```json
-{
-  "reference_audio": "ref.wav",
-  "reference_text": "参考音频对应的文字",
-  "gpt_model": "demo/gpt.safetensors",
-  "sovits_model": "demo/sovits.safetensors",
-  "language": "zh"
-}
-```
-
-`gpt_model`、`sovits_model` 的相对路径按 `--models-dir` 解析。没有配置
-这些字段的 voice 会使用服务启动时加载的默认模型。CLI 的 `--voice` 使用绑定模型，
-显式的 `--gpt-model` / `--sovits-model` 可覆盖该次 CLI 选择。HTTP 则按请求中的 voice
-选择绑定模型；启动参数配置默认模型对。服务启动时仍需一套可用的默认模型，
-路径配置见[部署](DEPLOYMENT.md#准备目录和音色)。
-
-`bigvgan_model` 字段虽可解析，但 BigVGAN 尚未接入主 SoVITS 合成路径，不能用它启用 v3/v4。
-
-HTTP 服务共享 BERT 和 HuBERT，并默认用容量为 2 的 LRU 缓存 GPT/SoVITS pipeline。
-超过容量的音色仍然可用，但下次切回时会重新加载；用 `--max-cached-pipelines` 调整容量。
-
-GPT 与 SoVITS 必须来自兼容的 GPT-SoVITS v2 或 v2Pro 架构。v3、v4 和改过网络结构的
-checkpoint 不能仅靠改扩展名使用。
-
-## v2Pro SV
-
-v2Pro 的 SoVITS `.pth` 使用官方 `05`/`06` 版本头，`gpt-sovits-convert sovits` 会自动处理。
-如果训练预处理目录里有 `logs/<voice>_v2pro/7-sv_cn/<ref>.wav.pt`，可以把它转换成 Rust
-runtime 可读的 speaker-verification embedding：
+v2 跳过这一步。v2Pro 的 SoVITS `.pth` 使用官方 `05`/`06` 版本头，转换器会自动处理。
+在训练的 `logs/<训练任务>/7-sv_cn/` 下按录音**原文件名**找 SV。例如录音原名
+`line.wav`，对应文件就是 `line.wav.pt`，即使部署时已把录音改名为 `ref.wav`。
 
 ```bash
 gpt-sovits-convert sv \
-  logs/demo_v2pro/7-sv_cn/ref.wav.pt \
-  voices/demo/ref_sv.safetensors
+  /path/to/logs/my-voice_v2pro/7-sv_cn/line.wav.pt \
+  voices/my-voice/ref_sv.safetensors
 ```
 
-然后在 `voices/demo/voice.json` 中配置：
+转换器读取训练生成的 SV，不能从新录音提取。缺少 SV 时会使用零向量，音色可能与训练结果不同。
+
+### 写入音色配置
+
+将下面的内容写入 `voices/my-voice/voice.json`，把 `reference_text` 换成这段录音的逐字稿。
+用 v2 或没有 SV 文件时，省略 `sv_embedding` 一行。
 
 ```json
 {
   "reference_audio": "ref.wav",
   "reference_text": "参考音频对应的文字",
+  "gpt_model": "my-voice/gpt.safetensors",
+  "sovits_model": "my-voice/sovits.safetensors",
   "sv_embedding": "ref_sv.safetensors",
-  "language": "zh"
+  "language": "zh",
+  "prompt_language": "zh"
 }
 ```
 
-不提供 `sv_embedding` 时，v2Pro 仍可运行，但会使用零 SV embedding，音色相似度通常不如官方完整路径。
+`gpt_model`、`sovits_model` 相对于 `models/`；`reference_audio` 和
+`sv_embedding` 相对于 `voices/my-voice/`。
 
-转换器读取已有训练 SV 文件，不会从新参考音频提取 SV。更换参考音频时应使用与之匹配的
-embedding。参考录音和 embedding 一起放在音色目录，便于核对和迁移。
+### 启动并接入 Hermes
 
-自训练音色使用 3 到 10 秒的清晰参考音频及准确转写。可先用 ASR 转写，再人工核对。
+检查和启动都传 `--voice my-voice`，这样服务就会用该音色绑定的权重启动，不需要再准备
+`models/gpt-model.safetensors` 和 `models/sovits-model.safetensors`。
+
+```bash
+gpt-sovits --device cpu --models-dir models --voices-dir voices --doctor --voice my-voice
+gpt-sovits --device cpu --models-dir models --voices-dir voices --http --port 9880 --voice my-voice
+```
+
+在另一个终端[用 `my-voice` 试听](DEPLOYMENT.md#验证服务)，然后按 [Hermes 接入步骤](AGENT_INTEGRATION.md#hermes)
+将 `tts.openai.voice` 设置为 `my-voice`。
+
+已有服务时，把模型及音色目录加到已有的挂载目录，直接按新的音色名请求。多音色缓存设置见
+[部署](DEPLOYMENT.md#音色目录)，用 Compose 启动时的默认权重路径见[目录配置](DEPLOYMENT.md#准备目录和音色)。
+
+GPT、SoVITS 须来自兼容的 v2 或 v2Pro 架构。v3、v4 不在这条推理路径中，设置 `bigvgan_model`
+也不能启用它们。
 
 ## 验证
 
-转换后检查文件，再创建[音色配置](DEPLOYMENT.md#准备目录和音色)。以下使用默认文件名，
-自定义模型将 `--inspect` 后的路径改为实际文件：
+以下使用官方 v2 的默认文件名和[添加音色](DEPLOYMENT.md#添加音色)一节的 `my-voice`：
 
 ```bash
 gpt-sovits --inspect models/gpt-model.safetensors
 gpt-sovits --inspect models/sovits-model.safetensors
-gpt-sovits --doctor --models-dir models --voices-dir voices --voice demo
-gpt-sovits --models-dir models --voices-dir voices --voice demo \
+gpt-sovits --doctor --models-dir models --voices-dir voices --voice my-voice
+gpt-sovits --models-dir models --voices-dir voices --voice my-voice \
   --text '你好，这是一次语音测试。' --output test.wav
 ```
 
