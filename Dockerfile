@@ -19,11 +19,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     make \
     ca-certificates \
+    curl \
+    jq \
     clang \
     g++ \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+ENV XDG_DATA_HOME=/opt/build-data
+COPY .github/prepare-mkl.sh /tmp/prepare-mkl.sh
+RUN if [ "${TARGETARCH}" = "amd64" ]; then bash /tmp/prepare-mkl.sh; fi
 
 # Copy entire project (.dockerignore excludes target/, .git/, models/, etc.)
 COPY . .

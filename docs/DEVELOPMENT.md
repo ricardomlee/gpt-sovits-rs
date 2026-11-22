@@ -28,6 +28,15 @@ On macOS, run `brew install libsoxr lame pkg-config cmake` and
 CPU-only; this repository does not enable Candle's Metal backend. Linux ARM users
 can build natively; the optional `mkl` feature is intended for x86_64 CPU builds.
 
+For the Linux x86_64 release configuration, use curl and jq to prepare the pinned
+MKL package in a fresh build directory:
+
+```bash
+export XDG_DATA_HOME="$(mktemp -d)"
+bash .github/prepare-mkl.sh
+cargo build --locked --release --features http-api,mkl
+```
+
 CUDA builds additionally need the NVIDIA driver, CUDA Toolkit/nvcc, and a matching
 GPU architecture. For an RTX 4060 Ti:
 

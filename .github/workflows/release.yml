@@ -49,7 +49,10 @@ jobs:
           key: release-linux
 
       - name: Build
+        env:
+          XDG_DATA_HOME: ${{ runner.temp }}/gpt-sovits-build-data
         run: |
+          bash .github/prepare-mkl.sh
           cargo build --release --locked --features http-api,mkl
           cargo build --release --locked --manifest-path client/Cargo.toml --target-dir target
 
