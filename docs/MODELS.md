@@ -1,7 +1,10 @@
 # 下载和转换 GPT-SoVITS v2、v2Pro 模型
 
-[Docker 示例](FIRST_RUN.zh-CN.md)会下载并校验官方 v2 权重，在容器内完成转换。
-要为自己的服务准备模型，请按下面的步骤操作。
+| 你手头有什么？ | 需要准备什么 | 转换与空间 |
+| --- | --- | --- |
+| 没有模型，想先听一句 | [Docker 首次运行](FIRST_RUN.zh-CN.md)会下载官方 v2、BERT、HuBERT 和公开英文参考录音 | 自动校验约 1.1 GB 的下载并转换；预留 6 GiB 磁盘、4 GiB 内存，另需下载镜像。 |
+| 官方或微调的 v2 | [准备四个组件及 tokenizer](#准备官方-v2-模型)；微调音色只[替换 GPT 和 SoVITS](#自训练音色模型)，可复用 BERT、HuBERT | 原始权重需转换，已经转换好的 safetensors 可直接用。官方源文件加转换结果约 3 GiB；转换建议预留 6 GiB 磁盘、4 GiB 内存。 |
+| v2Pro 微调权重 | 使用匹配的 GPT/SoVITS，复用 BERT、HuBERT，并准备[参考录音对应的 SV](#v2pro-sv) | 模型转换的空间、内存按 v2 起步，另计各音色文件。转换器可读取训练产生的 SV，不能从录音提取。 |
 
 模型可以从官方渠道下载、从已有 GPT-SoVITS 安装目录复制，或使用自己训练的权重。
 它们单独准备，转换后放在本机 `models/` 目录。默认推理使用四部分：
@@ -12,9 +15,6 @@
 | SoVITS v2 | `lj1995/GPT-SoVITS` | `models/sovits-model.safetensors` |
 | Chinese RoBERTa large | GPT-SoVITS 模型仓库内副本 | `models/bert/bert.safetensors` |
 | Chinese HuBERT base | GPT-SoVITS 模型仓库内副本 | `models/hubert/hubert.safetensors` |
-
-模型源文件和转换结果合计需要约 3 GiB。转换时建议至少保留 6 GiB 可用磁盘空间和
-4 GiB 可用内存。
 
 ## 获取转换器
 

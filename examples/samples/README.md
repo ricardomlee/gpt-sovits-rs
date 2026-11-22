@@ -1,125 +1,65 @@
 # Public Samples
 
-## Sun Showcase
+Four unedited recordings generated on 2026-11-22 with the official [v1.3.3 Linux x86_64 release](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.3). All use CPU F32, KV decoding (`mode=auto`), seed 42 and mono 32 kHz PCM16. [Listen to Sun in your browser](https://tts.ricli.tech/#samples).
 
-The README and listening page use the maintainer's local **Sun v2Pro + SV** voice,
-generated on 2026-10-05. Only the synthesized outputs are included, not the
-model pair, SV embedding, or reference recording. These samples are not the LJ Speech voice
-used by the downloadable first-run demo below. Do not apply the public-domain
-statement about LJ Speech to Sun's source material. These are synthetic samples,
-not recordings or endorsements by the original speaker.
+| Voice | Exact target text | WAV |
+| --- | --- | --- |
+| Sun · breakfast | 面包刚出炉，坐下来一起吃早餐吧。 | [2.56 s](sun-greeting.wav) |
+| Sun · after the rain | 雨停了，河边的路灯亮了。我们慢慢走回家吧。 | [3.48 s](sun-zh.wav) |
+| Public demo · same Chinese passage | 雨停了，河边的路灯亮了。我们慢慢走回家吧。 | [4.12 s](local-assistant-zh.wav) |
+| Public demo · English | The rain has stopped. We can walk home by the river. | [4.12 s](local-assistant-en.wav) |
 
-| File | Exact target text | Duration |
-|---|---|---|
-| [sun-greeting.wav](sun-greeting.wav) | 你好，欢迎回来。今天有什么想和我聊聊的吗？ | 3.28 s |
-| [sun-zh.wav](sun-zh.wav) | 你的本地语音服务已经准备好了。接下来的语音会在这台电脑上生成。 | 4.84 s |
-
-Both use CPU F32, the local Sun GPT/SoVITS v2Pro model pair and matching SV embedding,
-`top_k=15`, `top_p=0.95`, `temperature=0.8`, `mode=auto` (KV on CPU),
-`split_method=sentence`, a 120 ms gap, 8 ms fade, 500-token cap, and repetition
-penalty 1.35. The Chinese reference is 4.98 seconds with a matching transcript.
-Both use `language=zh`. The synthesized outputs have no external edits.
-They use the same local inference binary identified in the baseline section below.
-
-Local Qwen3-ASR-0.6B transcriptions match both target texts exactly. This checks
-these two outputs, not voice similarity or future generation reliability.
-
-Reproduction requires the same privately held model pair, reference, and SV
-embedding; the project does not supply them. Sampling is stochastic, so identical
-output is not guaranteed. With an authorized Sun profile containing these paths
-and settings, the invocation is:
-
-```bash
-gpt-sovits --device cpu --models-dir /path/to/models --voices-dir /path/to/voices \
-  --voice sun \
-  --text "你好，欢迎回来。今天有什么想和我聊聊的吗？" \
-  --output sun-greeting.wav
-```
-
-The first-run script deliberately continues to use freely downloadable standard
-weights and an LJ Speech reference. It will not install Sun or produce this voice.
-
-| Artifact | SHA-256 |
-|---|---|
-| Sun greeting WAV | `6158e1fa6db040daece33ec26ff39c2d89e07cceb58a493fe0f6245669797e81` |
-| Sun service confirmation WAV | `8441746c064748554208f136dcffd8d6123eccbf8ae202617bcfac140afc302b` |
+The two Chinese readings of the rain passage use different voices and references: Sun uses a Chinese recording; the public v2 demo uses an English one. Shorter sentence chunks were used for the cross-language demo so both sentences are heard. Local Qwen3-ASR-0.6B transcriptions match all four target texts ignoring punctuation and spacing. That check measures the words, not speaker similarity.
 
 ## Reproducible First-Run Baseline
 
-These are real, unedited outputs from the Rust CPU inference path, generated on
-2026-10-05 with the standard GPT-SoVITS v2 model pair. They are not private
-fine-tuned voices, human recordings of the target text, or speed benchmarks.
+The [first-run demo](../../docs/FIRST_RUN.zh-CN.md) downloads standard v2 weights and the public reference. Its [HTTP request](../first-run/request.json) produces the English line above. The released CPU container and the Linux CLI returned byte-identical English WAVs on the generation machine.
 
-| File | Target text | Duration |
-|---|---|---|
-| [local-assistant-en.wav](local-assistant-en.wav) | Your local voice service is ready. All speech is generated on your own computer. | 5.40 s |
-| [local-assistant-zh.wav](local-assistant-zh.wav) | 你的本地语音服务已经准备好了。接下来的语音会在这台电脑上生成。 | 6.36 s |
+To run the CLI commands, put the unpacked `gpt-sovits` on your `PATH` (keep its libraries in place). Run from the demo directory containing `models/` and `voices/demo/`:
 
-Both are mono, 32 kHz, 16-bit PCM. The Chinese example uses the same English
-reference (cross-language synthesis). These short examples do not establish
-pronunciation accuracy, long-text completeness, or similarity for other voices.
-Automated checks verify valid, non-silent audio, not what a listener hears.
+```bash
+gpt-sovits --device cpu --voice demo --seed 42 \
+  --text "The rain has stopped. We can walk home by the river." --output local-assistant-en.wav
+gpt-sovits --device cpu --voice demo --seed 42 --language zh --prompt-language en \
+  --min-sentence-chars 4 --text "雨停了，河边的路灯亮了。我们慢慢走回家吧。" --output local-assistant-zh.wav
+```
+
+The [demo profile](../first-run/voice.json) uses greedy GPT sampling (`top_k=1`). The Chinese command sets the target and reference languages separately. Both use sentence splitting, a 120 ms gap, 8 ms fade and a 500-token cap.
 
 ### Reference and Rights
 
-Reference: **LJ Speech 1.1, LJ001-0001**, recorded by Linda Johnson for LibriVox,
-aligned by Keith Ito. The [dataset publisher](https://keithito.com/LJ-Speech-Dataset/)
-identifies its recordings, transcripts, and annotations as public domain in the US.
-Check the applicable rules in your jurisdiction. This is a clearly labeled
-synthetic demonstration, not an endorsement or a statement by the original reader.
-
-The [pinned reference copy](https://github.com/coqui-ai/TTS/blob/dbf1a08a0d4e47fdad6172e433eeb34bc6b13b4e/tests/data/ljspeech/wavs/LJ001-0001.wav)
-is downloaded only when preparing the demo. No Coqui implementation code is
-included. We distribute only the generated outputs here; no reference dataset,
-private recordings, or model weights are committed.
+The reference is **LJ Speech 1.1, LJ001-0001**, read by Linda Johnson for LibriVox and aligned by Keith Ito. The [dataset publisher](https://keithito.com/LJ-Speech-Dataset/) identifies its recordings, transcripts and annotations as public domain in the US; check the applicable rules in your jurisdiction. The generated samples are not recordings of the original reader or an endorsement.
 
 Exact reference transcript:
 
 > Printing, in the only sense with which we are at present concerned, differs from most if not from all the arts and crafts represented in the Exhibition
 
-Model sources and SHA-256 checksums are in the
-[download manifest](../first-run/downloads.txt). Models keep their own licenses;
-conversion does not relicense them.
+The [pinned reference copy](https://github.com/coqui-ai/TTS/blob/dbf1a08a0d4e47fdad6172e433eeb34bc6b13b4e/tests/data/ljspeech/wavs/LJ001-0001.wav) and models are downloaded and verified using the [SHA-256 manifest](../first-run/downloads.txt). No Coqui implementation code, reference dataset or weights are bundled here. Models retain their own licenses.
 
-### Reproduce
+## Sun Showcase
 
-Prepare the Docker demo using the [first-run guide](../../docs/FIRST_RUN.zh-CN.md).
-From the prepared demo directory, generate the English sample:
+Sun uses a private v2Pro GPT/SoVITS pair, a 4.98-second Chinese reference with its transcript, and the matching SV embedding. Only synthesized output is published. The LJ Speech terms above do not apply to Sun. These clips are not recordings of or endorsements by the original speaker.
 
-```bash
-docker compose run --rm --no-deps -v "$PWD:/output" tts \
-  --device cpu --models-dir /app/models --voices-dir /app/voices \
-  --voice demo --text "Your local voice service is ready. All speech is generated on your own computer." \
-  --output /output/reproduced-en.wav
-```
-
-For the Chinese sample, keep the same voice and use `--language auto` so reference
-and target text are detected separately:
+With that authorized profile and its files available under `voices/sun/` and `models/`:
 
 ```bash
-docker compose run --rm --no-deps -v "$PWD:/output" tts \
-  --device cpu --models-dir /app/models --voices-dir /app/voices \
-  --voice demo --language auto \
-  --text "你的本地语音服务已经准备好了。接下来的语音会在这台电脑上生成。" \
-  --output /output/reproduced-zh.wav
+gpt-sovits --device cpu --voice sun --seed 42 \
+  --text "面包刚出炉，坐下来一起吃早餐吧。" --output sun-greeting.wav
+gpt-sovits --device cpu --voice sun --seed 42 \
+  --text "雨停了，河边的路灯亮了。我们慢慢走回家吧。" --output sun-zh.wav
 ```
 
-Settings: CPU F32, greedy `top_k=1`, KV decoding through `mode=auto`, sentence
-splitting, 120 ms gap, 8 ms fade, 500-token cap. No external audio post-processing.
-The committed samples were produced using the existing local 1.2.0-versioned
-binary (SHA-256 below), not inside Docker. Numerical differences across builds
-and hardware mean reproduction is not a byte-for-byte promise.
+The Sun profile uses Chinese, `top_k=15`, `top_p=0.95`, temperature 0.8, repetition penalty 1.35 and the same sentence/gap/fade/token settings as the English demo. The public first-run script does not install this profile.
+
+## Checksums
 
 | Artifact | SHA-256 |
-|---|---|
-| Local inference binary | `77073d50893d79fad326d0175de46c936d48fa3c0355d9f2f7af48a4d2c88399` |
-| English WAV | `3ea40c1ff94b4b48ee84773660c068ce4cc4c08890b704c2be40994b34b4d2e5` |
-| Chinese WAV | `86256f06ef8df2ca62738eb2ef05e3b3c07736a12ccae4d2bfe0c3f79d02639f` |
+| --- | --- |
+| v1.3.3 Linux x86_64 archive | `2c513c17a78a797dbdae3ebd34e650a6c1304144d8cb8d741040ecafb1550cca` |
+| Inference executable | `6e1eb7610d613202c77573c1fc303fd8341fd1e799de4872d16d1e88a9b4bf37` |
+| sun-greeting.wav | `dc1579a7ad62e9bacc737368f72705e26f16431731cd304567b569ca34c51e60` |
+| sun-zh.wav | `3d71f7871d97d41215df5e2be5c651467e3f778cc67844326522a4385ccb20e4` |
+| local-assistant-zh.wav | `e499bf34ea73b3626cb62f8fddd270886574f0350a853efa60d4951bdc89719a` |
+| local-assistant-en.wav | `493e3ad383b1288e956a0fc1207234e1fde5c91d3b8181af26c4b31ec160975a` |
 
-The [release workflow](../../.github/workflows/release.yml) runs the demo against
-the CPU image being published. Its `linux-acceptance` artifact includes the HTTP WAV.
-
-## Browser Playback
-
-The [GitHub Pages showcase](https://ricardomlee.github.io/gpt-sovits-rs/) plays
-the two Sun samples. See the [site guide](../../site/README.md) for local preview.
+These hashes identify the published files. A different build or machine can produce different samples even with a fixed seed. The [release workflow](../../.github/workflows/release.yml) also saves an HTTP WAV from the CPU image in its `linux-acceptance` artifact.

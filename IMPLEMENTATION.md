@@ -6,23 +6,41 @@
 
 ## 推理流程
 
+一次请求有两组输入：参考录音和逐字稿决定用谁的声音，目标文本决定这次读什么。相同音色再次请求时，可复用参考特征，只为新的句子准备目标特征。
+
 ```mermaid
 flowchart TD
-    Text["参考文本 / 目标文本"] --> Frontend["文本前端 + BERT：音素及对齐特征"]
-    Frontend --> GPT["GPT：生成目标 semantic tokens"]
-    Ref["参考音频"] --> Hubert["16 kHz + 尾部静音 / HuBERT / VQ"]
-    Hubert -->|"参考 semantic tokens"| GPT
-    Ref --> RefEnc["SoVITS 采样率频谱 / ref_enc"]
-    RefEnc --> Speaker["Speaker conditioning"]
-    SV["匹配的 SV embedding / v2Pro"] --> Speaker
-    GPT --> SoVITS["SoVITS：enc_p / flow / decoder"]
+    subgraph Cache["每个 Pipeline 缓存最多 16 组参考特征"]
+        Ref["参考录音"] --> Hubert["16 kHz 加尾部静音 → HuBERT + VQ"]
+        Ref --> STFT["SoVITS 采样率 → STFT 幅度谱"]
+        Transcript["参考逐字稿"] --> RefText["文本前端 + BERT"]
+        SV["v2Pro：与录音匹配的 SV"]
+    end
+    Text["目标文本"] --> Frontend["文本前端 + BERT"]
+    Frontend -->|"目标音素和对齐特征"| GPT["GPT：逐步预测语义 token"]
+    RefText -->|"参考音素和对齐特征"| GPT
+    Hubert -->|"参考语义 token"| GPT
+    STFT --> RefEnc["SoVITS ref_enc"]
+    RefEnc --> Speaker["音色条件"]
+    SV --> Speaker
+    GPT -->|"目标语义 token"| SoVITS["SoVITS：enc_p → flow → decoder"]
     Frontend -->|"目标音素"| SoVITS
     Speaker --> SoVITS
-    SoVITS --> Audio["波形 / 分段拼接"]
+    SoVITS --> Audio["波形 → 分段拼接或逐段返回"]
 ```
 
 参考音色通过 `ref_enc` 编码，`enc_q` 用于训练时的 posterior encoder。
 代码中的 `ref_mel` 名称沿用历史，实际输入是 STFT 幅度频谱。
+
+### 跟一次请求读源码
+
+| 步骤 | 从这里读 | 看什么 |
+| --- | --- | --- |
+| 1. 收到 HTTP 请求 | [路由处理](src/server/handlers.rs) → [模型缓存与排队](src/server/pipeline_registry.rs) | 音色如何选中模型对？多个请求如何共用一个推理槽？ |
+| 2. 准备参考音色 | [参考缓存](src/inference/speaker.rs) → [HuBERT](src/models/hubert.rs) / [参考频谱](src/inference/ref_audio.rs) | 哪些特征只算一次？为什么同一段录音要走两条路径？ |
+| 3. 准备目标文本 | [文本前端](src/text_frontend/mod.rs) → [GPT 条件准备](src/models/gpt/conditioning.rs) | 数字和注音如何变成音素？`word2ph` 怎样把 BERT 特征对齐到音素？ |
+| 4. 生成语义 token | [解码](src/models/gpt/decode.rs) → [采样](src/models/gpt/sampling.rs) / [CUDA Graph](src/models/gpt/cuda_graph.rs) | 何时允许结束，何时值得捕获 Graph？首次回放如何验证？ |
+| 5. 合成波形 | [Pipeline 加载与合成](src/inference/mod.rs) → [SoVITS](src/models/sovits.rs) → [内置解码器](src/models/sovits_decoder.rs) | 如何复用权重、组合音色条件？改动可对照 [SoVITS 单测](src/models/sovits/tests.rs)和 [GPT 契约测试](src/models/gpt/contracts.rs)。 |
 
 ## 文本和参考特征
 
@@ -54,7 +72,8 @@ G2P 与 BERT 使用同一份规范化文本，数字展开和读音覆盖通过�
 | `cuda-graph` | 静态 KV 加 CUDA Graph，减少 decode 的主机调度开销 |
 | `auto` | CUDA F32 默认 Graph，其他设备默认 KV |
 
-Graph 前 32 步使用 eager/static KV，短生成可能在 capture 前结束。首次 replay 做结果检查，
+v1.3.3 的 Graph 路径先做 32 步 eager/static KV。当前实现让 prefill 先采样一个 token，
+再用静态 KV 解码至多 11 步；在首次允许 EOS 时已经结束的短句无需 capture。首次 replay 做结果检查，
 出现不适用情形时有 KV 回退保护。每次生成分别创建 Graph。
 `GPT_SOVITS_DISABLE_CUDA_GRAPH=1` 让自动选择退回 KV；旧的 experimental 开关已删除。
 

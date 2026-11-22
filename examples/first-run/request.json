@@ -1,4 +1,5 @@
 {
   "voice": "demo",
-  "text": "Your local voice service is ready. All speech is generated on your own computer."
+  "text": "The rain has stopped. We can walk home by the river.",
+  "seed": 42
 }

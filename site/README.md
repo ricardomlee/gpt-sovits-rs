@@ -26,7 +26,7 @@ node site/serve.cjs _site
 ```
 
 Open `http://127.0.0.1:9898/gpt-sovits-rs/`. Use an empty output directory for
-`build.sh`. The preview uses the same path prefix as the public site.
+`build.sh`. The preview also exercises relative links under a project subpath.
 
 To check playback and Worker/Wasm startup on the staged site, use an installed
 Google Chrome (or set `CHROME_BIN` to your Chromium executable):
@@ -44,9 +44,7 @@ An invalid checkpoint exercises the lab's Worker and error handling without mode
 In repository **Settings > Pages > Build and deployment**, select **GitHub Actions**
 once. The **Audio showcase** workflow validates and deploys relevant changes on `master`.
 Pull requests build and test. Merges touching the site, lab, or Rust dependencies
-trigger publication. The live URL is:
-
-`https://ricardomlee.github.io/gpt-sovits-rs/`
+trigger publication. The public site is [tts.ricli.tech](https://tts.ricli.tech/).
 
 The hero and lab illustrations in `assets/pages-*.webp` are generated artwork.
 Forks can update repository links and enable their own Pages site.

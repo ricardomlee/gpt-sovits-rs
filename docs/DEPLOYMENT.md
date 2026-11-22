@@ -1,6 +1,6 @@
 # 部署 GPT-SoVITS-RS 本地语音服务
 
-已有服务时，先[查音色并试一句](AGENT_INTEGRATION.md)。新部署再按主机选包。
+已有服务时，先[查音色并试一句](AGENT_INTEGRATION.md)。本页的部署模板默认用本机 **9880**；[首次运行示例](FIRST_RUN.zh-CN.md)默认用 **9881**。
 
 ## 选择部署方式
 
@@ -71,7 +71,7 @@ GPT_SOVITS_IMAGE_TAG=1.3.3
 ```json
 {
   "reference_audio": "ref.wav",
-  "reference_text": "你的本地语音服务已经准备好了。接下来的语音会在这台电脑上生成。",
+  "reference_text": "雨停了，河边的路灯亮了。我们慢慢走回家吧。",
   "language": "zh",
   "prompt_language": "zh"
 }

@@ -178,5 +178,5 @@ host port exposure is separate. The server still has no built-in authentication.
 4. Watch all Linux/macOS and CPU/CUDA release jobs; verify all three packaged binaries and hashes.
 5. Confirm the public version tag resolves to the tested CPU digest, then update
    the first-run defaults in `prepare.sh` and `compose.yml`, their fixture tests,
-   and the README/first-run guide.
+   and the [first-run guide](FIRST_RUN.zh-CN.md). Update the verified native archive names and sizes in both READMEs: [English](../README.md#native-cli) and [Chinese](../README.zh-CN.md#原生命令行).
 6. Only then update a running personal deployment, retaining its old image tag for rollback.
