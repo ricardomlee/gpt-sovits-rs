@@ -61,7 +61,7 @@ PATH="$PATH:/usr/lib/wsl/lib" nvidia-smi --query-gpu=name,compute_cap --format=c
 ```
 
 Match it to a published CUDA image for your release. A 4060 (8.9) uses `sm89`;
-a 5060 (12.0) needs `sm120`, which 1.3.3 does not publish. If no tag matches,
+a 5060 (12.0) needs `sm120`. If your release has no matching tag,
 use CPU on x86_64 or build for your GPU. The [deployment guide (in Chinese)](DEPLOYMENT.md#选择部署方式)
 lists the image tags and Docker commands.
 
