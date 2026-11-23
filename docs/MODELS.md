@@ -82,65 +82,44 @@ docker run --rm \
 的 GPT `.ckpt`、SoVITS `.pth`，以及一段 3 到 10 秒的 WAV 和它的逐字稿。用训练
 `.list` 文件时，取同一行的音频路径（第一列）和逐字稿（最后一列）。
 
-复用已有的 BERT、HuBERT 和 tokenizer。没有转换好的文件时，执行上面的
+把 `DATA_DIR` 设为 `models/` 和 `voices/` 的上级目录。按上表将已有的 BERT、HuBERT
+和 tokenizer 放到 `DATA_DIR/models/`。需要转换时，在 `DATA_DIR` 运行上面的
 [BERT、HuBERT 转换命令](#准备官方-v2-模型)，无需下载另一套 GPT 或 SoVITS。
-
-### 转换权重和准备录音
-
-```bash
-mkdir -p models/my-voice voices/my-voice
-
-gpt-sovits-convert gpt \
-  /path/to/my-voice.ckpt \
-  models/my-voice/gpt.safetensors
-
-gpt-sovits-convert sovits \
-  /path/to/my-voice.pth \
-  models/my-voice/sovits.safetensors
-
-cp /path/to/line.wav voices/my-voice/ref.wav
-```
 
 ### v2Pro SV
 
-v2 跳过这一步。v2Pro 的 SoVITS `.pth` 使用官方 `05`/`06` 版本头，转换器会自动处理。
-在训练的 `logs/<训练任务>/7-sv_cn/` 下按录音**原文件名**找 SV。例如录音原名
-`line.wav`，对应文件就是 `line.wav.pt`，即使部署时已把录音改名为 `ref.wav`。
+在训练的 `logs/<训练任务>/7-sv_cn/` 下按参考录音的原文件名找 SV：
+`line.wav` 对应 `line.wav.pt`。纯 v2 不需要这个文件。没有 SV 时，v2Pro 会用零向量，
+音色可能与训练结果不同。
+
+给已有音色补 SV 时，可单独运行 `gpt-sovits-convert sv line.wav.pt ref_sv.safetensors`。
+
+### 生成音色
+
+从仓库目录运行[准备脚本](../examples/trained-voice/prepare.sh)。需要 Bash、`jq`，以及
+已加入 `PATH` 的 `gpt-sovits-convert`。音色名以英文字母或数字开头，可含连字符或下划线。
+仅使用 Docker 时，可沿用
+[镜像内转换](#docker-转换)和[音色配置示例](DEPLOYMENT.md#音色目录)。
 
 ```bash
-gpt-sovits-convert sv \
-  /path/to/logs/my-voice_v2pro/7-sv_cn/line.wav.pt \
-  voices/my-voice/ref_sv.safetensors
+DATA_DIR="$HOME/tts"
+bash examples/trained-voice/prepare.sh "$DATA_DIR" my-voice \
+  /path/to/my-voice.ckpt /path/to/my-voice.pth /path/to/line.wav \
+  zh '参考录音的逐字稿' /path/to/logs/my-voice_v2pro/7-sv_cn/line.wav.pt
 ```
 
-转换器读取训练生成的 SV，不能从新录音提取。缺少 SV 时会使用零向量，音色可能与训练结果不同。
-
-### 写入音色配置
-
-将下面的内容写入 `voices/my-voice/voice.json`，把 `reference_text` 换成这段录音的逐字稿。
-用 v2 或没有 SV 文件时，省略 `sv_embedding` 一行。
-
-```json
-{
-  "reference_audio": "ref.wav",
-  "reference_text": "参考音频对应的文字",
-  "gpt_model": "my-voice/gpt.safetensors",
-  "sovits_model": "my-voice/sovits.safetensors",
-  "sv_embedding": "ref_sv.safetensors",
-  "language": "zh",
-  "prompt_language": "zh"
-}
-```
-
-`gpt_model`、`sovits_model` 相对于 `models/`；`reference_audio` 和
-`sv_embedding` 相对于 `voices/my-voice/`。
+v2 省略最后一个 SV 参数。脚本将权重写到 `models/my-voice/`，并在
+`voices/my-voice/` 保存录音、`voice.json` 和可选的 SV。命令成功后会打印
+`voice.json` 的路径；已有同名目录时会退出，不覆盖。
 
 ### 启动并接入 Hermes
 
 检查和启动都传 `--voice my-voice`，这样服务就会用该音色绑定的权重启动，不需要再准备
-`models/gpt-model.safetensors` 和 `models/sovits-model.safetensors`。
+`models/gpt-model.safetensors` 和 `models/sovits-model.safetensors`。两个命令都从
+刚生成音色的 `DATA_DIR` 运行：
 
 ```bash
+cd "$DATA_DIR"
 gpt-sovits --device cpu --models-dir models --voices-dir voices --doctor --voice my-voice
 gpt-sovits --device cpu --models-dir models --voices-dir voices --http --port 9880 --voice my-voice
 ```

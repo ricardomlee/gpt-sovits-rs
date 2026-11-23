@@ -27,7 +27,8 @@ jobs:
       - uses: rhysd/actionlint@v1.7.9
       - name: Check deployment scripts and Compose examples
         run: |
-          shellcheck examples/first-run/*.sh examples/verify-http-formats.sh site/build.sh
+          shellcheck examples/first-run/*.sh examples/trained-voice/prepare.sh tests/trained_voice_prepare.sh examples/verify-http-formats.sh site/build.sh
+          bash tests/trained_voice_prepare.sh
           docker compose --env-file .env.example -f compose.cpu.yml config --quiet
           docker compose --env-file .env.example -f compose.cuda.yml config --quiet
 
