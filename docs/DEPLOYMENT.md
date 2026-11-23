@@ -25,7 +25,8 @@ Linux x86_64 没有模型时，可从[公开 CPU 示例](FIRST_RUN.zh-CN.md)开�
 
 ## 准备目录和音色
 
-按[模型文档](MODELS.md)取得转换器并准备权重。部署使用以下目录：
+按[模型文档](MODELS.md)取得转换器并准备权重。已有训练产出的 `.pth` 和 `.ckpt` 时，
+可直接走[自训练音色流程](MODELS.md#自训练音色模型)。部署使用以下目录：
 
 ```text
 models/   模型权重
@@ -56,9 +57,11 @@ GPT_SOVITS_IMAGE_TAG=1.3.4
 | `voice.json` 的 `reference_audio`、`sv_embedding` | 相对于该音色目录 | `ref.wav`、`ref_sv.safetensors` |
 | `voice.json` 的 `gpt_model`、`sovits_model` | 相对于模型根目录 | `demo/gpt.safetensors` |
 
-服务启动时会加载一套默认 GPT/SoVITS。若只有放在 `models/demo/` 下的微调模型，
-将 `.env` 的 `GPT_MODEL`、`SOVITS_MODEL` 分别设为 `/app/models/demo/gpt.safetensors`、
-`/app/models/demo/sovits.safetensors`。BERT、HuBERT 和 tokenizer 按模型文档放好。
+服务启动时会加载一套默认 GPT/SoVITS。若权重放在 `models/my-voice/` 下，独立二进制
+可以用 `--voice my-voice` 选择音色绑定的权重。使用 Compose 时，在 `.env` 中将
+`GPT_MODEL`、`SOVITS_MODEL` 分别设为 `/app/models/my-voice/gpt.safetensors`、
+`/app/models/my-voice/sovits.safetensors`。
+BERT、HuBERT 和 tokenizer 按模型文档放好。
 
 ### 添加音色
 
@@ -139,7 +142,9 @@ Docker 镜像支持相同的编码格式。第三方库见[音频编解码许可
 | `gpt-sovits-convert` | 模型和 SV 文件转换 |
 | `gpt-sovits-client` | 可选的 HTTP 命令行客户端，适用于脚本和通过外部命令接入的工具 |
 
-下载[对应平台](#选择部署方式)的压缩包和 `SHA256SUMS`。尚未转换权重时，先用包内的 `gpt-sovits-convert` [准备权重](MODELS.md#准备官方-v2-模型)。以下为 Linux 示例：
+下载[对应平台](#选择部署方式)的压缩包和 `SHA256SUMS`。尚未转换权重时，先用包内的
+`gpt-sovits-convert` [准备官方权重](MODELS.md#准备官方-v2-模型)或[转换自己的权重](MODELS.md#自训练音色模型)。
+以下为 Linux 示例，用的是官方权重的默认文件名：
 
 ```bash
 sha256sum --check SHA256SUMS --ignore-missing
