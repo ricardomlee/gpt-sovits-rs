@@ -1,10 +1,11 @@
 param(
     [Parameter(Mandatory)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
-    [string]$InstallDir = $PSScriptRoot,
+    [string]$InstallDir,
     [string]$Source = "https://github.com/ricardomlee/gpt-sovits-rs/releases/download/v$Version"
 )
 
 $ErrorActionPreference = 'Stop'
+if (!$InstallDir) { $InstallDir = $PSScriptRoot }
 $root = (Get-Item -LiteralPath $InstallDir).FullName
 $name = "gpt-sovits-$Version-demo-v2-models.zip"
 $files = @(
