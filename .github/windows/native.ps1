@@ -11,6 +11,10 @@ $SoxrPort = (Resolve-Path $SoxrPort).Path
 $sources = Join-Path $WorkDir 'native-source'
 $prefix = Join-Path $WorkDir 'native'
 [void][IO.Directory]::CreateDirectory($sources)
+$tarDir = Join-Path $WorkDir 'tar'
+[void][IO.Directory]::CreateDirectory($tarDir)
+$sevenZip = "$env:ProgramFiles/7-Zip/7z.exe"
+if (!(Test-Path -LiteralPath $sevenZip)) { $sevenZip = (Get-Command 7z.exe).Source }
 
 function Get-NativeSource($name, $mirror, $upstream, $sha512) {
     Write-Host "Preparing $name"
@@ -25,9 +29,12 @@ function Get-NativeSource($name, $mirror, $upstream, $sha512) {
     } elseif ((Get-FileHash $file -Algorithm SHA512).Hash -ne $sha512) {
         throw "Invalid cached source: $name"
     }
-    # The upstream soxr test symlink needs elevated privileges on some Windows hosts.
+    # Server 2022's tar can stall on .tar.xz. Expand the outer stream and then the tar.
+    # Exclude the upstream test symlink, which requires extra privileges on some hosts.
     Write-Host "Extracting verified $name"
-    & "$env:SystemRoot/System32/tar.exe" -xf $file -C $WorkDir --exclude '*/inst-check-soxr-lsr'
+    & $sevenZip x -y -bd -bso0 "-o$tarDir" $file
+    $tar = Join-Path $tarDir ([IO.Path]::GetFileNameWithoutExtension($name))
+    & $sevenZip x -y -bd -bso0 '-xr!inst-check-soxr-lsr' "-o$WorkDir" $tar
 }
 Get-NativeSource 'soxr-0.1.3-Source.tar.xz' 'https://deb.debian.org/debian/pool/main/libs/libsoxr/libsoxr_0.1.3.orig.tar.xz' 'https://downloads.sourceforge.net/project/soxr/soxr-0.1.3-Source.tar.xz' 'f4883ed298d5650399283238aac3dbe78d605b988246bea51fa343d4a8ce5ce97c6e143f6c3f50a3ff81795d9c19e7a07217c586d4020f6ced102aceac46aaa8'
 Get-NativeSource 'lame-3.100.tar.gz' 'https://deb.debian.org/debian/pool/main/l/lame/lame_3.100.orig.tar.gz' 'https://downloads.sourceforge.net/project/lame/lame/3.100/lame-3.100.tar.gz' '0844b9eadb4aacf8000444621451277de365041cc1d97b7f7a589da0b7a23899310afd4e4d81114b9912aa97832621d20588034715573d417b2923948c08634b'
