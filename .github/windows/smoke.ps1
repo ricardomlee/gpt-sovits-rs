@@ -7,17 +7,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
 if (Test-Path -LiteralPath $InstallDir) { throw "Use a fresh extraction directory: $InstallDir" }
-$patterns = if ($Backend -eq 'cpu') {
-    '*-cpu-runtime.zip', '*-demo-v2-models.zip'
-} else {
-    '*-cuda-sm89.zip', '*-demo-v2-models.zip'
-}
-foreach ($pattern in $patterns) {
-    $files = @(Get-ChildItem -LiteralPath $DistDir -Filter $pattern -File)
-    if ($files.Count -ne 1) { throw "Expected one $pattern in $DistDir, found $($files.Count)" }
-    [IO.Compression.ZipFile]::ExtractToDirectory($files[0].FullName, $InstallDir)
-}
+$pattern = if ($Backend -eq 'cpu') { '*-cpu-runtime.zip' } else { '*-cuda-sm89.zip' }
+$files = @(Get-ChildItem -LiteralPath $DistDir -Filter $pattern -File)
+if ($files.Count -ne 1) { throw "Expected one $pattern in $DistDir, found $($files.Count)" }
+[IO.Compression.ZipFile]::ExtractToDirectory($files[0].FullName, $InstallDir)
 $root = (Resolve-Path "$InstallDir/GPT-SoVITS Windows").Path
+& "$root/download-models.cmd" -Source (Resolve-Path $DistDir).Path
 $program = "$root/gpt-sovits.exe"
 if ($Backend -eq 'cuda') {
     $program = "$root/cuda-sm89/gpt-sovits.exe"

@@ -36,3 +36,6 @@ Copy-Item -LiteralPath "$SourceDir/reference.wav" -Destination "$root/voices/dem
 Copy-Item -LiteralPath "$fixture/voice.json" -Destination "$root/voices/demo/"
 Copy-Item -LiteralPath "$fixture/downloads.txt", "$repo/docs/WINDOWS.md" -Destination "$root/model-notices/"
 [IO.Compression.ZipFile]::CreateFromDirectory($root, $Archive, 'Optimal', $true)
+$hash = (Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()
+$checksums = Join-Path (Split-Path -Parent $Archive) 'SHA256SUMS'
+[IO.File]::WriteAllText($checksums, "$hash  ./$([IO.Path]::GetFileName($Archive))`n", [Text.Encoding]::ASCII)

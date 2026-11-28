@@ -13,6 +13,7 @@ on:
       - 'licenses/**'
       - 'examples/first-run/**'
       - 'docs/WINDOWS.md'
+      - 'docs/releases/**'
   workflow_call:
   workflow_dispatch:
     inputs:
@@ -43,6 +44,8 @@ jobs:
       VSCMD_SKIP_SENDTELEMETRY: '1'
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
       - uses: actions/checkout@v7
         with:
           repository: microsoft/vcpkg
@@ -56,10 +59,6 @@ jobs:
           key: windows-msvc-${{ matrix.backend }}
       - name: Install pkg-config
         run: choco install pkgconfiglite --yes --no-progress
-      - name: Set up the x64 MSVC environment
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
-        with:
-          arch: x64
       - name: Install the CUDA compiler and libraries
         if: matrix.backend == 'cuda'
         uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
@@ -82,10 +81,17 @@ jobs:
         timeout-minutes: 5
         env:
           BACKEND: ${{ matrix.backend }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           $work = "$env:RUNNER_TEMP/win-build"
           $version = (cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
           "version=$version" >> $env:GITHUB_OUTPUT
+          if ($env:PR_BASE) {
+            $notes = "docs/releases/v$version.md"
+            if ((git diff --name-only --diff-filter=A $env:PR_BASE HEAD -- $notes) -contains $notes) {
+              "release_candidate=true" >> $env:GITHUB_OUTPUT
+            }
+          }
           ./.github/windows/package.ps1 -Backend $env:BACKEND -Version $version -BinDir target/release `
             -NativeDir "$work/native" -NativeSource "$work/native-source" -StageDir "$work/stage" -DistDir "$env:GITHUB_WORKSPACE/dist"
       - name: Convert the verified public demo with the packaged CPU converter
@@ -102,6 +108,7 @@ jobs:
       - name: Verify offline CPU synthesis from the extracted ZIPs
         if: matrix.backend == 'cpu'
         run: |
+          . ./.github/windows/enter-msvc.ps1
           $install = "$env:RUNNER_TEMP/offline CPU"
           ./.github/windows/smoke.ps1 -Backend cpu -DistDir dist -InstallDir $install
           $env:FIRST_RUN_WAV = "$install/GPT-SoVITS Windows/demo-cpu.wav"
@@ -122,11 +129,13 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Upload optional public demo models
-        if: matrix.backend == 'cpu' && github.event_name != 'pull_request'
+        if: matrix.backend == 'cpu' && (github.event_name != 'pull_request' || steps.package.outputs.release_candidate == 'true')
         uses: actions/upload-artifact@v7
         with:
           name: windows-models-binary
-          path: dist/*-demo-v2-models.zip
+          path: |
+            dist/*-demo-v2-models.zip
+            dist/SHA256SUMS
           compression-level: 0
           if-no-files-found: error
           retention-days: 7
