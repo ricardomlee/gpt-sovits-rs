@@ -25,17 +25,7 @@ struct Args {
 enum Command {
     /// Download, verify and convert the public v2 demo.
     #[cfg(not(target_arch = "wasm32"))]
-    PrepareDemo {
-        /// Directory to create with the converted models and demo voice.
-        #[arg(long, default_value = "demo-data")]
-        output_dir: PathBuf,
-        /// Read all the original files from this directory without downloading.
-        #[arg(long)]
-        source_dir: Option<PathBuf>,
-        /// Try ModelScope before Hugging Face for the upstream models.
-        #[arg(long)]
-        modelscope: bool,
-    },
+    PrepareDemo(demo::Options),
     /// Convert a GPT semantic model .ckpt to safetensors.
     Gpt {
         checkpoint: PathBuf,
@@ -64,11 +54,7 @@ fn main() -> Result<()> {
     let args = Args::parse();
     match args.command {
         #[cfg(not(target_arch = "wasm32"))]
-        Command::PrepareDemo {
-            output_dir,
-            source_dir,
-            modelscope,
-        } => demo::prepare(&output_dir, source_dir.as_deref(), modelscope),
+        Command::PrepareDemo(options) => demo::prepare(options),
         Command::Gpt { checkpoint, output } => {
             convert_checkpoint(&checkpoint, &output, ModelKind::Gpt)
         }

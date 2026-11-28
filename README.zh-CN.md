@@ -51,7 +51,7 @@ data="$HOME/gpt-sovits-demo"
 
 ## Docker 服务
 
-在 Linux x86_64 上准备 Docker Engine、Compose v2、Git、Bash、curl 和 SHA-256 校验工具，留出 6 GiB 磁盘、4 GiB 可用内存。[准备脚本](examples/first-run/prepare.sh)会下载并校验约 1.1 GB 的[模型文件](examples/first-run/downloads.txt)，另外还要下载 CPU 镜像。首次运行请使用新的或空的目录。
+在 Linux x86_64 上准备 Docker Engine、Compose v2、Git、Bash、curl 和 SHA-256 校验工具，留出 6 GiB 磁盘、4 GiB 可用内存。[准备脚本](examples/first-run/prepare.sh)会下载并校验约 1.1 GB 的[模型文件](examples/first-run/models.toml)，另外还要下载 CPU 镜像。首次运行请使用新的或空的目录。
 
 ```bash
 git clone https://github.com/ricardomlee/gpt-sovits-rs.git

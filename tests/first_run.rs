@@ -71,31 +71,32 @@ fn demo_fixtures_match_the_voice_loader() {
         serde_json::from_str(include_str!("../examples/first-run/request.json")).unwrap();
     assert_eq!(request["voice"], "demo");
     assert!(!request["text"].as_str().unwrap().is_empty());
-    let rows: Vec<_> = include_str!("../examples/first-run/downloads.txt")
-        .lines()
-        .filter(|line| !line.starts_with('#') && !line.is_empty())
-        .map(|line| line.split_whitespace().collect::<Vec<_>>())
-        .collect();
+    let manifest: toml::Value =
+        toml::from_str(include_str!("../examples/first-run/models.toml")).unwrap();
+    let rows = manifest["files"].as_array().unwrap();
     assert_eq!(rows.len(), 6);
     for row in rows {
-        if row[1] == "reference.wav" {
-            assert_eq!(row.len(), 3);
+        let path = row["path"].as_str().unwrap();
+        let hash = row["sha256"].as_str().unwrap();
+        let url = row["url"].as_str().unwrap();
+        if path == "reference.wav" {
+            assert!(row.get("modelscope").is_none());
         } else {
-            assert_eq!(row.len(), 4);
+            let mirror = row["modelscope"].as_str().unwrap();
             assert!(
-                row[3].starts_with("https://www.modelscope.cn/models/AI-ModelScope/GPT-SoVITS/")
+                mirror.starts_with("https://www.modelscope.cn/models/AI-ModelScope/GPT-SoVITS/")
             );
-            assert!(row[3].ends_with(row[1]));
+            assert!(mirror.ends_with(path));
         }
-        assert_eq!(row[0].len(), 64);
-        assert!(row[0].bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(hash.len(), 64);
+        assert!(hash.bytes().all(|b| b.is_ascii_hexdigit()));
         assert!(
-            Path::new(row[1])
+            Path::new(path)
                 .components()
                 .all(|c| matches!(c, std::path::Component::Normal(_)))
         );
-        assert!(row[2].starts_with("https://"));
-        assert!(!row[2].contains("/main/"));
+        assert!(url.starts_with("https://"));
+        assert!(!url.contains("/main/"));
     }
 }
 
@@ -117,30 +118,41 @@ mod preparation {
             for file in ["prepare.sh", "voice.json", "compose.yml", "request.json"] {
                 fs::copy(source.join(file), root.path().join(file)).unwrap();
             }
-            let rows = fs::read_to_string(source.join("downloads.txt")).unwrap();
-            let manifest = rows
+            let manifest = fs::read_to_string(source.join("models.toml")).unwrap();
+            let fixture = manifest
                 .lines()
-                .filter(|s| !s.starts_with('#') && !s.is_empty())
-                .map(|s| {
-                    let (_, rest) = s.split_once(' ').unwrap();
-                    format!(
-                        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad {rest}\n"
-                    )
+                .map(|line| {
+                    if line.starts_with("sha256 = ") {
+                        "sha256 = \"ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\""
+                    } else {
+                        line
+                    }
                 })
-                .collect::<String>();
-            fs::write(root.path().join("downloads.txt"), manifest).unwrap();
+                .collect::<Vec<_>>()
+                .join("\n");
+            fs::write(root.path().join("models.toml"), fixture).unwrap();
             let docker = r#"#!/usr/bin/env bash
 set -eu
 printf '%s\n' "$*" >> "$TEST_LOG"
 if [[ "$1" == info ]]; then printf '%s\n' "${TEST_PLATFORM:-linux/x86_64}"; exit 0; fi
 if [[ "$1" == image && ${MISSING_IMAGE:-0} == 1 ]]; then exit 1; fi
 [[ "$1" != run ]] && exit 0
+if [[ "$*" == *" prepare-demo --help" ]]; then
+  [[ ${HAS_RUST_PREPARE:-0} == 1 ]]
+  exit
+fi
 models=''
+demo=''
 previous=''
 for arg in "$@"; do
   if [[ "$previous" == --volume && "$arg" == *:/models ]]; then models=${arg%:/models}; fi
+  if [[ "$previous" == --volume && "$arg" == *:/demo ]]; then demo=${arg%:/demo}; fi
   previous=$arg
 done
+if [[ -n "$demo" ]]; then
+  mkdir -p "$demo/demo-data/models" "$demo/demo-data/voices"
+  exit 0
+fi
 if [[ -n "$models" ]]; then
   [[ ${FAIL_CONVERSION:-0} == 1 ]] && exit 9
   output=${!#}
@@ -180,6 +192,7 @@ exit 2
                 .env_remove("DEMO_PULL_POLICY")
                 .env_remove("DEMO_MODEL_SOURCE")
                 .env_remove("BAD_MIRROR")
+                .env_remove("HAS_RUST_PREPARE")
                 .env_remove("MISSING_IMAGE")
                 .env(
                     "PATH",
@@ -217,10 +230,35 @@ exit 2
             .filter_map(|line| line.strip_prefix("source "))
             .collect();
         assert_eq!(sources.len(), 11);
-        for pair in sources[..10].chunks_exact(2) {
-            assert!(pair[0].starts_with("https://www.modelscope.cn/"));
-            assert!(pair[1].starts_with("https://huggingface.co/"));
+        for [mirror, upstream] in sources[..10].as_chunks::<2>().0 {
+            assert!(mirror.starts_with("https://www.modelscope.cn/"));
+            assert!(upstream.starts_with("https://huggingface.co/"));
         }
+    }
+
+    #[test]
+    fn current_image_runs_the_rust_preparer_and_points_compose_to_its_output() {
+        let f = Fixture::new();
+        let result = f
+            .command()
+            .env("HAS_RUST_PREPARE", "1")
+            .env("DEMO_MODEL_SOURCE", "modelscope")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let log = f.log();
+        assert!(log.contains("prepare-demo --manifest /models.toml --output-dir /demo/demo-data --cache-dir /demo/source --modelscope"));
+        assert!(log.contains("/demo-data/models:/app/models:ro"));
+        assert!(!log.lines().any(|line| line == "download"));
+        assert!(
+            fs::read_to_string(f.destination.join(".env"))
+                .unwrap()
+                .contains("DEMO_DATA_DIR=./demo-data\n")
+        );
     }
 
     #[test]
@@ -299,10 +337,7 @@ exit 2
             assert!(!f.destination.join(".prepare-lock").exists());
         }
         assert_eq!(f.log().lines().filter(|s| *s == "download").count(), 6);
-        assert_eq!(
-            f.log().matches("--entrypoint gpt-sovits-convert").count(),
-            8
-        );
+        assert_eq!(f.log().matches(" /source/").count(), 8);
         assert_eq!(f.log().matches("--doctor").count(), 2);
         assert_eq!(
             fs::read_to_string(f.destination.join(".env")).unwrap(),
@@ -347,7 +382,7 @@ exit 2
                 .status
                 .success()
         );
-        assert!(!f.log().contains("--entrypoint"));
+        assert!(!f.log().contains(" /source/"));
         assert!(!f.destination.join(".prepare-lock").exists());
         assert!(f.command().output().unwrap().status.success());
     }

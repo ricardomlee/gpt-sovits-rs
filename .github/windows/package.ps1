@@ -21,6 +21,7 @@ Copy-Item "$repo/licenses/*.txt" "$bin/licenses/"
 Copy-Item -Recurse -LiteralPath $NativeSource -Destination "$bin/licenses/native-source"
 Copy-Item -LiteralPath "$repo/docs/WINDOWS.md" -Destination "$bin/README-Windows.md"
 Copy-Item -LiteralPath "$repo/examples/first-run/prepare-models.cmd" -Destination $root
+Copy-Item -LiteralPath "$repo/examples/first-run/models.toml" -Destination $bin
 $variant = 'cpu-runtime'
 $program = 'gpt-sovits.exe'
 $launcher = @('@echo off', 'setlocal', 'cd /d "%~dp0"')

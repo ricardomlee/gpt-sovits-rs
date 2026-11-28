@@ -23,7 +23,7 @@ The launcher uses Windows `curl.exe` to download about 1.1 GB of upstream files,
 
 To try ModelScope first for the model files, run `.\prepare-models.cmd --modelscope`.
 
-For offline preparation, store all the original files with the paths in the download manifest and run `.\prepare-models.cmd --source-dir "D:\Models\source"`. The manifest is copied to `demo-data/download-sources.txt` after preparation. Users who already have a model and voice directory can supply those paths directly.
+For offline preparation, store the original files at the paths in `models.toml` and run `.\prepare-models.cmd --source-dir "D:\Models\source"`. The TOML manifest sits beside the converter and is copied to `demo-data/download-sources.toml` after preparation. Change the HTTPS URLs to choose a mirror with the same pinned files. Users with prepared model and voice directories can supply those paths directly.
 
 The published v1.3.5 ZIPs use the release downloader. [v1.3.5 Windows guide](https://github.com/ricardomlee/gpt-sovits-rs/blob/v1.3.5/docs/WINDOWS.md)
 

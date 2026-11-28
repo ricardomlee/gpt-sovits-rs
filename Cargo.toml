@@ -79,6 +79,7 @@ anyhow = "1.0"
 soxr = "0.6" # matches librosa's soxr_hq
 sha2 = "0.11.1"
 tempfile = "3.14"
+toml = "0.8.23"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.3.4", features = ["wasm_js"] }

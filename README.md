@@ -52,7 +52,7 @@ With the models on disk, the v1.3.4 CLI took 9.1 to 9.2 seconds to load them and
 
 ## Docker Service
 
-The demo needs Linux x86_64, Docker Engine with Compose v2, Git, Bash, curl, SHA-256 tools, 6 GiB of free disk and 4 GiB of available memory. The [setup script](examples/first-run/prepare.sh) verifies about 1.1 GB of [model downloads](examples/first-run/downloads.txt); the CPU image downloads separately. Give the script a new or empty directory.
+The demo needs Linux x86_64, Docker Engine with Compose v2, Git, Bash, curl, SHA-256 tools, 6 GiB of free disk and 4 GiB of available memory. The [setup script](examples/first-run/prepare.sh) verifies about 1.1 GB of [model downloads](examples/first-run/models.toml). The CPU image downloads separately. Give the script a new or empty directory.
 
 ```bash
 git clone https://github.com/ricardomlee/gpt-sovits-rs.git

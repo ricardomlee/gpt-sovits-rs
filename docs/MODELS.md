@@ -19,8 +19,8 @@
 ## 准备公开 v2 演示模型
 
 在带有准备脚本的程序包里，从解压目录运行对应命令。脚本使用包内的 CPU 转换器，
-下载并校验[清单里的上游权重和参考录音](../examples/first-run/downloads.txt)，再转换为 safetensors。
-准备过程使用 `curl`（Windows 下为 `curl.exe`）。结果保存在 `demo-data/models/` 和
+下载并校验[清单里的上游权重和参考录音](../examples/first-run/models.toml)，再转换为 safetensors。
+在线下载使用 `curl`（Windows 下为 `curl.exe`）。结果保存在 `demo-data/models/` 和
 `demo-data/voices/`，可以整目录复制给其他操作系统的程序包使用。
 
 | 程序包 | 准备模型 | 生成语音 |
@@ -44,6 +44,10 @@ SHA-256 要与下载清单对应，文件名 `reference.wav` 对应清单里的�
 
 Windows 使用 `prepare-models.cmd --source-dir "D:\Models\source"`。从源码构建时可用
 `gpt-sovits-convert prepare-demo`，通过 `--output-dir` 选择新的输出目录。
+
+下载地址集中在转换器旁边的 `models.toml`。可以调整其中的 HTTPS 地址，或显式传入
+`gpt-sovits-convert prepare-demo --manifest models.toml`。程序会核对清单中的相对路径
+和已固定的 SHA-256，换镜像时只需改地址。
 
 如需优先从魔搭下载，运行 `prepare-models.cmd --modelscope` 或
 `./prepare-models.sh --modelscope`。这五个权重和 tokenizer 文件与 Hugging Face

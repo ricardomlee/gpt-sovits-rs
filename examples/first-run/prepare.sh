@@ -25,17 +25,7 @@ case "$model_source" in
   huggingface|modelscope) ;;
   *) printf 'DEMO_MODEL_SOURCE must be huggingface or modelscope.\n' >&2; exit 2 ;;
 esac
-for command in docker curl; do
-  command -v "$command" >/dev/null || { printf 'Missing command: %s\n' "$command" >&2; exit 1; }
-done
-if command -v sha256sum >/dev/null; then
-  checksum() { sha256sum "$1" | cut -d ' ' -f 1; }
-elif command -v shasum >/dev/null; then
-  checksum() { shasum -a 256 "$1" | cut -d ' ' -f 1; }
-else
-  printf 'Install sha256sum or shasum first.\n' >&2
-  exit 1
-fi
+command -v docker >/dev/null || { printf 'Missing command: docker\n' >&2; exit 1; }
 platform=$(docker info --format '{{.OSType}}/{{.Architecture}}')
 case "$platform" in
   linux/x86_64|linux/amd64) ;;
@@ -66,63 +56,102 @@ fi
 lock="$destination/.prepare-lock"
 mkdir -- "$lock" || { printf 'Preparation already running (or stale lock): %s\n' "$lock" >&2; exit 1; }
 trap 'rmdir -- "$lock"' EXIT
-mkdir -p "$destination/source" "$destination/models/bert" "$destination/models/hubert" "$destination/voices/demo"
+if [[ $pull_policy == always ]]; then docker pull "$image"; fi
 
-while read -r expected relative url mirror; do
-  [[ -z "$expected" || "$expected" == \#* ]] && continue
-  file="$destination/source/$relative"
-  mkdir -p -- "$(dirname -- "$file")"
-  if [[ -f "$file" ]]; then
-    if [[ $(checksum "$file") != "$expected" ]]; then
-      printf 'Checksum mismatch: %s. Remove this file and retry.\n' "$file" >&2
-      exit 1
-    fi
-    printf 'Verified cached %s\n' "$relative"
-    continue
-  fi
-  if [[ $model_source == modelscope && -n $mirror ]]; then
-    urls=("$mirror" "$url")
+model_dir=.
+if docker run --rm --network none --entrypoint gpt-sovits-convert "$image" prepare-demo --help >/dev/null 2>&1; then
+  model_dir=./demo-data
+  source_options=()
+  if [[ $model_source == modelscope ]]; then source_options+=(--modelscope); fi
+  docker run --rm --user "$(id -u):$(id -g)" \
+    --volume "$destination:/demo" --volume "$here/models.toml:/models.toml:ro" \
+    --entrypoint gpt-sovits-convert "$image" prepare-demo \
+    --manifest /models.toml --output-dir /demo/demo-data --cache-dir /demo/source "${source_options[@]}"
+else
+  command -v curl >/dev/null || { printf 'Missing command: curl\n' >&2; exit 1; }
+  if command -v sha256sum >/dev/null; then
+    checksum() { sha256sum "$1" | cut -d ' ' -f 1; }
+  elif command -v shasum >/dev/null; then
+    checksum() { shasum -a 256 "$1" | cut -d ' ' -f 1; }
   else
-    urls=("$url" "$mirror")
-  fi
-  for source_url in "${urls[@]}"; do
-    [[ -n "$source_url" ]] || continue
-    printf 'Downloading %s from %s\n' "$relative" "$source_url"
-    if curl --fail --location --retry 3 --connect-timeout 30 --max-time 1800 --output "$file.part" "$source_url"; then
-      if [[ $(checksum "$file.part") == "$expected" ]]; then
-        mv -- "$file.part" "$file"
-        break
-      fi
-      printf 'Checksum mismatch: %s from %s.\n' "$file.part" "$source_url" >&2
-    fi
-  done
-  if [[ ! -f "$file" ]]; then
-    printf 'Could not obtain a verified copy of %s. Nothing will be converted.\n' "$relative" >&2
+    printf 'Install sha256sum or shasum first.\n' >&2
     exit 1
   fi
-done < "$here/downloads.txt"
+  # The published v1.3.5 converter predates prepare-demo. Read the literal
+  # source fields from the repository's manifest for that compatibility path.
+  rows=$(awk -F '"' '
+    function emit() {
+      if (path != "") {
+        if (sum == "" || url == "") exit 1
+        print sum, path, url, mirror
+      }
+    }
+    /^\[\[files\]\]/ { emit(); path = sum = url = mirror = ""; next }
+    /^path = "/ { path = $2 }
+    /^sha256 = "/ { sum = $2 }
+    /^url = "/ { url = $2 }
+    /^modelscope = "/ { mirror = $2 }
+    END { emit() }
+  ' "$here/models.toml")
+  [[ -n "$rows" ]] || { printf 'Unable to read models.toml.\n' >&2; exit 1; }
+  mkdir -p "$destination/source" "$destination/models/bert" "$destination/models/hubert" "$destination/voices/demo"
 
-if [[ $pull_policy == always ]]; then docker pull "$image"; fi
-convert() {
-  docker run --rm --network none --user "$(id -u):$(id -g)" \
-    --volume "$destination/source:/source:ro" --volume "$destination/models:/models" \
-    --entrypoint gpt-sovits-convert "$image" "$1" "/source/$2" "/models/$3.tmp"
-  mv -- "$destination/models/$3.tmp" "$destination/models/$3"
-}
-convert gpt gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt gpt-model.safetensors
-convert sovits gsv-v2final-pretrained/s2G2333k.pth sovits-model.safetensors
-convert bert chinese-roberta-wwm-ext-large/pytorch_model.bin bert/bert.safetensors
-convert hubert chinese-hubert-base/pytorch_model.bin hubert/hubert.safetensors
-cp "$destination/source/chinese-roberta-wwm-ext-large/tokenizer.json" "$destination/models/bert/tokenizer.json"
-cp "$destination/source/reference.wav" "$destination/voices/demo/ref.wav"
-cp "$here/voice.json" "$destination/voices/demo/voice.json"
+  while read -r expected relative url mirror; do
+    [[ -z "$expected" || "$expected" == \#* ]] && continue
+    file="$destination/source/$relative"
+    mkdir -p -- "$(dirname -- "$file")"
+    if [[ -f "$file" ]]; then
+      if [[ $(checksum "$file") != "$expected" ]]; then
+        printf 'Checksum mismatch: %s. Remove this file and retry.\n' "$file" >&2
+        exit 1
+      fi
+      printf 'Verified cached %s\n' "$relative"
+      continue
+    fi
+    if [[ $model_source == modelscope && -n $mirror ]]; then
+      urls=("$mirror" "$url")
+    else
+      urls=("$url" "$mirror")
+    fi
+    for source_url in "${urls[@]}"; do
+      [[ -n "$source_url" ]] || continue
+      printf 'Downloading %s from %s\n' "$relative" "$source_url"
+      if curl --fail --location --retry 3 --connect-timeout 30 --max-time 1800 --output "$file.part" "$source_url"; then
+        if [[ $(checksum "$file.part") == "$expected" ]]; then
+          mv -- "$file.part" "$file"
+          break
+        fi
+        printf 'Checksum mismatch: %s from %s.\n' "$file.part" "$source_url" >&2
+      fi
+    done
+    if [[ ! -f "$file" ]]; then
+      printf 'Could not obtain a verified copy of %s. Nothing will be converted.\n' "$relative" >&2
+      exit 1
+    fi
+  done <<< "$rows"
+
+  convert() {
+    docker run --rm --network none --user "$(id -u):$(id -g)" \
+      --volume "$destination/source:/source:ro" --volume "$destination/models:/models" \
+      --entrypoint gpt-sovits-convert "$image" "$1" "/source/$2" "/models/$3.tmp"
+    mv -- "$destination/models/$3.tmp" "$destination/models/$3"
+  }
+  convert gpt gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt gpt-model.safetensors
+  convert sovits gsv-v2final-pretrained/s2G2333k.pth sovits-model.safetensors
+  convert bert chinese-roberta-wwm-ext-large/pytorch_model.bin bert/bert.safetensors
+  convert hubert chinese-hubert-base/pytorch_model.bin hubert/hubert.safetensors
+  cp "$destination/source/chinese-roberta-wwm-ext-large/tokenizer.json" "$destination/models/bert/tokenizer.json"
+  cp "$destination/source/reference.wav" "$destination/voices/demo/ref.wav"
+  cp "$here/voice.json" "$destination/voices/demo/voice.json"
+fi
 cp "$here/compose.yml" "$destination/compose.yml"
 cp "$here/request.json" "$destination/request.json"
 compose_pull_policy=missing
 if [[ $pull_policy == never ]]; then compose_pull_policy=never; fi
 printf 'DEMO_IMAGE=%s\nDEMO_PULL_POLICY=%s\n' "$image" "$compose_pull_policy" > "$destination/.env"
+if [[ $model_dir != . ]]; then printf 'DEMO_DATA_DIR=%s\n' "$model_dir" >> "$destination/.env"; fi
 
 docker run --rm --network none \
-  --volume "$destination/models:/app/models:ro" --volume "$destination/voices:/app/voices:ro" \
+  --volume "$destination/$model_dir/models:/app/models:ro" --volume "$destination/$model_dir/voices:/app/voices:ro" \
   "$image" --doctor --device cpu --models-dir /app/models --voices-dir /app/voices --voice demo
 printf '\nPrepared %s\nNext: cd into that directory and run docker compose up -d --wait --wait-timeout 900\n' "$destination"

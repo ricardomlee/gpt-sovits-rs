@@ -10,7 +10,7 @@
 
 - Linux x86_64、Docker Engine、Compose v2、Git、Bash、curl，以及 sha256sum 或 shasum。
 - 至少 6 GiB 可用磁盘、4 GiB 可用内存。模型源文件下载约 1.1 GB，另需下载镜像。
-- 能访问 GitHub、GHCR、Hugging Face。[准备脚本](../examples/first-run/prepare.sh)从上游下载[模型文件](../examples/first-run/downloads.txt)，后续转换和合成都在本机 Docker 中完成。
+- 能访问 GitHub、GHCR、Hugging Face 或魔搭。[准备脚本](../examples/first-run/prepare.sh)根据同一份 [models.toml](../examples/first-run/models.toml) 准备模型，再写入 Compose 配置。
 
 ## 跑出第一段音频
 
@@ -26,6 +26,8 @@ export TTS_URL="http://127.0.0.1:${DEMO_PORT:-9881}"
 ```
 
 需要优先使用魔搭时，在准备命令前加 `DEMO_MODEL_SOURCE=modelscope`。下载文件仍使用同一组 SHA-256。
+支持 `prepare-demo` 的镜像会用包内的 Rust 转换器生成 `demo-data/`，脚本会把该路径写进
+Compose 配置。使用 v1.3.5 镜像时，模型和音色目录直接位于演示目录下。
 
 在同一终端把 `request.json` 发给服务，生成 `first.wav`：
 
@@ -49,7 +51,7 @@ curl --fail-with-body --max-time 300 "$TTS_URL/tts" \
 
 ## 换成自己的声音
 
-在 `~/gpt-sovits-demo/voices/` 下[添加音色](DEPLOYMENT.md#添加音色)，放入有权使用的录音和逐字稿。示例里的中文音色叫 `my-voice`；创建后就能用同一个服务地址[让它说一句中文](DEPLOYMENT.md#验证服务)。
+在 Compose 挂载的 `voices/` 下[添加音色](DEPLOYMENT.md#添加音色)，放入有权使用的录音和逐字稿。v1.3.5 镜像的默认路径是 `~/gpt-sovits-demo/voices/`。创建示例音色 `my-voice` 后，可以用同一个服务地址[让它说一句中文](DEPLOYMENT.md#验证服务)。
 
 用完后，在 `~/gpt-sovits-demo` 运行 `docker compose down`。模型、音色和生成的音频都会保留。
 

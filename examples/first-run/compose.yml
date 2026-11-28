@@ -9,8 +9,8 @@ services:
     ports:
       - "127.0.0.1:${DEMO_PORT:-9881}:9880"
     volumes:
-      - ./models:/app/models:ro
-      - ./voices:/app/voices:ro
+      - ${DEMO_DATA_DIR:-.}/models:/app/models:ro
+      - ${DEMO_DATA_DIR:-.}/voices:/app/voices:ro
     command:
       - --http
       - --port
