@@ -13,7 +13,7 @@
 | 想做什么 | 从这里开始 |
 | --- | --- |
 | 打开浏览器听效果 | [试听英文示例和 Sun 的中文录音](https://tts.ricli.tech/#samples)，不用安装或下载模型。想让它读自己写的中文，可带上[准备好的模型和参考特征](experiments/wasm-sovits/README.md#prepare-a-voice)进入 [Wasm 实验室](https://tts.ricli.tech/lab/)。 |
-| 在电脑上生成一个 WAV | [原生命令行](#原生命令行)支持 Linux x86_64 和 macOS。准备好转换后的模型和参考音色即可运行，不用启动 Docker 或 HTTP 服务。 |
+| 在电脑上生成一个 WAV | Linux x86_64 和 macOS 可用[原生命令行](#原生命令行)。Windows x64 可用 [CPU 或 CUDA 程序包](docs/WINDOWS.md)，公开模型可选。GPU 版使用系统安装的 NVIDIA CUDA 12.5.1。 |
 | 给应用接上语音 API | [Docker 服务](#docker-服务)提供 Linux x86_64 的 CPU 示例，自动准备公开模型和英文音色。其他机器先[按硬件选版本](docs/DEPLOYMENT.md#选择部署方式)。 |
 
 已经有运行中的服务？[直接发一句话试试](#接入应用)。
