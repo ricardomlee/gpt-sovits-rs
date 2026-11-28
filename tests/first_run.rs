@@ -409,9 +409,9 @@ exit 2
         assert!(f.command().output().unwrap().status.success());
         let reference = f.destination.join("source/reference.wav");
         fs::write(&reference, "changed").unwrap();
-        let before = f.log().matches("--entrypoint").count();
+        let before = f.log().matches(" /source/").count();
         assert!(!f.command().output().unwrap().status.success());
-        assert_eq!(f.log().matches("--entrypoint").count(), before);
+        assert_eq!(f.log().matches(" /source/").count(), before);
         assert_eq!(fs::read_to_string(reference).unwrap(), "changed");
     }
 
