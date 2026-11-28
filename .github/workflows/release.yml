@@ -180,6 +180,12 @@ jobs:
           path: dist/*.tar.gz
           if-no-files-found: error
 
+  windows-binary:
+    needs: preflight
+    uses: ./.github/workflows/windows.yml
+    permissions:
+      contents: read
+
   cpu-image:
     needs: preflight
     name: Build CPU image
@@ -269,7 +275,7 @@ jobs:
 
   github-release:
     name: Verify and publish release
-    needs: [linux-binary, macos-binary, cpu-image, cuda-image]
+    needs: [linux-binary, macos-binary, windows-binary, cpu-image, cuda-image]
     runs-on: ubuntu-24.04
     env:
       DEMO_IMAGE: ${{ needs.cpu-image.outputs.image }}
@@ -319,7 +325,7 @@ jobs:
 
       - name: Create checksums
         working-directory: dist
-        run: sha256sum ./*.tar.gz > SHA256SUMS
+        run: sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
 
       - name: Publish CPU tags for the verified digest
         env:
@@ -335,6 +341,7 @@ jobs:
           body_path: docs/releases/${{ github.ref_name }}.md
           files: |
             dist/*.tar.gz
+            dist/*.zip
             dist/SHA256SUMS
           fail_on_unmatched_files: true
           generate_release_notes: false

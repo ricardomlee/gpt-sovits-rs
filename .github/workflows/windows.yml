@@ -1,0 +1,132 @@
+name: Windows packages
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/windows/**'
+      - '.github/workflows/windows.yml'
+      - '.github/workflows/release.yml'
+      - 'Cargo.*'
+      - 'client/**'
+      - 'src/**'
+      - 'licenses/**'
+      - 'examples/first-run/**'
+      - 'docs/WINDOWS.md'
+  workflow_call:
+  workflow_dispatch:
+    inputs:
+      gpu_smoke:
+        description: Run synthesis on a self-hosted Windows SM 8.9 GPU
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Windows x64 ${{ matrix.backend }}
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [cpu, cuda]
+    env:
+      CARGO_INCREMENTAL: '0'
+      CARGO_TERM_COLOR: always
+      RAYON_NUM_THREADS: '4'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: microsoft/vcpkg
+          ref: ba33ef1a2fb3c6519e819cd767bb8fd1677f1323
+          path: .windows-ports
+          sparse-checkout: ports/soxr
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-msvc-${{ matrix.backend }}
+      - name: Install pkg-config
+        run: choco install pkgconfiglite --yes --no-progress
+      - name: Install the CUDA compiler and libraries
+        if: matrix.backend == 'cuda'
+        uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
+        with:
+          cuda: '12.5.1'
+          method: network
+          sub-packages: '["nvcc","cudart","cublas","cublas_dev","curand","curand_dev","nvrtc","nvrtc_dev","thrust"]'
+          use-github-cache: 'false'
+      - name: Build the binaries and package their dependencies
+        id: build
+        env:
+          BACKEND: ${{ matrix.backend }}
+        run: |
+          $version = (cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          "version=$version" >> $env:GITHUB_OUTPUT
+          ./.github/windows/build.ps1 -Backend $env:BACKEND -Version $version -SoxrPort .windows-ports/ports/soxr `
+            -WorkDir "$env:RUNNER_TEMP/win-build" -DistDir "$env:GITHUB_WORKSPACE/dist"
+      - name: Convert the verified public demo with the packaged CPU converter
+        if: matrix.backend == 'cpu'
+        env:
+          VERSION: ${{ steps.build.outputs.version }}
+        run: |
+          $zip = (Get-Item "dist/*-cpu-runtime.zip").FullName
+          $app = "$env:RUNNER_TEMP/converter"
+          [IO.Compression.ZipFile]::ExtractToDirectory($zip, $app)
+          ./.github/windows/models.ps1 -Converter "$app/GPT-SoVITS Windows/gpt-sovits-convert.exe" `
+            -SourceDir "$env:RUNNER_TEMP/weights" -StageDir "$env:RUNNER_TEMP/demo-stage" `
+            -Archive "$env:GITHUB_WORKSPACE/dist/gpt-sovits-$env:VERSION-demo-v2-models.zip"
+      - name: Verify offline CPU synthesis from the extracted ZIPs
+        if: matrix.backend == 'cpu'
+        run: |
+          $install = "$env:RUNNER_TEMP/offline CPU"
+          ./.github/windows/smoke.ps1 -Backend cpu -DistDir dist -InstallDir $install
+          $env:FIRST_RUN_WAV = "$install/GPT-SoVITS Windows/demo-cpu.wav"
+          $native = "$env:RUNNER_TEMP/win-build/native"
+          $env:PKG_CONFIG_PATH = "$native/lib/pkgconfig" -replace '\\', '/'
+          $env:LAME_LIB_DIR = "$native/lib"
+          $env:PATH = "$native/bin;$env:PATH"
+          $env:CMAKE_GENERATOR = 'Ninja'
+          $env:CMAKE_POLICY_VERSION_MINIMUM = '3.5'
+          cargo test --release --locked --features http-api --test first_run generated_http_audio_is_valid -- --exact --ignored --nocapture
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows-${{ matrix.backend }}-binary
+          path: |
+            dist/*-cpu-runtime.zip
+            dist/*-cuda-sm89.zip
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+      - name: Upload optional public demo models
+        if: matrix.backend == 'cpu' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-models-binary
+          path: dist/*-demo-v2-models.zip
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 7
+
+  gpu-smoke:
+    name: Verify GPU kernel execution
+    if: github.event_name == 'workflow_dispatch' && inputs.gpu_smoke && github.ref_name == github.event.repository.default_branch
+    needs: build
+    runs-on: [self-hosted, Windows, X64, "${{ vars.WINDOWS_GPU_LABEL || 'sm89' }}"]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: windows-*-binary
+          path: dist
+          merge-multiple: true
+      - name: Synthesize the public demo under Nsight Systems
+        shell: pwsh
+        run: |
+          ./.github/windows/smoke.ps1 -Backend cuda -DistDir dist -InstallDir "$env:RUNNER_TEMP/gpu-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
