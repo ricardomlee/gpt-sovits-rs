@@ -24,6 +24,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: windows-packages-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     name: Windows x64 ${{ matrix.backend }}
@@ -59,19 +63,30 @@ jobs:
           method: network
           sub-packages: '["nvcc","cudart","cublas","cublas_dev","curand","curand_dev","nvrtc","nvrtc_dev","thrust"]'
           use-github-cache: 'false'
-      - name: Build the binaries and package their dependencies
-        id: build
+      - name: Build soxr and LAME
+        timeout-minutes: 12
+        run: ./.github/windows/native.ps1 -WorkDir "$env:RUNNER_TEMP/win-build" -SoxrPort .windows-ports/ports/soxr
+      - name: Compile Rust release binaries
+        timeout-minutes: 75
         env:
           BACKEND: ${{ matrix.backend }}
         run: |
+          ./.github/windows/build.ps1 -Backend $env:BACKEND -NativeDir "$env:RUNNER_TEMP/win-build/native"
+      - name: Package binaries and verify PE imports
+        id: package
+        timeout-minutes: 5
+        env:
+          BACKEND: ${{ matrix.backend }}
+        run: |
+          $work = "$env:RUNNER_TEMP/win-build"
           $version = (cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
           "version=$version" >> $env:GITHUB_OUTPUT
-          ./.github/windows/build.ps1 -Backend $env:BACKEND -Version $version -SoxrPort .windows-ports/ports/soxr `
-            -WorkDir "$env:RUNNER_TEMP/win-build" -DistDir "$env:GITHUB_WORKSPACE/dist"
+          ./.github/windows/package.ps1 -Backend $env:BACKEND -Version $version -BinDir target/release `
+            -NativeDir "$work/native" -NativeSource "$work/native-source" -StageDir "$work/stage" -DistDir "$env:GITHUB_WORKSPACE/dist"
       - name: Convert the verified public demo with the packaged CPU converter
         if: matrix.backend == 'cpu'
         env:
-          VERSION: ${{ steps.build.outputs.version }}
+          VERSION: ${{ steps.package.outputs.version }}
         run: |
           $zip = (Get-Item "dist/*-cpu-runtime.zip").FullName
           $app = "$env:RUNNER_TEMP/converter"

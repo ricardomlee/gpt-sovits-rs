@@ -22,7 +22,7 @@ foreach ($line in (Get-Content "$fixture/downloads.txt")) {
     if (Test-Path -LiteralPath $file) {
         if ((Get-FileHash -LiteralPath $file).Hash -ne $sha) { throw "Invalid cached model input: $relative" }
     } else {
-        curl.exe -fsSL --retry 4 --retry-all-errors --output "$file.part" $url
+        curl.exe -fsSL --connect-timeout 20 --max-time 1200 --retry 2 --retry-all-errors --output "$file.part" $url
         if ((Get-FileHash -LiteralPath "$file.part").Hash -ne $sha) { throw "Invalid model download: $relative" }
         Move-Item -LiteralPath "$file.part" -Destination $file
     }
