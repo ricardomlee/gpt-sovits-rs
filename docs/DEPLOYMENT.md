@@ -13,11 +13,11 @@ PATH="$PATH:/usr/lib/wsl/lib" nvidia-smi --query-gpu=name,compute_cap --format=c
 | 主机 | 部署方式 |
 | --- | --- |
 | Linux x86_64，使用 CPU | [Docker 镜像](#cpu)或 [Linux 二进制包](#二进制包) |
-| Linux 或 WSL2 x86_64，使用 NVIDIA 显卡 | [CUDA 镜像](#cuda)以 `1.3.4-cuda-` 开头，按计算能力选后缀：7.5 → `sm75`，8.6 → `sm86`，8.9 → `sm89`，9.0 → `sm90` |
+| Linux 或 WSL2 x86_64，使用 NVIDIA 显卡 | [CUDA 镜像](#cuda)以 `1.3.5-cuda-` 开头，按计算能力选后缀：7.5 → `sm75`，8.6 → `sm86`，8.9 → `sm89`，9.0 → `sm90` |
 | macOS | [原生 CPU 二进制包](#二进制包)：苹果芯片选 `macos-aarch64`，Intel 芯片选 `macos-x86_64` |
 | Linux ARM64，包括 ARM 架构的 NAS | [从源码构建](DEVELOPMENT.md#build-from-source) |
 
-例如，RTX 4060 和 4090 用 `1.3.4-cuda-sm89`。RTX 5060 和 5090 需要 `sm120`，1.3.4 没有这个镜像。
+例如，RTX 4060 和 4090 用 `1.3.5-cuda-sm89`。RTX 5060 和 5090 需要 `sm120`，1.3.5 没有这个镜像。
 遇到未列出的架构，在 x86_64 上可先用 [CPU](#cpu)，或[为目标显卡构建 CUDA 镜像](#cuda)。
 [NVIDIA 显卡计算能力表](https://developer.nvidia.com/cuda/gpus) · [下载发行包](https://github.com/ricardomlee/gpt-sovits-rs/releases/latest)
 
@@ -45,7 +45,7 @@ cp .env.example .env
 
 ```env
 GPT_SOVITS_PORT=127.0.0.1:9880
-GPT_SOVITS_IMAGE_TAG=1.3.4
+GPT_SOVITS_IMAGE_TAG=1.3.5
 ```
 
 路径按配置位置解析：
@@ -100,12 +100,12 @@ docker compose -f compose.cpu.yml up -d --wait --wait-timeout 900
 docker compose -f compose.cpu.yml ps
 ```
 
-CPU 固定版本镜像为 `ghcr.io/ricardomlee/gpt-sovits-rs:1.3.4`。
+CPU 固定版本镜像为 `ghcr.io/ricardomlee/gpt-sovits-rs:1.3.5`。
 
 ## CUDA
 
 宿主机需有可用的 NVIDIA 驱动，且 Docker 能访问显卡（Linux 上使用 NVIDIA Container Toolkit）。
-按[上表](#选择部署方式)设置 `.env` 的 `CUDA_IMAGE_TAG`，例如 `1.3.4-cuda-sm89`。
+按[上表](#选择部署方式)设置 `.env` 的 `CUDA_IMAGE_TAG`，例如 `1.3.5-cuda-sm89`。
 拉取后用同一镜像确认容器看得到目标 GPU，再启动：
 
 ```bash
@@ -148,8 +148,8 @@ Docker 镜像支持相同的编码格式。第三方库见[音频编解码许可
 
 ```bash
 sha256sum --check SHA256SUMS --ignore-missing
-tar -xzf gpt-sovits-1.3.4-linux-x86_64.tar.gz
-cd gpt-sovits-1.3.4-linux-x86_64
+tar -xzf gpt-sovits-1.3.5-linux-x86_64.tar.gz
+cd gpt-sovits-1.3.5-linux-x86_64
 ./gpt-sovits-convert --version
 ./gpt-sovits --models-dir /path/to/models \
   --voices-dir /path/to/voices \

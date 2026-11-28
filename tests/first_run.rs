@@ -268,7 +268,7 @@ exit 2
         assert_eq!(f.log().matches("--doctor").count(), 2);
         assert_eq!(
             fs::read_to_string(f.destination.join(".env")).unwrap(),
-            "DEMO_IMAGE=ghcr.io/ricardomlee/gpt-sovits-rs:1.3.4\nDEMO_PULL_POLICY=missing\n"
+            "DEMO_IMAGE=ghcr.io/ricardomlee/gpt-sovits-rs:1.3.5\nDEMO_PULL_POLICY=missing\n"
         );
         for path in [
             "models/gpt-model.safetensors",

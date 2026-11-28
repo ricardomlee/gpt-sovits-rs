@@ -33,6 +33,6 @@
 
 - Sun CUDA 基准 [中文]：[1.3.4](benchmarks/v1.3.4-sun-cuda.md)、[1.3.3](benchmarks/v1.3.3-sun-cuda.md)、[1.3.2](benchmarks/v1.3.2-sun-cuda.md)、[1.3.1](benchmarks/v1.3.1-sun-cuda.md)、[1.3.0](benchmarks/v1.3.0-sun-cuda.md)、[1.2.2](benchmarks/v1.2.2-sun-cuda.md)。
 - 专项测量 [中文]：[转置卷积](benchmarks/2026-11-16-cuda-transposed-convolution.md)、[文本前端](benchmarks/2026-11-15-text-frontend.md)、[Sun 本地测量](benchmarks/2026-11-06-sun-cuda.md)、[通道归一化修复](benchmarks/v1.2.2-layer-norm-fix.md)。
-- 发布说明 [EN]：[1.3.4](releases/v1.3.4.md)、[1.3.3](releases/v1.3.3.md)、[1.3.2](releases/v1.3.2.md)、[1.3.1](releases/v1.3.1.md)、[1.3.0](releases/v1.3.0.md)、[1.2.2](releases/v1.2.2.md)、[1.2.1](releases/v1.2.1.md)、[1.2.0](releases/v1.2.0.md)、[1.1.0](releases/v1.1.0.md)、[1.0.2](releases/v1.0.2.md)、[1.0.1](releases/v1.0.1.md)、[1.0.0](releases/v1.0.0.md)。
+- 发布说明 [EN]：[1.3.5](releases/v1.3.5.md)、[1.3.4](releases/v1.3.4.md)、[1.3.3](releases/v1.3.3.md)、[1.3.2](releases/v1.3.2.md)、[1.3.1](releases/v1.3.1.md)、[1.3.0](releases/v1.3.0.md)、[1.2.2](releases/v1.2.2.md)、[1.2.1](releases/v1.2.1.md)、[1.2.0](releases/v1.2.0.md)、[1.1.0](releases/v1.1.0.md)、[1.0.2](releases/v1.0.2.md)、[1.0.1](releases/v1.0.1.md)、[1.0.0](releases/v1.0.0.md)。
 
 文档随代码维护。使用旧版本时，从[对应的标签](https://github.com/ricardomlee/gpt-sovits-rs/tags)查看当时的文档。

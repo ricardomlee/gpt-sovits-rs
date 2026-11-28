@@ -29,15 +29,15 @@
 
 ## 原生命令行
 
-从 [v1.3.4 发布页](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.4) 下载 CPU 压缩包：Linux x86_64 为 14.9 MiB，苹果芯片 Mac 为 9.0 MiB，Intel Mac 为 9.8 MiB。包内有推理程序、转换器和配套库，模型单独准备。保留解压后的目录结构，包括 macOS 上与程序放在一起的 dylib。
+从 [v1.3.5 发布页](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.5) 下载 CPU 压缩包：Linux x86_64 为 14.9 MiB，苹果芯片 Mac 为 9.0 MiB，Intel Mac 为 9.8 MiB。包内有推理程序、转换器和配套库，模型单独准备。保留解压后的目录结构，包括 macOS 上与程序放在一起的 dylib。
 
 ```bash
-pkg=gpt-sovits-1.3.4-linux-x86_64
-curl -fLO "https://github.com/ricardomlee/gpt-sovits-rs/releases/download/v1.3.4/$pkg.tar.gz"
+pkg=gpt-sovits-1.3.5-linux-x86_64
+curl -fLO "https://github.com/ricardomlee/gpt-sovits-rs/releases/download/v1.3.5/$pkg.tar.gz"
 tar -xzf "$pkg.tar.gz"
 ```
 
-苹果芯片把 `pkg` 改为 `gpt-sovits-1.3.4-macos-aarch64`，Intel Mac 改为 `gpt-sovits-1.3.4-macos-x86_64`。发布页的 `SHA256SUMS` 可用来校验下载。
+苹果芯片把 `pkg` 改为 `gpt-sovits-1.3.5-macos-aarch64`，Intel Mac 改为 `gpt-sovits-1.3.5-macos-x86_64`。发布页的 `SHA256SUMS` 可用来校验下载。
 
 把 `data` 设为含有 `models/` 和 `voices/` 的目录，音色名换成自己的。下面直接复用公开示例的文件。第一次使用又不想装 Docker，可以先[转换权重](docs/MODELS.md#准备官方-v2-模型)，再[添加音色](docs/DEPLOYMENT.md#添加音色)。
 

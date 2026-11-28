@@ -30,15 +30,15 @@ Already have a running service? [Send it a sentence](#connect-your-app).
 
 ## Native CLI
 
-Download the [v1.3.4 release](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.4): Linux x86_64 (14.9 MiB), Apple silicon (9.0 MiB), or Intel Mac (9.8 MiB). These are CPU packages containing the CLI, converter and libraries; weights are separate. Keep the bundled libraries beside the executables as extracted, including the macOS dylibs.
+Download the [v1.3.5 release](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.5): Linux x86_64 (14.9 MiB), Apple silicon (9.0 MiB), or Intel Mac (9.8 MiB). These are CPU packages containing the CLI, converter and libraries; weights are separate. Keep the bundled libraries beside the executables as extracted, including the macOS dylibs.
 
 ```bash
-pkg=gpt-sovits-1.3.4-linux-x86_64
-curl -fLO "https://github.com/ricardomlee/gpt-sovits-rs/releases/download/v1.3.4/$pkg.tar.gz"
+pkg=gpt-sovits-1.3.5-linux-x86_64
+curl -fLO "https://github.com/ricardomlee/gpt-sovits-rs/releases/download/v1.3.5/$pkg.tar.gz"
 tar -xzf "$pkg.tar.gz"
 ```
 
-On Mac, use `gpt-sovits-1.3.4-macos-aarch64` or `gpt-sovits-1.3.4-macos-x86_64` for `pkg`. The release includes `SHA256SUMS` to verify the download.
+On Mac, use `gpt-sovits-1.3.5-macos-aarch64` or `gpt-sovits-1.3.5-macos-x86_64` for `pkg`. The release includes `SHA256SUMS` to verify the download.
 
 Point `data` at your `models/` and `voices/` parent directory and choose a voice. The example below reuses the public demo files. Starting without Docker? [Convert the weights](docs/MODELS.md) and [add your own voice](docs/AGENT_INTEGRATION.en.md#add-a-voice) first.
 

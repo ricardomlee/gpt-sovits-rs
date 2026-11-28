@@ -2,7 +2,7 @@
 
 [中文主页](../README.zh-CN.md) · [英文上手指南](../README.md#docker-service) · [已有服务，直接接入](AGENT_INTEGRATION.md)
 
-下面用 [v1.3.4](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.4) 的 CPU 镜像启动本机语音服务，生成[这段英文示例音频](../examples/samples/local-assistant-en.wav)。
+下面用 [v1.3.5](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.5) 的 CPU 镜像启动本机语音服务，生成[这段英文示例音频](../examples/samples/local-assistant-en.wav)。
 
 ## 准备
 
