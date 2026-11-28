@@ -2,7 +2,7 @@
 
 | 你手头有什么？ | 需要准备什么 | 转换与空间 |
 | --- | --- | --- |
-| 没有模型，想先听一句 | [Docker 首次运行](FIRST_RUN.zh-CN.md)会下载官方 v2、BERT、HuBERT 和公开英文参考录音 | 自动校验约 1.1 GB 的下载并转换；预留 6 GiB 磁盘、4 GiB 内存，另需下载镜像。 |
+| 没有模型，想先听一句 | [准备公开 v2 演示模型](#准备公开-v2-演示模型)，或使用 [Docker 首次运行](FIRST_RUN.zh-CN.md) | 自动校验约 1.1 GB 的下载并转换。预留 6 GiB 磁盘、4 GiB 内存。 |
 | 官方或微调的 v2 | [准备四个组件及 tokenizer](#准备官方-v2-模型)；微调音色只[替换 GPT 和 SoVITS](#自训练音色模型)，可复用 BERT、HuBERT | 原始权重需转换，已经转换好的 safetensors 可直接用。官方源文件加转换结果约 3 GiB；转换建议预留 6 GiB 磁盘、4 GiB 内存。 |
 | v2Pro 微调权重 | [接入自训练音色](#自训练音色模型)：匹配的 GPT/SoVITS、BERT、HuBERT，以及参考录音对应的说话人向量（SV） | 与 v2 使用相同的转换器，另准备各音色的 SV 文件。 |
 
@@ -15,6 +15,52 @@
 | SoVITS v2 | `lj1995/GPT-SoVITS` | `models/sovits-model.safetensors` |
 | Chinese RoBERTa large | GPT-SoVITS 模型仓库内副本 | `models/bert/bert.safetensors` |
 | Chinese HuBERT base | GPT-SoVITS 模型仓库内副本 | `models/hubert/hubert.safetensors` |
+
+## 准备公开 v2 演示模型
+
+在带有准备脚本的程序包里，从解压目录运行对应命令。脚本使用包内的 CPU 转换器，
+下载并校验[清单里的上游权重和参考录音](../examples/first-run/downloads.txt)，再转换为 safetensors。
+准备过程使用 `curl`（Windows 下为 `curl.exe`）。结果保存在 `demo-data/models/` 和
+`demo-data/voices/`，可以整目录复制给其他操作系统的程序包使用。
+
+| 程序包 | 准备模型 | 生成语音 |
+| --- | --- | --- |
+| Windows x64 CPU 或 CUDA | `.\prepare-models.cmd` | `demo-cpu.cmd` 或 `demo-cuda.cmd` |
+| Linux x86_64、macOS Apple 芯片或 Intel | `./prepare-models.sh` | 运行下面的原生示例 |
+| Docker | [首次运行脚本](FIRST_RUN.zh-CN.md) | 按指南发送 HTTP 请求 |
+
+```bash
+./gpt-sovits --device cpu --models-dir demo-data/models --voices-dir demo-data/voices \
+  --voice demo --text 'The rain has stopped. We can walk home by the river.' --output first.wav
+```
+
+重复运行会复用已准备完成的 `demo-data/`。如果下载中断，重新运行会复用已经通过校验的源文件。
+手头已有全部原始文件时，可以传 `--source-dir` 离线准备。原始文件在该目录里的相对路径及
+SHA-256 要与下载清单对应，文件名 `reference.wav` 对应清单里的公开参考录音。
+
+```bash
+./prepare-models.sh --source-dir "/path/to/verified-source"
+```
+
+Windows 使用 `prepare-models.cmd --source-dir "D:\Models\source"`。从源码构建时可用
+`gpt-sovits-convert prepare-demo`，通过 `--output-dir` 选择新的输出目录。
+
+如需优先从魔搭下载，运行 `prepare-models.cmd --modelscope` 或
+`./prepare-models.sh --modelscope`。这五个权重和 tokenizer 文件与 Hugging Face
+使用同一组 SHA-256。参考录音使用清单中单独列出的地址。[魔搭上游镜像](https://www.modelscope.cn/models/AI-ModelScope/GPT-SoVITS)
+
+### 复用旧版演示归档
+
+[v1.3.5 发布页](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.5)的
+`gpt-sovits-1.3.5-demo-v2-models.zip` 包含可跨平台使用的 safetensors、tokenizer、
+参考 WAV 和音色 JSON。在发布页取 `SHA256SUMS` 校验后解压，再把
+`--models-dir` 和 `--voices-dir` 指向解压所得目录。CPU 和 CUDA 可以共用这份数据。
+
+```bash
+data="$PWD/GPT-SoVITS Windows"
+./gpt-sovits --device cpu --models-dir "$data/models" --voices-dir "$data/voices" \
+  --voice demo --text 'The rain has stopped. We can walk home by the river.' --output first.wav
+```
 
 ## 获取转换器
 

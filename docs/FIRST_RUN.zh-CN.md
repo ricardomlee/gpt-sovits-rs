@@ -4,6 +4,8 @@
 
 下面用 [v1.3.5](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.5) 的 CPU 镜像启动本机语音服务，生成[这段英文示例音频](../examples/samples/local-assistant-en.wav)。
 
+使用 Windows、Linux 或 macOS 原生程序时，可按[模型准备手册](MODELS.md#准备公开-v2-演示模型)生成同一套模型与音色。
+
 ## 准备
 
 - Linux x86_64、Docker Engine、Compose v2、Git、Bash、curl，以及 sha256sum 或 shasum。
@@ -22,6 +24,8 @@ cd "$HOME/gpt-sovits-demo"
 docker compose up -d --wait --wait-timeout 900
 export TTS_URL="http://127.0.0.1:${DEMO_PORT:-9881}"
 ```
+
+需要优先使用魔搭时，在准备命令前加 `DEMO_MODEL_SOURCE=modelscope`。下载文件仍使用同一组 SHA-256。
 
 在同一终端把 `request.json` 发给服务，生成 `first.wav`：
 

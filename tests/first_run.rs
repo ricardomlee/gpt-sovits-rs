@@ -78,7 +78,15 @@ fn demo_fixtures_match_the_voice_loader() {
         .collect();
     assert_eq!(rows.len(), 6);
     for row in rows {
-        assert_eq!(row.len(), 3);
+        if row[1] == "reference.wav" {
+            assert_eq!(row.len(), 3);
+        } else {
+            assert_eq!(row.len(), 4);
+            assert!(
+                row[3].starts_with("https://www.modelscope.cn/models/AI-ModelScope/GPT-SoVITS/")
+            );
+            assert!(row[3].ends_with(row[1]));
+        }
         assert_eq!(row[0].len(), 64);
         assert!(row[0].bytes().all(|b| b.is_ascii_hexdigit()));
         assert!(
@@ -142,9 +150,11 @@ exit 0
 "#;
             let curl = r#"#!/usr/bin/env bash
 set -eu
-printf 'download\n' >> "$TEST_LOG"
+printf 'download\nsource %s\n' "${!#}" >> "$TEST_LOG"
+content=${DOWNLOAD_CONTENT:-abc}
+if [[ ${BAD_MIRROR:-0} == 1 && ${!#} == https://www.modelscope.cn/* ]]; then content=wrong; fi
 while [[ $# -gt 0 ]]; do
-  if [[ "$1" == --output ]]; then printf '%s' "${DOWNLOAD_CONTENT:-abc}" > "$2"; exit 0; fi
+  if [[ "$1" == --output ]]; then printf '%s' "$content" > "$2"; exit 0; fi
   shift
 done
 exit 2
@@ -168,6 +178,8 @@ exit 2
                 .env_remove("TEST_PLATFORM")
                 .env_remove("DEMO_IMAGE")
                 .env_remove("DEMO_PULL_POLICY")
+                .env_remove("DEMO_MODEL_SOURCE")
+                .env_remove("BAD_MIRROR")
                 .env_remove("MISSING_IMAGE")
                 .env(
                     "PATH",
@@ -182,6 +194,32 @@ exit 2
 
         fn log(&self) -> String {
             fs::read_to_string(self.root.path().join("commands.log")).unwrap()
+        }
+    }
+
+    #[test]
+    fn rejects_a_mirror_checksum_mismatch_and_downloads_from_the_other_source() {
+        let f = Fixture::new();
+        let result = f
+            .command()
+            .env("DEMO_MODEL_SOURCE", "modelscope")
+            .env("BAD_MIRROR", "1")
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let log = f.log();
+        let sources: Vec<_> = log
+            .lines()
+            .filter_map(|line| line.strip_prefix("source "))
+            .collect();
+        assert_eq!(sources.len(), 11);
+        for pair in sources[..10].chunks_exact(2) {
+            assert!(pair[0].starts_with("https://www.modelscope.cn/"));
+            assert!(pair[1].starts_with("https://huggingface.co/"));
         }
     }
 

@@ -77,35 +77,22 @@ jobs:
         run: |
           ./.github/windows/build.ps1 -Backend $env:BACKEND -NativeDir "$env:RUNNER_TEMP/win-build/native"
       - name: Package binaries and verify PE imports
-        id: package
         timeout-minutes: 5
         env:
           BACKEND: ${{ matrix.backend }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
           $work = "$env:RUNNER_TEMP/win-build"
           $version = (cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
-          "version=$version" >> $env:GITHUB_OUTPUT
-          if ($env:PR_BASE) {
-            $notes = "docs/releases/v$version.md"
-            if ((git diff --name-only --diff-filter=A $env:PR_BASE HEAD -- $notes) -contains $notes) {
-              "release_candidate=true" >> $env:GITHUB_OUTPUT
-            }
-          }
           ./.github/windows/package.ps1 -Backend $env:BACKEND -Version $version -BinDir target/release `
             -NativeDir "$work/native" -NativeSource "$work/native-source" -StageDir "$work/stage" -DistDir "$env:GITHUB_WORKSPACE/dist"
-      - name: Convert the verified public demo with the packaged CPU converter
-        if: matrix.backend == 'cpu'
-        env:
-          VERSION: ${{ steps.package.outputs.version }}
+      - name: Start the packaged CUDA archive's model preparation tool
+        if: matrix.backend == 'cuda'
         run: |
-          $zip = (Get-Item "dist/*-cpu-runtime.zip").FullName
-          $app = "$env:RUNNER_TEMP/converter"
-          [IO.Compression.ZipFile]::ExtractToDirectory($zip, $app)
-          ./.github/windows/models.ps1 -Converter "$app/GPT-SoVITS Windows/gpt-sovits-convert.exe" `
-            -SourceDir "$env:RUNNER_TEMP/weights" -StageDir "$env:RUNNER_TEMP/demo-stage" `
-            -Archive "$env:GITHUB_WORKSPACE/dist/gpt-sovits-$env:VERSION-demo-v2-models.zip"
-      - name: Verify offline CPU synthesis from the extracted ZIPs
+          $app = "$env:RUNNER_TEMP/cuda-preparation"
+          [IO.Compression.ZipFile]::ExtractToDirectory((Get-Item "dist/*-cuda-sm89.zip").FullName, $app)
+          $env:PATH = "$env:SystemRoot/System32;$env:SystemRoot"
+          & "$app/GPT-SoVITS Windows/prepare-models.cmd" --help
+      - name: Prepare public models and verify synthesis from the extracted CPU ZIP
         if: matrix.backend == 'cpu'
         run: |
           . ./.github/windows/enter-msvc.ps1
@@ -128,18 +115,6 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 7
-      - name: Upload optional public demo models
-        if: matrix.backend == 'cpu' && (github.event_name != 'pull_request' || steps.package.outputs.release_candidate == 'true')
-        uses: actions/upload-artifact@v7
-        with:
-          name: windows-models-binary
-          path: |
-            dist/*-demo-v2-models.zip
-            dist/SHA256SUMS
-          compression-level: 0
-          if-no-files-found: error
-          retention-days: 7
-
   gpu-smoke:
     name: Verify GPU kernel execution
     if: github.event_name == 'workflow_dispatch' && inputs.gpu_smoke && github.ref_name == github.event.repository.default_branch

@@ -5,12 +5,14 @@ set -euo pipefail
 if [[ $# != 1 || ${1:-} == --help ]]; then
   printf 'Usage: bash examples/first-run/prepare.sh NEW_DIRECTORY\n'
   printf 'Downloads upstream models, verifies SHA-256, and converts with Docker (no Python).\n'
+  printf 'Set DEMO_MODEL_SOURCE=modelscope to try ModelScope first.\n'
   printf 'Maintainers: DEMO_IMAGE selects a candidate; DEMO_PULL_POLICY=never uses a local image.\n'
   [[ $# == 1 && $1 == --help ]] && exit 0
   exit 2
 fi
 image=${DEMO_IMAGE:-ghcr.io/ricardomlee/gpt-sovits-rs:1.3.5}
 pull_policy=${DEMO_PULL_POLICY:-always}
+model_source=${DEMO_MODEL_SOURCE:-huggingface}
 if [[ ! $image =~ ^[a-zA-Z0-9][a-zA-Z0-9._/:@-]*$ ]]; then
   printf 'Invalid DEMO_IMAGE. Use a Docker image reference without whitespace or shell syntax.\n' >&2
   exit 2
@@ -18,6 +20,10 @@ fi
 case "$pull_policy" in
   always|never) ;;
   *) printf 'DEMO_PULL_POLICY must be always or never.\n' >&2; exit 2 ;;
+esac
+case "$model_source" in
+  huggingface|modelscope) ;;
+  *) printf 'DEMO_MODEL_SOURCE must be huggingface or modelscope.\n' >&2; exit 2 ;;
 esac
 for command in docker curl; do
   command -v "$command" >/dev/null || { printf 'Missing command: %s\n' "$command" >&2; exit 1; }
@@ -62,7 +68,7 @@ mkdir -- "$lock" || { printf 'Preparation already running (or stale lock): %s\n'
 trap 'rmdir -- "$lock"' EXIT
 mkdir -p "$destination/source" "$destination/models/bert" "$destination/models/hubert" "$destination/voices/demo"
 
-while read -r expected relative url; do
+while read -r expected relative url mirror; do
   [[ -z "$expected" || "$expected" == \#* ]] && continue
   file="$destination/source/$relative"
   mkdir -p -- "$(dirname -- "$file")"
@@ -74,13 +80,26 @@ while read -r expected relative url; do
     printf 'Verified cached %s\n' "$relative"
     continue
   fi
-  printf 'Downloading %s\n' "$relative"
-  curl --fail --location --retry 3 --connect-timeout 30 --max-time 1800 --output "$file.part" "$url"
-  if [[ $(checksum "$file.part") != "$expected" ]]; then
-    printf 'Checksum mismatch: %s. Nothing will be converted.\n' "$file.part" >&2
+  if [[ $model_source == modelscope && -n $mirror ]]; then
+    urls=("$mirror" "$url")
+  else
+    urls=("$url" "$mirror")
+  fi
+  for source_url in "${urls[@]}"; do
+    [[ -n "$source_url" ]] || continue
+    printf 'Downloading %s from %s\n' "$relative" "$source_url"
+    if curl --fail --location --retry 3 --connect-timeout 30 --max-time 1800 --output "$file.part" "$source_url"; then
+      if [[ $(checksum "$file.part") == "$expected" ]]; then
+        mv -- "$file.part" "$file"
+        break
+      fi
+      printf 'Checksum mismatch: %s from %s.\n' "$file.part" "$source_url" >&2
+    fi
+  done
+  if [[ ! -f "$file" ]]; then
+    printf 'Could not obtain a verified copy of %s. Nothing will be converted.\n' "$relative" >&2
     exit 1
   fi
-  mv -- "$file.part" "$file"
 done < "$here/downloads.txt"
 
 if [[ $pull_policy == always ]]; then docker pull "$image"; fi

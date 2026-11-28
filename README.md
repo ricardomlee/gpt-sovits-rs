@@ -14,7 +14,7 @@ GPT-SoVITS-RS runs locally in Rust with Candle. Conversion and inference need no
 | What do you want to do? | Where to start |
 | --- | --- |
 | Hear a voice in your browser | [Play the English and Mandarin samples](https://tts.ricli.tech/en/#samples). No installation or model downloads. To synthesize your own Mandarin text, open the [Wasm lab](https://tts.ricli.tech/lab/en.html) with your [prepared model files](experiments/wasm-sovits/README.md#prepare-a-voice). |
-| Make one WAV on your computer | [Native CLI](#native-cli) for Linux x86_64 or macOS. On Windows, extract the [CPU or CUDA package](docs/WINDOWS.md) and run `download-models.cmd` for the public demo. |
+| Make one WAV on your computer | [Native CLI](#native-cli) for Linux x86_64 or macOS, or a [Windows CPU/CUDA package](docs/WINDOWS.md). See the [public demo model guide](docs/MODELS.md#准备公开-v2-演示模型). |
 | Give an app a speech API | [Docker service](#docker-service). The Linux x86_64 CPU demo downloads public weights and includes an English voice. For other hardware, [choose a build](docs/AGENT_INTEGRATION.en.md#choose-a-build). |
 
 Already have a running service? [Send it a sentence](#connect-your-app).
