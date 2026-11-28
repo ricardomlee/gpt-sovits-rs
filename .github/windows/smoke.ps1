@@ -2,7 +2,8 @@
 param(
     [Parameter(Mandatory)][ValidateSet('cpu', 'cuda')][string]$Backend,
     [Parameter(Mandatory)][string]$DistDir,
-    [Parameter(Mandatory)][string]$InstallDir
+    [Parameter(Mandatory)][string]$InstallDir,
+    [string]$SourceDir
 )
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $true
@@ -12,7 +13,6 @@ $files = @(Get-ChildItem -LiteralPath $DistDir -Filter $pattern -File)
 if ($files.Count -ne 1) { throw "Expected one $pattern in $DistDir, found $($files.Count)" }
 [IO.Compression.ZipFile]::ExtractToDirectory($files[0].FullName, $InstallDir)
 $root = (Resolve-Path "$InstallDir/GPT-SoVITS Windows").Path
-& "$root/download-models.cmd" -Source (Resolve-Path $DistDir).Path
 $program = "$root/gpt-sovits.exe"
 if ($Backend -eq 'cuda') {
     $program = "$root/cuda-sm89/gpt-sovits.exe"
@@ -28,20 +28,23 @@ $savedPath = $env:PATH
 Push-Location $root
 try {
     $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+    $prepareArgs = if ($SourceDir) { @('--source-dir', $SourceDir) } else { @() }
+    & ./prepare-models.cmd @prepareArgs
+    $data = @('--models-dir', 'demo-data/models', '--voices-dir', 'demo-data/voices')
     if ($Backend -eq 'cpu') {
         & ./gpt-sovits-convert.exe --version
         & ./gpt-sovits-client.exe --version
     } else {
         $env:PATH = "$toolkit\bin;$env:PATH"
     }
-    & $program --doctor --device $Backend --voice demo
+    & $program --doctor --device $Backend --voice demo @data
     $wav = "$root/demo-$Backend.wav"
     $synthesis = @('--device', $Backend, '--mode', 'kv', '--voice', 'demo', '--seed', '42',
                    '--text', 'The rain has stopped. We can walk home by the river.', '--output', $wav)
     if ($Backend -eq 'cpu') {
-        & $program @synthesis
+        & ./demo-cpu.cmd
     } else {
-        & $nsys profile --trace=cuda --sample=none --cpuctxsw=none --export=sqlite --output=cuda-trace $program @synthesis
+        & $nsys profile --trace=cuda --sample=none --cpuctxsw=none --export=sqlite --output=cuda-trace $program @data @synthesis
         $kernels = & $sqlite -readonly cuda-trace.sqlite 'SELECT COUNT(*) FROM CUPTI_ACTIVITY_KIND_KERNEL'
         if ([long]$kernels -le 0) { throw 'CUDA synthesis did not execute any GPU kernels' }
         Write-Host "$kernels GPU kernel executions"

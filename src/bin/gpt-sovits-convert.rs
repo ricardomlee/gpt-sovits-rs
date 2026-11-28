@@ -7,6 +7,10 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+#[cfg(not(target_arch = "wasm32"))]
+#[path = "converter/demo.rs"]
+mod demo;
+
 #[derive(Parser, Debug)]
 #[command(name = "gpt-sovits-convert")]
 #[command(author = "GPT-SoVITS Rust Contributors")]
@@ -19,6 +23,9 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum Command {
+    /// Download, verify and convert the public v2 demo.
+    #[cfg(not(target_arch = "wasm32"))]
+    PrepareDemo(demo::Options),
     /// Convert a GPT semantic model .ckpt to safetensors.
     Gpt {
         checkpoint: PathBuf,
@@ -46,6 +53,8 @@ enum Command {
 fn main() -> Result<()> {
     let args = Args::parse();
     match args.command {
+        #[cfg(not(target_arch = "wasm32"))]
+        Command::PrepareDemo(options) => demo::prepare(options),
         Command::Gpt { checkpoint, output } => {
             convert_checkpoint(&checkpoint, &output, ModelKind::Gpt)
         }

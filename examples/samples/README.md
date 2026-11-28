@@ -34,7 +34,7 @@ Exact reference transcript:
 
 > Printing, in the only sense with which we are at present concerned, differs from most if not from all the arts and crafts represented in the Exhibition
 
-The [pinned reference copy](https://github.com/coqui-ai/TTS/blob/dbf1a08a0d4e47fdad6172e433eeb34bc6b13b4e/tests/data/ljspeech/wavs/LJ001-0001.wav) and models are downloaded and verified using the [SHA-256 manifest](../first-run/downloads.txt). No Coqui implementation code, reference dataset or weights are bundled here. Models retain their own licenses.
+The [pinned reference copy](https://github.com/coqui-ai/TTS/blob/dbf1a08a0d4e47fdad6172e433eeb34bc6b13b4e/tests/data/ljspeech/wavs/LJ001-0001.wav) and models are downloaded and verified using the [SHA-256 manifest](../first-run/models.toml). No Coqui implementation code, reference dataset or weights are bundled here. Models retain their own licenses.
 
 ## Sun Showcase
 

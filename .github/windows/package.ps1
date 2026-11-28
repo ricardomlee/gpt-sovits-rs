@@ -15,19 +15,18 @@ $bin = if ($Backend -eq 'cpu') { $root } else { Join-Path $root 'cuda-sm89' }
 if (Test-Path -LiteralPath $root) { throw "Use a fresh staging directory: $StageDir" }
 [void][IO.Directory]::CreateDirectory("$bin/licenses")
 [void][IO.Directory]::CreateDirectory($DistDir)
-Copy-Item -LiteralPath "$BinDir/gpt-sovits.exe", "$NativeDir/bin/soxr.dll", "$NativeDir/bin/libmp3lame.dll" -Destination $bin
+Copy-Item -LiteralPath "$BinDir/gpt-sovits.exe", "$BinDir/gpt-sovits-convert.exe", "$NativeDir/bin/soxr.dll", "$NativeDir/bin/libmp3lame.dll" -Destination $bin
 Copy-Item -LiteralPath "$repo/LICENSE", "$repo/THIRD_PARTY.md" -Destination $bin
 Copy-Item "$repo/licenses/*.txt" "$bin/licenses/"
 Copy-Item -Recurse -LiteralPath $NativeSource -Destination "$bin/licenses/native-source"
 Copy-Item -LiteralPath "$repo/docs/WINDOWS.md" -Destination "$bin/README-Windows.md"
-Copy-Item -LiteralPath "$repo/examples/first-run/download-models.ps1" -Destination $root
-$download = @('@echo off', ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0download-models.ps1" -Version "{0}" %*' -f $Version), 'exit /b %errorlevel%')
-[IO.File]::WriteAllLines("$root/download-models.cmd", $download, [Text.Encoding]::ASCII)
+Copy-Item -LiteralPath "$repo/examples/first-run/prepare-models.cmd" -Destination $root
+Copy-Item -LiteralPath "$repo/examples/first-run/models.toml" -Destination $bin
 $variant = 'cpu-runtime'
 $program = 'gpt-sovits.exe'
 $launcher = @('@echo off', 'setlocal', 'cd /d "%~dp0"')
 if ($Backend -eq 'cpu') {
-    Copy-Item -LiteralPath "$BinDir/gpt-sovits-convert.exe", "$BinDir/gpt-sovits-client.exe" -Destination $bin
+    Copy-Item -LiteralPath "$BinDir/gpt-sovits-client.exe" -Destination $bin
 } else {
     $variant = 'cuda-sm89'
     $program = 'cuda-sm89\gpt-sovits.exe'
@@ -65,10 +64,15 @@ while ($queue.Count) {
 }
 
 $demo = $launcher + @(
-    ('"%~dp0{0}" --device {1} --mode kv --voice demo --seed 42 --text "The rain has stopped. We can walk home by the river." --output "%~dp0demo-{1}.wav"' -f $program, $Backend),
+    'set "data=."',
+    'if exist "demo-data\.gpt-sovits-demo" set "data=demo-data"',
+    ('"%~dp0{0}" --device {1} --models-dir "%data%\models" --voices-dir "%data%\voices" --mode kv --voice demo --seed 42 --text "The rain has stopped. We can walk home by the river." --output "%~dp0demo-{1}.wav"' -f $program, $Backend),
     'exit /b %errorlevel%')
 $serve = $launcher + @(
-    ('"%~dp0{0}" --http --host 127.0.0.1 --port 9881 --device {1}' -f $program, $Backend), 'exit /b %errorlevel%')
+    'set "data=."',
+    'if not exist "models\" if not exist "voices\" if exist "demo-data\.gpt-sovits-demo" set "data=demo-data"',
+    ('"%~dp0{0}" --http --host 127.0.0.1 --port 9881 --device {1} --models-dir "%data%\models" --voices-dir "%data%\voices"' -f $program, $Backend),
+    'exit /b %errorlevel%')
 [IO.File]::WriteAllLines("$root/demo-$Backend.cmd", $demo, [Text.Encoding]::ASCII)
 [IO.File]::WriteAllLines("$root/serve-$Backend.cmd", $serve, [Text.Encoding]::ASCII)
 $zip = "gpt-sovits-$Version-windows-x64-$variant.zip"

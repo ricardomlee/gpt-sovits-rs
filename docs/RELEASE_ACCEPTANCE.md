@@ -35,8 +35,8 @@ shutdown. Only after acceptance does that digest receive its public version and
 `latest` tags.
 
 The same job extracts the Linux archive destined for GitHub Release into a
-runtime-only container. Its packaged converter and CLI turn the public SoVITS
-checkpoint into an offline WAV using the models already prepared for the image.
+runtime-only container. Its `prepare-models.sh` launcher verifies and converts
+the cached upstream files, then its CLI produces an offline WAV with the result.
 To repeat that check locally:
 
 ```bash
@@ -45,7 +45,7 @@ bash examples/first-run/verify-archive.sh /path/to/linux-x86_64.tar.gz /tmp/tts-
 
 The `linux-acceptance` artifact retains audio and diagnostics. Each macOS runner
 also extracts its archive, checks the bundled audio library paths, and starts
-all three binaries.
+all three binaries and the preparation launcher.
 
 ## Local GPU Performance
 

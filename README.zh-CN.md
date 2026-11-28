@@ -13,7 +13,7 @@
 | 想做什么 | 从这里开始 |
 | --- | --- |
 | 打开浏览器听效果 | [试听英文示例和 Sun 的中文录音](https://tts.ricli.tech/#samples)，不用安装或下载模型。想让它读自己写的中文，可带上[准备好的模型和参考特征](experiments/wasm-sovits/README.md#prepare-a-voice)进入 [Wasm 实验室](https://tts.ricli.tech/lab/)。 |
-| 在电脑上生成一个 WAV | Linux x86_64 和 macOS 可用[原生命令行](#原生命令行)。Windows x64 解压 [CPU 或 CUDA 程序包](docs/WINDOWS.md)后，运行 `download-models.cmd` 下载公开示例模型。GPU 版使用系统安装的 NVIDIA CUDA 12.5.1。 |
+| 在电脑上生成一个 WAV | Linux x86_64 和 macOS 可用[原生命令行](#原生命令行)，Windows x64 有 [CPU 和 CUDA 程序包](docs/WINDOWS.md)。从[模型准备手册](docs/MODELS.md#准备公开-v2-演示模型)开始。 |
 | 给应用接上语音 API | [Docker 服务](#docker-服务)提供 Linux x86_64 的 CPU 示例，自动准备公开模型和英文音色。其他机器先[按硬件选版本](docs/DEPLOYMENT.md#选择部署方式)。 |
 
 已经有运行中的服务？[直接发一句话试试](#接入应用)。
@@ -29,15 +29,15 @@
 
 ## 原生命令行
 
-从 [v1.3.4 发布页](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.4) 下载 CPU 压缩包：Linux x86_64 为 14.9 MiB，苹果芯片 Mac 为 9.0 MiB，Intel Mac 为 9.8 MiB。包内有推理程序、转换器和配套库，模型单独准备。保留解压后的目录结构，包括 macOS 上与程序放在一起的 dylib。
+从 [v1.3.5 发布页](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.5) 下载 CPU 压缩包：Linux x86_64 为 14.9 MiB，苹果芯片 Mac 为 9.0 MiB，Intel Mac 为 9.8 MiB。包内有推理程序、转换器和配套库，模型单独准备。保留解压后的目录结构，包括 macOS 上与程序放在一起的 dylib。
 
 ```bash
-pkg=gpt-sovits-1.3.4-linux-x86_64
-curl -fLO "https://github.com/ricardomlee/gpt-sovits-rs/releases/download/v1.3.4/$pkg.tar.gz"
+pkg=gpt-sovits-1.3.5-linux-x86_64
+curl -fLO "https://github.com/ricardomlee/gpt-sovits-rs/releases/download/v1.3.5/$pkg.tar.gz"
 tar -xzf "$pkg.tar.gz"
 ```
 
-苹果芯片把 `pkg` 改为 `gpt-sovits-1.3.4-macos-aarch64`，Intel Mac 改为 `gpt-sovits-1.3.4-macos-x86_64`。发布页的 `SHA256SUMS` 可用来校验下载。
+苹果芯片把 `pkg` 改为 `gpt-sovits-1.3.5-macos-aarch64`，Intel Mac 改为 `gpt-sovits-1.3.5-macos-x86_64`。发布页的 `SHA256SUMS` 可用来校验下载。
 
 把 `data` 设为含有 `models/` 和 `voices/` 的目录，音色名换成自己的。下面直接复用公开示例的文件。第一次使用又不想装 Docker，可以先[转换权重](docs/MODELS.md#准备官方-v2-模型)，再[添加音色](docs/DEPLOYMENT.md#添加音色)。
 
@@ -51,7 +51,7 @@ data="$HOME/gpt-sovits-demo"
 
 ## Docker 服务
 
-在 Linux x86_64 上准备 Docker Engine、Compose v2、Git、Bash、curl 和 SHA-256 校验工具，留出 6 GiB 磁盘、4 GiB 可用内存。[准备脚本](examples/first-run/prepare.sh)会下载并校验约 1.1 GB 的[模型文件](examples/first-run/downloads.txt)，另外还要下载 CPU 镜像。首次运行请使用新的或空的目录。
+在 Linux x86_64 上准备 Docker Engine、Compose v2、Git、Bash、curl 和 SHA-256 校验工具，留出 6 GiB 磁盘、4 GiB 可用内存。[准备脚本](examples/first-run/prepare.sh)会下载并校验约 1.1 GB 的[模型文件](examples/first-run/models.toml)，另外还要下载 CPU 镜像。首次运行请使用新的或空的目录。
 
 ```bash
 git clone https://github.com/ricardomlee/gpt-sovits-rs.git

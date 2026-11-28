@@ -14,7 +14,7 @@ GPT-SoVITS-RS runs locally in Rust with Candle. Conversion and inference need no
 | What do you want to do? | Where to start |
 | --- | --- |
 | Hear a voice in your browser | [Play the English and Mandarin samples](https://tts.ricli.tech/en/#samples). No installation or model downloads. To synthesize your own Mandarin text, open the [Wasm lab](https://tts.ricli.tech/lab/en.html) with your [prepared model files](experiments/wasm-sovits/README.md#prepare-a-voice). |
-| Make one WAV on your computer | [Native CLI](#native-cli) for Linux x86_64 or macOS. On Windows, extract the [CPU or CUDA package](docs/WINDOWS.md) and run `download-models.cmd` for the public demo. |
+| Make one WAV on your computer | [Native CLI](#native-cli) for Linux x86_64 or macOS, or a [Windows CPU/CUDA package](docs/WINDOWS.md). See the [public demo model guide](docs/MODELS.md#准备公开-v2-演示模型). |
 | Give an app a speech API | [Docker service](#docker-service). The Linux x86_64 CPU demo downloads public weights and includes an English voice. For other hardware, [choose a build](docs/AGENT_INTEGRATION.en.md#choose-a-build). |
 
 Already have a running service? [Send it a sentence](#connect-your-app).
@@ -30,15 +30,15 @@ Already have a running service? [Send it a sentence](#connect-your-app).
 
 ## Native CLI
 
-Download the [v1.3.4 release](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.4): Linux x86_64 (14.9 MiB), Apple silicon (9.0 MiB), or Intel Mac (9.8 MiB). These are CPU packages containing the CLI, converter and libraries; weights are separate. Keep the bundled libraries beside the executables as extracted, including the macOS dylibs.
+Download the [v1.3.5 release](https://github.com/ricardomlee/gpt-sovits-rs/releases/tag/v1.3.5): Linux x86_64 (14.9 MiB), Apple silicon (9.0 MiB), or Intel Mac (9.8 MiB). These are CPU packages containing the CLI, converter and libraries; weights are separate. Keep the bundled libraries beside the executables as extracted, including the macOS dylibs.
 
 ```bash
-pkg=gpt-sovits-1.3.4-linux-x86_64
-curl -fLO "https://github.com/ricardomlee/gpt-sovits-rs/releases/download/v1.3.4/$pkg.tar.gz"
+pkg=gpt-sovits-1.3.5-linux-x86_64
+curl -fLO "https://github.com/ricardomlee/gpt-sovits-rs/releases/download/v1.3.5/$pkg.tar.gz"
 tar -xzf "$pkg.tar.gz"
 ```
 
-On Mac, use `gpt-sovits-1.3.4-macos-aarch64` or `gpt-sovits-1.3.4-macos-x86_64` for `pkg`. The release includes `SHA256SUMS` to verify the download.
+On Mac, use `gpt-sovits-1.3.5-macos-aarch64` or `gpt-sovits-1.3.5-macos-x86_64` for `pkg`. The release includes `SHA256SUMS` to verify the download.
 
 Point `data` at your `models/` and `voices/` parent directory and choose a voice. The example below reuses the public demo files. Starting without Docker? [Convert the weights](docs/MODELS.md) and [add your own voice](docs/AGENT_INTEGRATION.en.md#add-a-voice) first.
 
@@ -52,7 +52,7 @@ With the models on disk, the v1.3.4 CLI took 9.1 to 9.2 seconds to load them and
 
 ## Docker Service
 
-The demo needs Linux x86_64, Docker Engine with Compose v2, Git, Bash, curl, SHA-256 tools, 6 GiB of free disk and 4 GiB of available memory. The [setup script](examples/first-run/prepare.sh) verifies about 1.1 GB of [model downloads](examples/first-run/downloads.txt); the CPU image downloads separately. Give the script a new or empty directory.
+The demo needs Linux x86_64, Docker Engine with Compose v2, Git, Bash, curl, SHA-256 tools, 6 GiB of free disk and 4 GiB of available memory. The [setup script](examples/first-run/prepare.sh) verifies about 1.1 GB of [model downloads](examples/first-run/models.toml). The CPU image downloads separately. Give the script a new or empty directory.
 
 ```bash
 git clone https://github.com/ricardomlee/gpt-sovits-rs.git
