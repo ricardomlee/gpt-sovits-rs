@@ -40,6 +40,7 @@ jobs:
       CARGO_INCREMENTAL: '0'
       CARGO_TERM_COLOR: always
       RAYON_NUM_THREADS: '4'
+      VSCMD_SKIP_SENDTELEMETRY: '1'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/checkout@v7
@@ -55,6 +56,10 @@ jobs:
           key: windows-msvc-${{ matrix.backend }}
       - name: Install pkg-config
         run: choco install pkgconfiglite --yes --no-progress
+      - name: Set up the x64 MSVC environment
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+        with:
+          arch: x64
       - name: Install the CUDA compiler and libraries
         if: matrix.backend == 'cuda'
         uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
