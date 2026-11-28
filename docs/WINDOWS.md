@@ -1,6 +1,6 @@
 # Windows x64 packages
 
-Download the ZIP files you need from a release with Windows assets. Before the first such release, the Windows packages workflow provides build artifacts. All ZIPs have the same top-level `GPT-SoVITS Windows` directory. Extract them into one parent directory, preserving the paths.
+Download the CPU or CUDA ZIP from a release with Windows assets and extract it. All three ZIPs use the same top-level `GPT-SoVITS Windows` directory.
 
 | ZIP suffix | Contents | When to download |
 | --- | --- | --- |
@@ -11,6 +11,18 @@ Download the ZIP files you need from a release with Windows assets. Before the f
 For GPU inference, install a compatible NVIDIA driver and the [official CUDA Toolkit 12.5.1 for Windows x86_64](https://developer.nvidia.com/cuda-12-5-1-download-archive). This build uses the system copies of `cublas64_12.dll`, `cublasLt64_12.dll` and `curand64_10.dll`. The launchers check `CUDA_PATH_V12_5\bin`, `CUDA_PATH\bin` and PATH. For direct executable use, put the toolkit's `bin` directory on PATH. CPU inference needs only the CPU package and models.
 
 CPU and GPU share one copy of `models/` and `voices/`. The CPU package includes the converter and HTTP client for either backend. Compare `Get-FileHash .\your-package.zip` with the release's `SHA256SUMS`.
+
+## Download the public demo models
+
+Open the extracted `GPT-SoVITS Windows` folder and run:
+
+```powershell
+.\download-models.cmd
+```
+
+The launcher downloads the matching release's model ZIP (about 1.1 GiB), checks its SHA-256 against `SHA256SUMS`, and installs the converted weights and English demo voice. Run `.\demo-cpu.cmd` or `.\demo-cuda.cmd` to hear it. Users with their own models and voice can go straight to inference.
+
+For an offline install, put the model ZIP and its matching `SHA256SUMS` in the same folder and run `.\download-models.cmd -Source "D:\Downloads\GPT-SoVITS"`. With a CI candidate, use the model artifact from the same workflow run. A repeat install recognizes the verified model archive. If a demo file conflicts with an existing file, use a separate installation folder to keep both.
 
 ## Run
 
@@ -31,6 +43,6 @@ The audio libraries are replaceable DLLs beside each engine. Their source archiv
 
 ## CI verification
 
-The Windows workflow compiles CPU and CUDA on hosted x64 runners. It extracts the CPU and model ZIPs into a fresh directory, runs doctor and synthesis, and checks the output WAV. The CUDA build targets SM 8.9 explicitly so compilation can run without a GPU.
+The Windows workflow compiles CPU and CUDA on hosted x64 runners. It extracts the CPU runtime, installs the model archive with the bundled downloader, runs doctor and synthesis, and checks the output WAV. The CUDA build targets SM 8.9 explicitly so compilation can run without a GPU.
 
 To exercise CUDA hardware, dispatch **Windows packages** on the default branch and enable **Run synthesis on a self-hosted Windows SM 8.9 GPU**. This optional job needs a self-hosted x64 Windows runner labeled `sm89`, a working NVIDIA driver, CUDA Toolkit 12.5.1, PowerShell 7, `nsys` and `sqlite3` on PATH. It extracts the GPU and model ZIPs, uses the system CUDA libraries and counts GPU kernel executions during synthesis.

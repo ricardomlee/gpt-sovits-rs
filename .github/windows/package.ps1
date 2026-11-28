@@ -20,6 +20,9 @@ Copy-Item -LiteralPath "$repo/LICENSE", "$repo/THIRD_PARTY.md" -Destination $bin
 Copy-Item "$repo/licenses/*.txt" "$bin/licenses/"
 Copy-Item -Recurse -LiteralPath $NativeSource -Destination "$bin/licenses/native-source"
 Copy-Item -LiteralPath "$repo/docs/WINDOWS.md" -Destination "$bin/README-Windows.md"
+Copy-Item -LiteralPath "$repo/examples/first-run/download-models.ps1" -Destination $root
+$download = @('@echo off', ('powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0download-models.ps1" -Version "{0}" %*' -f $Version), 'exit /b %errorlevel%')
+[IO.File]::WriteAllLines("$root/download-models.cmd", $download, [Text.Encoding]::ASCII)
 $variant = 'cpu-runtime'
 $program = 'gpt-sovits.exe'
 $launcher = @('@echo off', 'setlocal', 'cd /d "%~dp0"')
