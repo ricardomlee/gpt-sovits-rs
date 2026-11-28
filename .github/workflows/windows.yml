@@ -56,10 +56,6 @@ jobs:
           key: windows-msvc-${{ matrix.backend }}
       - name: Install pkg-config
         run: choco install pkgconfiglite --yes --no-progress
-      - name: Set up the x64 MSVC environment
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
-        with:
-          arch: x64
       - name: Install the CUDA compiler and libraries
         if: matrix.backend == 'cuda'
         uses: Jimver/cuda-toolkit@b8bf9c6c28f8a92fbb04dcfcaee872e60c57462d # v0.2.36
@@ -102,6 +98,7 @@ jobs:
       - name: Verify offline CPU synthesis from the extracted ZIPs
         if: matrix.backend == 'cpu'
         run: |
+          . ./.github/windows/enter-msvc.ps1
           $install = "$env:RUNNER_TEMP/offline CPU"
           ./.github/windows/smoke.ps1 -Backend cpu -DistDir dist -InstallDir $install
           $env:FIRST_RUN_WAV = "$install/GPT-SoVITS Windows/demo-cpu.wav"
