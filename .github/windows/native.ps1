@@ -35,7 +35,7 @@ try {
         Copy-Item -LiteralPath $patch.FullName -Destination $sources
     }
     cmake -S . -B "$WorkDir/soxr-build" -G 'NMake Makefiles' "-DCMAKE_INSTALL_PREFIX=$prefix" `
-        -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF `
+        -DCMAKE_BUILD_TYPE=Release '-DCMAKE_POLICY_VERSION_MINIMUM=3.5' -DBUILD_TESTS=OFF -DBUILD_EXAMPLES=OFF `
         -DBUILD_SHARED_LIBS=ON -DBUILD_SHARED_RUNTIME=ON -DWITH_OPENMP=OFF -DWITH_LSR_BINDINGS=OFF `
         -DCMAKE_DISABLE_FIND_PACKAGE_LibAVUtil=TRUE
     cmake --build "$WorkDir/soxr-build" --target install
